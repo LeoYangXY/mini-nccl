@@ -5,20 +5,29 @@
  ************************************************************************/
 
 /*
- * AllReduce Performance Test Implementation
+ * AllReduce 性能/功能测试实现（本仓库自带 tests，取自 nccl-tests，已裁剪）
+ * ----------------------------------------------------------------------------
+ * 本文件实现了 all_reduce_perf 这个基准测试。它提供多个 AllReduce 内核变体，
+ * 重点演示 device API 的使用方式与性能优化技巧。
  *
- * This file implements multiple AllReduce kernel variants optimized for different
- * use cases within CUDA P2P connectivity.
- * These kernels are designed to highlight the device API functionality. As well as how to optimize for best performance.
+ * 重要：原版里“自定义内核(deviceImpl>=1)”需要 CUDA P2P(LSA 内存)与 DOCA/multimem
+ * 硬件支持；由于本机未装 DOCA，tests/src/common.h 已强制 NCCL_VERSION_CODE=22700，
+ * 所有 `#if >= 2.28` 的设备内核代码被跳过。因此本仓库实际只跑 deviceImpl == 0
+ * 这一分支——即调用 NCCL 标准 ncclAllReduce API（正是 mini-nccl 库要验证的链路）。
  *
- * IMPORTANT: All custom kernels require CUDA P2P connectivity since they require Load-Store Accessible (LSA) memory.
+ * 内核选择策略（deviceImpl 取值）：
+ * - 0: NCCL 内置 AllReduce（本仓库实际走的路径，调用 ncclAllReduce）
+ * - 1..4: 自定义 LSA / Multimem 内核（需 DOCA+特殊硬件，本仓库不编译）
  *
- * Kernel Selection Strategy:
- * - deviceImpl = 0: NCCL's built-in AllReduce implementation (fallback)
- * - deviceImpl = 1: allReduceLsaKernel - Basic LSA implementation for demonstration and small message sizes.
- * - deviceImpl = 2: allReduceLsaVectorizedKernel - Vectorized LSA for demonstration to achieve performance for large message sizes.
- * - deviceImpl = 3: allReduceMultimemKernel - Multi-memory for hardware acceleration. Requires Multimem capable hardware but can offer better performance.
- * - deviceImpl = 4: allReduceMultimemVectorizedKernel - Vectorized multi-memory for best performance. Requires Multimem capable hardware but can offer better performance.
+ * 整个 test 的调用链路（自顶向下）：
+ *   main() [common.cu]
+ *     └─> AllReduceRunTest()           // 设定要跑的类型/算子组合
+ *           └─> TimeTest()             // 对每个 size 计时（common.cu 里）
+ *                 └─> AllReduceInitData()   // 初始化 send/expected 缓冲
+ *                 └─> AllReduceRunColl()    // 真正发起一次 AllReduce
+ *                       └─> case 0: ncclAllReduce(...)   // 标准 API（进 mini-nccl 库）
+ *                 └─> AllReduceGetBw()      // 计算 algBw / busBw
+ *                 └─> CheckData()           // 校验结果正确性（common.cu 里）
  */
 
 #include "cuda_runtime.h"
@@ -40,6 +49,8 @@
 constexpr int WARP_SIZE = 32;
 #endif
 
+// 计算本次 AllReduce 各侧需要的字节数：send/recv 都是 count 个元素，in-place 时
+// 收发偏移为 0。供 common.cu 分配缓冲与切分数据用。
 void AllReduceGetCollByteCount(size_t *sendcount, size_t *recvcount, size_t *paramcount, size_t *sendInplaceOffset, size_t *recvInplaceOffset, size_t count, size_t eltSize, int nranks) {
   *sendcount = count;
   *recvcount = count;
@@ -48,6 +59,8 @@ void AllReduceGetCollByteCount(size_t *sendcount, size_t *recvcount, size_t *par
   *paramcount = *sendcount;
 }
 
+// 初始化测试数据：把 sendbuff 填上可识别的模式数据，并按规约算子算出"期望结果"
+// expectedbuff（用于事后校验）。每个 GPU(rank)各自填自己的那份。
 testResult_t AllReduceInitData(struct threadArgs* args, ncclDataType_t type, ncclRedOp_t op, int root, int rep, int in_place) {
   size_t sendcount = args->sendBytes / wordSize(type);
   size_t recvcount = args->expectedBytes / wordSize(type);
@@ -506,6 +519,11 @@ __global__ void allReduceMultimemVectorizedKernel(ncclWindow_t sendwin, size_t s
 }
 #endif
 
+// 真正发起一次 AllReduce 的“动作”函数（被 TimeTest 反复调用）。
+//   send/recv/offset/count/type/op : 本次要做的 AllReduce 参数
+//   deviceImpl : 选哪种实现。本仓库只编译并走 case 0 → 调用 NCCL 标准 ncclAllReduce，
+//   这正是要验证的 mini-nccl 全链路入口（之后会进入 bootstrap→graph→enqueue→
+//   device kernel→proxy 等）。case 1..4 是需 DOCA 的自定义内核，本仓库不触发。
 testResult_t AllReduceRunColl(void* sendbuff, size_t sendoffset, void* recvbuff, size_t recvoffset, size_t count, ncclDataType_t type, ncclRedOp_t op, int root, ncclComm_t comm, cudaStream_t stream, int deviceImpl) {
 
   char* sptr = (char*)sendbuff + sendoffset;
@@ -538,6 +556,8 @@ testResult_t AllReduceRunColl(void* sendbuff, size_t sendoffset, void* recvbuff,
   return testNotImplemented;
 }
 
+// 把 AllReduce 测试的各回调函数打包成 testColl 结构体，common.cu 的测试框架通过该
+// 表统一驱动（取字节数/初始化/算带宽/发起 collective）。
 struct testColl allReduceTest = {
   "AllReduce",
   AllReduceGetCollByteCount,
@@ -551,6 +571,8 @@ void AllReduceGetBuffSize(size_t *sendcount, size_t *recvcount, size_t count, in
   AllReduceGetCollByteCount(sendcount, recvcount, &paramcount, &sendInplaceOffset, &recvInplaceOffset, count, /*eltSize=*/1, nranks);
 }
 
+// 测试入口（被 common.cu 的 main/runTest 调用）：根据要测的数据类型(type)与规约算子(op)
+// 组合，逐个调用 TimeTest 完成计时与校验。这里决定了本次基准要覆盖哪些 type×op。
 testResult_t AllReduceRunTest(struct threadArgs* args, int root, ncclDataType_t type, const char* typeName, ncclRedOp_t op, const char* opName) {
   args->collTest = &allReduceTest;
   ncclDataType_t *run_types;

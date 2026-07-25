@@ -5,6 +5,33 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/* ============================================================================
+ * bootstrap.cc —— NCCL 引导/建连控制面（单机多卡最小通信库 mini-nccl）
+ * ----------------------------------------------------------------------------
+ * 本文件在 AllReduce 全链路中的定位：
+ *   它是通信域 ncclComm 建立的第一步（“引导”阶段），在用户还没发起任何
+ *   ncclAllReduce 之前，先把所有参与通信的进程/GPU 用一张基于 socket 的控制面
+ *   网络连起来——这张网络不经过 NCCL 自己的 GPU 传输，只用来交换拓扑与连接信息。
+ *
+ * 主要职责：
+ *   1) bootstrapGetUniqueId  : 生成一个唯一 handle（magic + 监听地址），多进程靠它
+ *                              汇聚到同一个 root 节点。
+ *   2) bootstrapInit         : 核心建连流程——建立 ring 环网、收集每个 rank 的
+ *                              peerP2pAddresses / peerProxyAddresses / UDS 等地址信息，
+ *                              初始化 proxy 与 RAS。后续 ring/tree 拓扑与 GPU 直连都依赖它。
+ *   3) bootstrapAllGather    : 把所有节点的地址/信息收集到每个 rank（ring 算法实现）。
+ *   4) bootstrapSend/Recv    : 控制面的点对点数据交换（含 unexpected 连接队列）。
+ *   5) bootstrapBarrier/Broadcast : 进程同步与广播（dissemination 算法）。
+ *
+ * 关键概念：
+ *   - root 线程：每个进程派生一个 bootstrapRoot 线程，负责接收所有 rank 的建连请求、
+ *     收集上报信息、回发 next-peer 邻接关系。
+ *   - ring 环网：所有 rank 连成一条环，bootstrap 用“先发长度再发数据”的 socket 协议
+ *     完成环形 AllGather，这是收集拓扑信息的高效方式。
+ *   - 多 root：支持按 NCCL 配置把 nranks 分成多个 root 组（firstRankFromRoot 等映射）。
+ * ============================================================================
+ */
+
 #include "nccl.h"
 #include "core.h"
 #include "utils.h"

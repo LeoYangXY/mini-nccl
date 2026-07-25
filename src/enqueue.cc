@@ -5,6 +5,29 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/* ============================================================================
+ * enqueue.cc —— NCCL 调度/启动层（单机多卡最小通信库 mini-nccl）
+ * ----------------------------------------------------------------------------
+ * 本文件在 AllReduce 全链路中的定位：
+ *   graph(拓扑构建) ──► 【enqueue.cc 调度/启动层】 ──► device kernel(计算)
+ *
+ * 职责：当用户调用 ncclAllReduce(...) 时，collectives.cc 把参数打包成 struct
+ * ncclInfo，调用 ncclEnqueueCheck()。本文件负责把这一次 collective 操作
+ * “组织成若干 kernel 启动任务”：
+ *   1) 参数校验与 group 语义（ncclEnqueueCheck / ncclGroupStart-End）。
+ *   2) 把 task 暂存进 comm->planner（taskAppend / collTaskAppend）。
+ *   3) group 结束时计算算法(algo: ring/tree)与协议(protocol: LL/LL128/Simple)，
+ *      并把数据切分到多个 channel。
+ *   4) 为每 channel 生成 ncclDevWorkColl、选择 kernel(devFuncId)、设置 send/recv
+ *      连接（来自 graph 阶段建好的 channel 拓扑）。
+ *   5) 把 proxy 任务(proxyOp)入队，供后台 proxy 线程执行网络/跨卡搬运。
+ *   6) 真正启动 CUDA kernel（ncclLaunchKernel）以及 CUDA graph 处理。
+ *
+ * 本仓库仅保留 AllReduce：凡涉及 P2P/Bcast/CE/RMA/NVLS/CollNet 的分支均为
+ * “死代码/不会走到的分支”，已在相应处标注说明。
+ * ============================================================================
+ */
+
 #include "enqueue.h"
 #include "argcheck.h"
 #include "coll_net.h"
@@ -30,7 +53,9 @@ NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
 NCCL_PARAM(SymCeThreshold, "SYM_CE_THRESHOLD", 8 * 1024 * 1024);
 
-// Returns maximum kernel stack size of all CUDA kernels
+// 初始化本设备上的所有 CUDA kernel：探测每个 kernel 需要的 driver 版本、
+// 共享内存上限，并设置 L1/shared 分配策略(carveout)。kernel 启动前需保证
+// 已就绪——与 AllReduce 启动间接相关（kernel 属性要先查好才能 launch）。
 ncclResult_t ncclInitKernelsForDevice(int cudaArch, int maxSharedMem, size_t* maxStackSize) {
   ncclResult_t result = ncclSuccess;
 
@@ -1750,6 +1775,12 @@ ncclResult_t ncclLaunchKernelBefore_NoUncapturedCuda(struct ncclComm* comm, stru
 NCCL_PARAM(MemSyncDomain, "MEM_SYNC_DOMAIN", cudaLaunchMemSyncDomainRemote);
 #endif
 
+// 真正启动 CUDA kernel 的函数（在 group 结束时被调用）。它做三件事：
+//   1) ncclLaunchKernelBefore_NoUncapturedCuda：设置 CUDA graph capture 模式下所需的资源配置；
+//   2) 为 plan 中的每个 kernel 调用 cudaLaunchKernel（连同 grid/block/共享内存配置），
+//      并启动 proxy 线程的任务，使 GPU kernel 与后台 proxy 协同搬运数据；
+//   3) ncclLaunchKernelAfter_NoCuda：记录当次启动的 proxy 进度链，供同步/等待。
+// 这就是 AllReduce 真正“跑起来”的那一刻。
 ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan) {
   ncclResult_t ret = ncclSuccess;
   struct ncclKernelPlanner* planner = &comm->planner;
@@ -2687,6 +2718,11 @@ static ncclResult_t p2pTaskAppend(struct ncclComm* comm, struct ncclInfo* info, 
   return ncclSuccess;
 }
 
+// 把一次 collective（本仓库仅 AllReduce）任务追加进 comm->planner。
+// 它根据 info 里的 func（=ncclFuncAllReduce）确定算法(ring/tree)与协议(LL/LL128/Simple)，
+// 计算需要几个 channel、如何把 count 切分到各 channel，并为每 channel 生成
+// ncclDevWorkColl（device 端工作描述）、选择 kernel（devFuncId）以及配置 send/recv 连接。
+// 这是 AllReduce 从“API 参数”变成“可启动的 kernel 任务”的核心函数。
 static ncclResult_t collTaskAppend(struct ncclComm* comm, struct ncclInfo* info, struct ncclDevRedOpFull opDev) {
   struct ncclKernelPlanner* planner = &comm->planner;
 
@@ -3011,6 +3047,9 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
 // Converts `info` to a task and adds it to `comm->planner`. The exception is with
 // single rank communicators, collectives are issued as `ncclMemcpyAsync`s and
 // thus don't need a task.
+// taskAppend 是任务分类入口：按 info->func 把请求分派给具体的 *TaskAppend。
+// 本仓库只走 ncclFuncAllReduce 分支 -> collTaskAppend(info, opDev)；
+// 其余 P2P/SendRecv/CE/RMA 分支为死代码（不会被触发，保留以便阅读原结构）。
 static ncclResult_t taskAppend(struct ncclComm* comm, struct ncclInfo* info) {
   ncclFunc_t collAPI = info->coll;
 
@@ -3121,6 +3160,11 @@ static ncclResult_t taskAppend(struct ncclComm* comm, struct ncclInfo* info) {
   return ncclSuccess;
 }
 
+// ncclAllReduce 等 API 的统一入口：ncclCollectivesEnqueue 在调完参数校验后会调用它。
+// 它负责：① 把本次 collective 的相关信息放入 thread-local 的 group 队列；
+// ② 若当前不在 group 内则隐式开启 group，调用 taskAppend 把任务暂存进 planner，
+// ③ group 深度为 1 时 ncclGroupEndInternal 会真正触发内核生成与启动。
+// 其后的 collTaskAppend / p2pTaskAppend 才是具体生成 AllReduce/P2P 任务的地方。
 ncclResult_t ncclEnqueueCheck(struct ncclInfo* info) {
   // Early-out on invalid or revoked communicator
   ncclResult_t ret = CommCheck(info->comm, info->opName, "comm");

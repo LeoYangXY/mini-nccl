@@ -21,6 +21,26 @@
 #include "env.h"
 #include <cinttypes>
 
+/* ============================================================================
+ * debug.cc —— NCCL 日志/调试系统（单机多卡最小通信库 mini-nccl）
+ * ----------------------------------------------------------------------------
+ * 职责：提供 INFO/WARN/TRACE 日志宏，按日志级别(NCCL_DEBUG)与子系统
+ * (NCCL_DEBUG_SUBSYS)过滤输出。AllReduce 跑不通或想看拓扑/连接细节时，最常用的
+ * 就是在这里定义的两个环境变量。
+ *
+ * 调试 AllReduce 最常用的 NCCL_* 环境变量（定义在各自模块的 DEFINE_NCCL_PARAM 处）：
+ *   - NCCL_DEBUG=WARN|INFO|TRACE  日志级别，TRACE 最详细（会打印每次 API 调用）。
+ *   - NCCL_DEBUG_SUBSYS=BOOTSTRAP,GRAPH,P2P,PROXY,NET,COLL,...  只打印关心的子系统。
+ *   - NCCL_PROTO=Simple|LL|LL128  强制 AllReduce 使用的协议（调试性能差异时用）。
+ *   - NCCL_ALGO=Ring|Tree         强制 AllReduce 使用的算法。
+ *   - NCCL_P2P=0|1                是否启用 GPU 间 P2P 直连（排查跨卡访问问题用）。
+ *   - NCCL_NET=... / NCCL_SOCKET_IFNAME=...  网络/网卡相关（节点间通信时）。
+ *   - NCCL_TOPO_FILE=xxx.xml      用静态 XML 指定拓扑，跳过实时探测（排查拓扑识别错）。
+ *   - NCCL_CONF_FILE=xxx.conf     从文件批量读这些变量（~/.nccl.conf 默认）。
+ * 例：NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=BOOTSTRAP,GRAPH 看建连与拓扑搜索全过程。
+ * ============================================================================
+ */
+
 #define NCCL_DEBUG_RESET_TRIGGERED (-2)
 
 int ncclDebugLevel = -1;
@@ -42,6 +62,9 @@ static bool ncclWarnSetDebugInfo = false;
 static thread_local int tid = -1;
 
 // clang-format off
+// ===== NCCL 日志/调试相关环境变量（本段集中定义，学习时最常用的几个）=====
+// 这些 DEFINE_NCCL_PARAM 的第二参数是环境变量名（如 NCCL_DEBUG），运行时通过
+// getenv 读取；在 mini-nccl 里常用于排查 AllReduce 建连/拓扑/性能问题。
 DEFINE_NCCL_PARAM(ncclParamDebugLevel, ncclDebugLogLevel, NCCL_DEBUG, NCCL_LOG_NONE,
                   NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT,
                   ncclParamOneOf<ncclDebugLogLevel>(makeOptions(
@@ -52,6 +75,9 @@ DEFINE_NCCL_PARAM(ncclParamDebugLevel, ncclDebugLogLevel, NCCL_DEBUG, NCCL_LOG_N
                     makeOption("TRACE", NCCL_LOG_TRACE, "Prints replayable trace info on all calls")
                   )), "Set debug output level, the option is inclusive for any level that is less verbose than the set value");
 
+// NCCL_DEBUG_SUBSYS：按“子系统”过滤日志(逗号分隔)。例如只关心建连与图搜索时设
+// NCCL_DEBUG_SUBSYS=BOOTSTRAP,GRAPH。默认已含 INIT/ENV/BOOTSTRAP。其余可选 COLL/P2P/SHM/
+// NET/GRAPH/TUNING/ALLOC/CALL/PROXY/NVLS/REG/PROFILE/RAS/DESTROY，ALL 表示全部。
 DEFINE_NCCL_PARAM(ncclParamDebugSubsys, uint64_t, NCCL_DEBUG_SUBSYS,
                   NCCL_INIT | NCCL_BOOTSTRAP | NCCL_ENV,
                   NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT,
@@ -77,11 +103,14 @@ DEFINE_NCCL_PARAM(ncclParamDebugSubsys, uint64_t, NCCL_DEBUG_SUBSYS,
                     makeOption("ALL", NCCL_ALL, "All categories")
                   ))), "Filter debug output by (comma-separated)");
 
+// NCCL_WARN_ENABLE_DEBUG_INFO：一旦打出 WARN 级别消息，就自动把调试级别提升到 INFO，
+// 方便在出错后看到更多上下文。
 DEFINE_NCCL_PARAM(ncclParamWarnEnableDebugInfo, bool, NCCL_WARN_ENABLE_DEBUG_INFO, false,
                   NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT, NCCL_PARAM_DEFAULT,
                   "If enabled, the debug level will be set to INFO after a WARN level debug message is logged.");
 // clang-format on
 
+// NCCL_DEBUG_TIMESTAMP_LEVELS：给哪些级别的日志行加时间戳(位掩码,如 WARN/INFO/TRACE)。
 DEFINE_NCCL_PARAM(ncclParamDebugTimestampLevel, uint32_t, NCCL_DEBUG_TIMESTAMP_LEVELS, (1u << NCCL_LOG_WARN),
                   NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT,
                   ncclParamBitsetOf<uint32_t>(
@@ -96,10 +125,12 @@ DEFINE_NCCL_PARAM(ncclParamDebugTimestampLevel, uint32_t, NCCL_DEBUG_TIMESTAMP_L
                                            "on All messages"))),
                   "Set which log lines get a timestamp depending upon the level of the log");
 
+// NCCL_DEBUG_TIMESTAMP_FORMAT：日志时间戳的打印格式(传给 strftime)。
 DEFINE_NCCL_PARAM(ncclParamDebugTsFormat, const char*, NCCL_DEBUG_TIMESTAMP_FORMAT, "[%F %T] ",
                   NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT, NCCL_PARAM_DEFAULT,
                   "Set the format used when printing debug log messages");
 
+// NCCL_DEBUG_FILE：把调试日志写到文件而非 stdout。可用 %h(主机名)/%p(PID) 占位符。
 DEFINE_NCCL_PARAM(ncclParamDebugFile, const char*, NCCL_DEBUG_FILE, nullptr,
                   NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT, NCCL_PARAM_DEFAULT,
                   "Set the NCCL debug logging output to a file. The filename format can be set to "

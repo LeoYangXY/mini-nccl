@@ -25,6 +25,26 @@
 #include <cinttypes>
 #include <thread>
 
+/* ============================================================================
+ * proxy.cc —— NCCL 代理线程（单机多卡最小通信库 mini-nccl）
+ * ----------------------------------------------------------------------------
+ * 在 AllReduce 全链路中的定位：device kernel 在 GPU 上跑“规约计算”，但有些数据
+ * 搬运/连接管理无法完全由 GPU 完成（尤其是跨进程显存访问、Simple 协议大块数据传输、
+ * 进度同步），需要 CPU 侧一个常驻线程来配合——这就是 proxy 线程。
+ *
+ * 主要职责：
+ *   - ncclProxyService / ncclProxyServiceUDS : proxy 线程入口，循环处理来自各 comm
+ *     的 proxy 操作（UDS 为进程间共享内存通道）。
+ *   - ncclProxySaveOp : enqueue 阶段把 proxy 操作入队（如一次 send/recv 的搬运任务）。
+ *   - ncclProxyProgress : 进度推进线程，按 opsPool 里的 op 逐个推进，调用各传输层的
+ *     *ProxyProgress（如 p2pSendProxyProgress）真正搬数据，并记录完成进度。
+ *   - ncclProxyOpsPool : 一个跨线程/跨进程的共享内存池，存放待处理的 proxy 操作。
+ *   - proxyProgressInit / ncclProxyProgressCreate : 初始化共享池与启动 progress 线程。
+ *
+ * 一句话：GPU kernel 负责算，proxy 线程负责把数据在卡间“搬到位”，两者协同完成 AllReduce。
+ * ============================================================================
+ */
+
 #define NCCL_MAX_PROXY_CONNECTIONS (NCCL_MAX_LOCAL_RANKS + 1)
 
 enum {
@@ -599,6 +619,9 @@ static ncclResult_t SaveProxy(struct ncclComm* comm, struct ncclChannel* channel
 
 // justInquire != nullptr means don't actually do anything, just assertain need of
 // ncclProxySaveOp for this op.
+// enqueue 阶段调用：把一次 proxy 操作（如“把某块数据从本 rank 发到对端”或“接收
+// 对端数据”）登记进 comm 的 proxy 队列。justInquire=true 时只问“要不要做”，不改状态。
+// 这是 AllReduce 的搬运任务从 enqueue 流向 proxy 线程的入口。
 ncclResult_t ncclProxySaveOp(struct ncclComm* comm, struct ncclProxyOp* op, bool* justInquire) {
   struct ncclChannel* channel = &comm->channels[op->channelId];
   bool needProxy = false;
@@ -951,6 +974,9 @@ fail:
   return;
 }
 
+// proxy 的“进度推进”线程主体：循环从共享 opsPool 取待办 op，逐个推进
+// （调用具体传输层的 *ProxyProgress，如 p2pSendProxyProgress）把数据真正搬完，
+// 并更新完成进度，直到线程被要求退出。它是 GPU kernel 之外真正干“搬运”的 CPU 线程。
 void* ncclProxyProgress(void* proxyState_) {
   struct ncclProxyState* proxyState = (struct ncclProxyState*)proxyState_;
   // This thread is created by proxyService, therefore setting the affinity is not needed.

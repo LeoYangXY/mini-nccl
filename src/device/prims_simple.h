@@ -8,12 +8,33 @@
 #include "network/unpack/unpack.h"
 #include <cassert>
 
+/* ============================================================================
+ * device/prims_simple.h —— Simple 协议的 GPU 传输原语（单机多卡最小通信库 mini-nccl）
+ * ----------------------------------------------------------------------------
+ * 在 AllReduce 全链路中的定位：all_reduce.h 里的 runRing/runTree 通过“Primitives”
+ * 这个模板类实际完成“把本地数据写到对端 GPU 的 buffer / 从对端读回 / 做原地 reduce”。
+ * 本文件是 Protocol=Simple 时的 Primitives 特化实现（最常用、最直接的数据搬运方式）。
+ *
+ * 关键概念：
+ *   - Fan : 收/发的邻居集合（ring 时 1 收 1 发；tree 时多收 1 发等）。
+ *   - 角色标志(RoleInput/Output/WaitRecv/PostSend/...) : 描述本线程在线程块里扮演的
+ *     角色（谁负责读输入、谁负责发、谁负责等收）。
+ *   - step/stepSize : 把数据切成若干 step，按 step 与对端做带步号同步的收发。
+ *   - directBuff / conn 等 : 通过 P2P(IPC) 拿到的对端显存指针，load/store 直接跨卡访问。
+ *   - Direct=1 时走“直写”：数据直接写到对端 buffer，省一次中转。
+ * 一句话：Simple 原语 = “用 load/store 在相邻 GPU 间直接搬数据 + 原地 reduce”。
+ * ============================================================================
+ */
+
 enum primsMode {
   primsModeDefault = 0,
   primsModePatRs = 1,
   primsModePatAg = 2
 };
 
+// Simple 协议的 Primitives 特化类：封装 AllReduce 在 GPU 上“收-规约-发”的底层动作。
+// T=数据类型, RedOp=规约算子, Fan=邻居集合, ProtoSimple=Simple 协议参数。
+// 它的 directSend/directRecv/directCopy 等方法就是跨卡 load/store 的具体实现。
 template <typename T, typename RedOp, typename Fan, int Direct, int SlicePerChunk, int StepPerSlice, int Unroll,
           int P2p, int MultimemSrcs, int MultimemDsts, bool isNetOffload>
 class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice, Unroll, MultimemSrcs, MultimemDsts>,

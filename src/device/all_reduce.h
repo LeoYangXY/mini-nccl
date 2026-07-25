@@ -9,7 +9,29 @@
 #include "collectives.h"
 #include "primitives.h"
 
+/* ============================================================================
+ * device/all_reduce.h —— AllReduce 的 GPU 端 kernel 模板（单机多卡最小通信库 mini-nccl）
+ * ----------------------------------------------------------------------------
+ * 在 AllReduce 全链路中的定位：这是真正在 GPU 上跑的代码，由 enqueue.cc 启动。
+ * 它根据算法(ring/tree)与协议(LL/LL128/Simple)实现“把各 rank 的数据规约到一起，
+ * 再把结果广播回每个 rank”。
+ *
+ * 核心模板（本仓库保留的）：
+ *   - runRing<T,RedOp,Proto>  : ring 算法——“边收边发、滚动规约”。每个 rank 沿环
+ *     只跟 prev/next 交换，nRanks-1 步后每个 rank 都拿到完整规约结果。
+ *   - runTree<T,RedOp,Proto>  : tree 算法——上行 reduce（子→父）做部分规约，下行
+ *     broadcast（父→子）把结果发回去。
+ *   - runColl  : 根据 work 里记录的算法/协议，分派到上面的具体 run* 模板。
+ *
+ * Proto 决定同步与搬运方式：LL(带 flag 同步位的低延迟)、LL128、Simple(直接 load/store)。
+ * 本仓库测试用的是 Simple（见 tests/src/all_reduce.cu 的 case 0）。
+ * ============================================================================
+ */
+
 namespace {
+// ring 算法的 device 函数：tid/nthreads 是当前线程块内线程标识，work 是本次要做的
+// AllReduce 工作描述（含 sendbuff/recvbuff/count/redOp 等）。它构造 Primitives 原语，
+// 沿 ring 的 prev/next 邻居循环做“接收-规约-发送”，实现滚动全规约。
 template <typename T, typename RedOp, typename Proto>
 __device__ __forceinline__ void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {
   ncclRing* ring = &ncclShmem.channel.ring;

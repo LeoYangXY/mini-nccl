@@ -5,6 +5,25 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/* ============================================================================
+ * topo.cc —— 硬件拓扑发现与建图（AllReduce 链路中的“地图”）
+ * ----------------------------------------------------------------------------
+ * 在 mini-nccl 链路中的位置：bootstrap 收集到各节点信息后，本文件负责把硬件
+ * 拓扑“画成一张图”——节点(GPU/CPU/PCI/NIC/NVLINK 等)与边(链路类型与带宽)。
+ *
+ * 主要职责：
+ *   - ncclTopoGetSystem       : 探测并构建整个通信系统的拓扑图(从 XML 或实时探测)。
+ *   - ncclTopoAddPci/AddNvLinks/AddCpu : 往图里添加 PCIe、NVLink、CPU 等节点与边。
+ *   - ncclTopoConnectNodes    : 根据链路类型连接两个节点，标注带宽。
+ *   - ncclTopoGetLocal/GetLocalNet : 查询某 GPU 的本地 CPU / 本地网卡(用于就近路由)。
+ *   - ncclTopoGetSystemFromXml : 从 NCCL_TOPO_FILE 指定的 XML 加载拓扑(替代实时探测)。
+ *
+ * 关键概念：topoNodeType(节点类型)、topoLinkType(链路类型)、topoPathType(路径类型)
+ * 三大枚举，以及 LOC/NVL/PIX/PXB/PHB/SYS/NET 等路径层级（本机内越快、跨机越慢）。
+ * 这张图是后续 search.cc 选择 ring/tree 邻居、tuning.cc 估算带宽的基础。
+ * ============================================================================
+ */
+
 #include "core.h"
 #include "graph.h"
 #include "topo.h"

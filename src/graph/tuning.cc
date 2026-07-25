@@ -5,6 +5,23 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/* ============================================================================
+ * tuning.cc —— AllReduce 的算法/协议选择与性能建模（调优层）
+ * ----------------------------------------------------------------------------
+ * 在 mini-nccl 链路中的位置：graph 阶段生成 ring/tree 拓扑后，本文件决定
+ * “对某个给定 size，用哪种算法(ring/tree) + 哪种协议(LL/LL128/Simple) 最快”。
+ *
+ * 主要内容：
+ *   - parseList / parseAlgoProtoList : 解析 NCCL_ALGO / NCCL_PROTO 等环境变量，
+ *     得到允许使用的算法/协议集合。
+ *   - 一组带宽/延迟模型常量（不同硬件、不同协议的单线带宽与延迟）。
+ *   - ncclTopoTuneModel : 根据 size、算法、协议、拓扑，估算该配置下 AllReduce 的
+ *     耗时（time = 数据量/带宽 + 延迟项）。
+ *   - ncclTopoGetAlgoTime : 对每个候选(算法×协议)组合估算 time，enqueue 阶段据此
+ *     选出最优配置（即 runtime 实际采用的 algo/proto）。
+ * ============================================================================
+ */
+
 #include "core.h"
 #include "device.h"
 #include "comm.h"

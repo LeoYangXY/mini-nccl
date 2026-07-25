@@ -17,6 +17,24 @@
 #include "shm.h"
 #include "register_inline.h"
 
+/* ============================================================================
+ * transport/p2p.cc —— GPU 点对点直连传输（单机多卡最小通信库 mini-nccl）
+ * ----------------------------------------------------------------------------
+ * 在 AllReduce 全链路中的定位：device kernel(all_reduce.h)在 GPU 上执行规约时，
+ * 需要把数据写到“相邻 rank 的 buffer”或从那里读回来。本文件提供这种
+ * “GPU 间直接收发”的传输能力，是 ring/tree 算法相邻 rank 之间 send/recv 的底层支撑。
+ *
+ * 关键能力：
+ *   - 4 种 P2P 类型（p2pType）：DIRECT(同进程直接指针)、INTERMEDIATE、IPC(跨进程
+ *     CUDA IPC 显存句柄)、CUMEM(CUDA 虚拟内存映射)。单机多卡大多走 IPC/CUMEM。
+ *   - p2pSendSetup/p2pRecvSetup : 建立连接前的信息交换（交换 IPC 句柄/地址）。
+ *   - p2pSendConnect/p2pRecvConnect : 完成连接，把对端显存映射成本地可访问的指针。
+ *   - p2pSendProxyProgress/p2pRecvProxyProgress : proxy 线程驱动的实际数据搬运进度
+ *     函数（Simple 协议下由它把数据推到对端 / 从对端拉回）。
+ *   - 末尾 ncclTransport p2pTransport : 把上面这些函数注册为名为 "P2P" 的传输层。
+ * ============================================================================
+ */
+
 enum p2pType {
   P2P_DIRECT,
   P2P_INTERMEDIATE,
@@ -386,6 +404,9 @@ static ncclResult_t p2pMap(struct ncclComm* comm, struct ncclProxyConnector* pro
 }
 
 /* Send: Create and return connect structures for this peer to connect to me */
+// 发送端连接建立前的“setup”：与对端交换拓扑/地址信息，确定用哪种 p2pType
+// (DIRECT/IPC/CUMEM)，并准备对端显存的 IPC 句柄。AllReduce 的 ring/tree 每个
+// send 通道都会先走这里拿到连接所需元信息。
 ncclResult_t p2pSendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo* myInfo,
                           struct ncclPeerInfo* peerInfo, struct ncclConnect* connectInfo, struct ncclConnector* send,
                           int channelId, int connIndex) {
@@ -533,6 +554,9 @@ ncclResult_t p2pRecvSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
 }
 
 /* Connect/Send to this peer */
+// 发送端“connect”：使用 setup 阶段拿到的连接信息，把对端显存映射成本地可写指针，
+// 填充连接结构(struct connect)。之后 device kernel 就可以通过该指针把数据直接写到
+// 相邻 rank 的 buffer（跨进程走 CUDA IPC / CUMEM）。
 static ncclResult_t p2pSendConnect(struct ncclComm* comm, struct ncclConnect* connectInfo, int nranks, int rank,
                                    struct ncclConnector* send) {
   struct p2pResources* resources = (struct p2pResources*)send->transportResources;
@@ -837,6 +861,9 @@ static ncclResult_t p2pRecvProxyFree(struct ncclProxyConnection* connection, str
 }
 
 // CE memcpy support
+// proxy 线程驱动的“发送进度”函数：Simple 协议下，由 proxy 线程把本 rank 的数据
+// 推送到相邻 rank 的 buffer（或 LL/LL128 协议下做带 flag 的同步搬运）。它会被
+// ncclProxyProgress 在进度循环里反复调用，直到本次 send 的 all bytes 完成。
 static ncclResult_t p2pSendProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
   if (args->state == ncclProxyOpReady) {
     for (int s = 0; s < args->nsubs; s++) {
@@ -1463,6 +1490,8 @@ fail:
   goto exit;
 }
 
+// 把 P2P 传输层注册到 NCCL：名字 "P2P"，并挂上上面实现的 setup/connect/progress
+// 等函数表。enqueue/transport 层据此选择 "P2P" 作为本机 GPU 间的传输后端。
 struct ncclTransport p2pTransport = {"P2P",
                                      p2pCanConnect,
                                      {p2pSendSetup, p2pSendConnect, p2pSendFree, NULL, p2pSendProxySetup, NULL,

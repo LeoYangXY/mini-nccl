@@ -5,6 +5,22 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/* ============================================================================
+ * trees.cc —— 生成 AllReduce 的“树形(tree)”通信拓扑
+ * ----------------------------------------------------------------------------
+ * 在 mini-nccl 链路中的位置（与 rings.cc 平行，二选一作为算法）：
+ *   graph 阶段在 ring 之外，还会生成 tree 拓扑。tree 算法把 rank 组织成
+ *   二叉树/双二叉树：上行阶段做 reduce（把子节点的数据规约到父节点），
+ *   下行阶段做 broadcast（把父节点的结果广播到子节点）。
+ *
+ * 本文件提供两个生成器：
+ *   - ncclGetBtree : 生成单棵二叉树（上行 up / 下行 down0,down1）。
+ *   - ncclGetDtree : 生成“双二叉树”，由一棵 btree 加上一棵镜像/平移树构成，
+ *                    用于提高容错与带宽利用率（两棵树交替使用）。
+ * 下面的 ASCII 图说明了 rank 在树中的位置与父子关系（原注释翻译如下）。
+ * ============================================================================
+ */
+
 #include "nccl.h"
 
 #define RANK_TO_INDEX(r) (rank > root ? rank - 1 : rank)
@@ -29,6 +45,12 @@
  *    / \     / \     /  \     \
  *   1   3   5   7   9   11    13
  */
+// 生成单棵二叉树(btree)。基于二进制位操作快速确定父子关系：找到 rank 最低位的
+// 置位 bit，父节点 up = (rank ^ bit) | (bit<<1)（越界则回退），子节点 down0/down1
+// 为 rank ± lowbit。每个节点只有一个 up（父）和最多两个 down（子）。
+//   u     : 输出父节点 rank（-1 表示是根）
+//   d0/d1 : 输出两个子节点 rank（-1 表示无该子节点）
+//   parentChildType : 本节点相对父节点是第 0 还是第 1 个子节点
 ncclResult_t ncclGetBtree(int nranks, int rank, int* u, int* d0, int* d1, int* parentChildType) {
   int up, down0, down1;
   int bit;
@@ -87,6 +109,10 @@ ncclResult_t ncclGetBtree(int nranks, int rank, int* u, int* d0, int* d1, int* p
  *    / \     / \     /  \         / \     / \     /  \
  *   1   3   5   7   9   11       2   4   6   8  10   12
  */
+// 生成“双二叉树(double binary tree)”：第一棵树直接用 btree；第二棵树在 nranks 为偶数时
+// 取镜像树(rank 取反)，为奇数时整体平移 1 个 rank。双二叉树让 AllReduce 可在两棵树间
+// 交替，提升带宽与容错。
+//   第一组 s0/d0_0/d0_1/parentChildType0 对应第一棵树，s1/d1_0/d1_1/parentChildType1 对应第二棵。
 ncclResult_t ncclGetDtree(int nranks, int rank, int* s0, int* d0_0, int* d0_1, int* parentChildType0, int* s1,
                           int* d1_0, int* d1_1, int* parentChildType1) {
   // First tree ... use a btree

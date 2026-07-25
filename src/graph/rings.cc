@@ -5,8 +5,23 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/* ============================================================================
+ * rings.cc —— 生成 AllReduce 的“环形(ring)”通信拓扑
+ * ----------------------------------------------------------------------------
+ * 在 mini-nccl 链路中的位置：
+ *   bootstrap(收集信息) -> topo.cc(构建拓扑图) -> search.cc(为每个通道选定
+ *   ring 的 prev/next 邻居) -> 【本文件：把 prev/next 展开成线性 ring 顺序】
+ *   -> enqueue.cc(启动 kernel)。
+ *
+ * ring 算法让数据沿环单向流动，nRanks-1 步即可让每个 rank 拿到完整规约结果，
+ * 是 AllReduce 在节点内(NVLink/PCIe)最常用、可扩展到多节点的拓扑之一。
+ * ============================================================================
+ */
+
 #include "core.h"
 
+// 调试辅助：把一串整型值(如某个通道的 prev/next 或 ring 顺序)拼成一个字符串打印。
+// 超出缓冲区时以 "..." 截断，避免溢出。
 void dumpLine(int* values, int nranks, const char* prefix) {
   constexpr int line_length = 128;
   char line[line_length];
@@ -26,6 +41,15 @@ void dumpLine(int* values, int nranks, const char* prefix) {
   INFO(NCCL_INIT, "%s", line);
 }
 
+// 根据 prev/next 数组，为每个 ring 通道生成线性 rank 序列 rings[]。
+//   nrings : 通道数
+//   rings  : 输出，rings[r*nranks + i] 表示通道 r 上第 i 个位置的 rank
+//   prev/next : 每个通道每个 rank 的前驱/后继 rank（由搜索阶段给出）
+//   rank   : 本进程 rank（仅用于日志与合法性校验）
+// 关键流程：
+//   1) 从本 rank 出发，沿 next 走 nranks 步，把经过的 rank 依次写入 rings；
+//   2) 校验能否回到起点（环必须闭合）；
+//   3) 用 64-bit 位图(每 64 个 rank 一组)快速校验所有 rank 都被包含。
 ncclResult_t ncclBuildRings(int nrings, int* rings, int rank, int nranks, int* prev, int* next) {
   ncclResult_t ret = ncclSuccess;
   uint64_t* rankFound;
