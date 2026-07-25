@@ -1,0 +1,94 @@
+#
+# Copyright (c) 2015-2025, NVIDIA CORPORATION. All rights reserved.
+#
+# See LICENSE.txt for license information
+#
+include common.mk
+
+# Set to 1 to enable MPI support (multi-process/multi-node)
+MPI ?= 0
+# e.g. Set to _mpi when using MPI=1
+NAME_SUFFIX ?=
+# Set to 1 to create and use libverifiable.so to reduce binary size
+DSO ?= 0
+
+.PHONY: build clean
+
+BUILDDIR ?= ../build
+# 默认指向本仓库(standalone 根)编译出的 mini-nccl, 无需手动传 NCCL_HOME
+NCCL_HOME ?= $(abspath ../..)/build
+ifneq ($(NCCL_HOME), "")
+NVCUFLAGS += -I$(NCCL_HOME)/include/
+NVLDFLAGS += -L$(NCCL_HOME)/lib
+endif
+
+ifeq ($(MPI), 1)
+NVCUFLAGS += -DMPI_SUPPORT -I$(MPI_HOME)/include
+NVLDFLAGS += -L$(MPI_HOME)/lib -L$(MPI_HOME)/lib64 -lmpi
+endif
+ifeq ($(MPI_IBM),1)
+NVCUFLAGS += -DMPI_SUPPORT
+NVLDFLAGS += -lmpi_ibm
+endif
+LIBRARIES += nccl
+NVLDFLAGS += $(LIBRARIES:%=-l%)
+
+DST_DIR := $(BUILDDIR)
+SRC_FILES := $(wildcard *.cu)
+OBJ_FILES := $(SRC_FILES:%.cu=${DST_DIR}/%.o)
+# 本仓库只关注 AllReduce, 仅构建 all_reduce_perf (其他集合的源文件保留在 src/ 仅供阅读)
+BIN_FILES_LIST := all_reduce
+BIN_FILES := $(BIN_FILES_LIST:%=${DST_DIR}/%_perf${NAME_SUFFIX})
+
+TEST_OS_SRCDIR := ../os
+TEST_OS_BUILDDIR := $(BUILDDIR)/os
+TEST_OS_LIB := $(TEST_OS_BUILDDIR)/libnccl_test_os.a
+NVCUFLAGS += -I$(TEST_OS_SRCDIR)
+NVLDFLAGS += -L$(TEST_OS_BUILDDIR) -lnccl_test_os
+
+build: os.build ${BIN_FILES}
+
+clean:
+	rm -rf ${DST_DIR}
+
+TEST_VERIFIABLE_SRCDIR := ../verifiable
+TEST_VERIFIABLE_BUILDDIR := $(BUILDDIR)/verifiable
+include ../verifiable/verifiable.mk
+
+$(TEST_OS_LIB): os.build
+	@:
+
+os.%:
+	${MAKE} -C $(TEST_OS_SRCDIR) $* BUILDDIR=$(BUILDDIR)
+
+.PRECIOUS: ${DST_DIR}/%.o
+
+${DST_DIR}/%.o: %.cu common.h util.h $(TEST_VERIFIABLE_HDRS)
+	@printf "Compiling  %-35s > %s\n" $< $@
+	@mkdir -p ${DST_DIR}
+	$(NVCC) -o $@ $(NVCUFLAGS) -c $<
+
+${DST_DIR}/%$(NAME_SUFFIX).o: %.cu common.h util.h $(TEST_VERIFIABLE_HDRS)
+	@printf "Compiling  %-35s > %s\n" $< $@
+	@mkdir -p ${DST_DIR}
+	$(NVCC) -o $@ $(NVCUFLAGS) -c $<
+
+${DST_DIR}/timer.o: timer.cc timer.h
+	@printf "Compiling  %-35s > %s\n" $< $@
+	@mkdir -p ${DST_DIR}
+	$(CXX) $(CXXFLAGS) -o $@ -c $<
+
+ifeq ($(DSO), 1)
+${DST_DIR}/%_perf$(NAME_SUFFIX): ${DST_DIR}/%.o ${DST_DIR}/common$(NAME_SUFFIX).o ${DST_DIR}/util$(NAME_SUFFIX).o ${DST_DIR}/timer.o $(TEST_VERIFIABLE_LIBS) $(TEST_OS_LIB)
+	@printf "Linking  %-35s > %s\n" $< $@
+	@mkdir -p ${DST_DIR}
+	$(NVCC) -o $@ $(NVCUFLAGS) $^ -L$(TEST_VERIFIABLE_BUILDDIR) -lverifiable ${NVLDFLAGS} -Xlinker "--enable-new-dtags" -Xlinker "-rpath,\$$ORIGIN:\$$ORIGIN/verifiable"
+else
+${DST_DIR}/%_perf$(NAME_SUFFIX):${DST_DIR}/%.o ${DST_DIR}/common$(NAME_SUFFIX).o ${DST_DIR}/util$(NAME_SUFFIX).o ${DST_DIR}/timer.o $(TEST_VERIFIABLE_OBJS) $(TEST_OS_LIB)
+	@printf "Linking  %-35s > %s\n" $< $@
+	@mkdir -p ${DST_DIR}
+	$(NVCC) -o $@ $(NVCUFLAGS) $^ ${NVLDFLAGS}
+endif
+
+clean_intermediates:
+	rm -f ${DST_DIR}/*.o $(TEST_VERIFIABLE_OBJS)

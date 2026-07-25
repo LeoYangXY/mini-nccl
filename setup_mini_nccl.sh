@@ -58,13 +58,8 @@ else
   make -j"$(nproc)" lib CUDA_HOME="$CUDA_HOME" NVCC_GENCODE="-gencode=arch=compute_90,code=sm_90"
 fi
 
-echo "[4/6] 编译 nccl-tests ..."
-if [ ! -d /root/nccl-tests ]; then
-  git clone --depth 1 https://github.com/NVIDIA/nccl-tests.git /root/nccl-tests
-else
-  echo "  /root/nccl-tests 已存在, 跳过克隆(直接编译)"
-fi
-cd /root/nccl-tests
+echo "[4/6] 编译仓库自带 tests (all_reduce) ..."
+cd "$MINI_NCCL_DIR/tests"
 make -j"$(nproc)" NCCL_HOME="$MINI_NCCL_DIR/build" CUDA_HOME="$CUDA_HOME" 2>&1 | tail -3
 
 echo "[5/6] 生成 python all_reduce test ..."
@@ -90,13 +85,13 @@ cat >> /root/allreduce_test.py <<'PYEOF'
 if __name__=="__main__": mp.spawn(worker,args=(2,),nprocs=2,start_method="spawn")
 PYEOF
 
-echo "===== 运行 C 基准 allreduce (用我们编译的 lib) ====="
+echo "===== 运行 C 基准 allreduce (仓库自带 tests, 用我们编译的 lib) ====="
 LD_LIBRARY_PATH="$MINI_NCCL_DIR/build/lib" \
-./build/all_reduce_perf -b 8 -e 128M -f 2 -g 2 2>&1 | tail -6
+"$MINI_NCCL_DIR/tests/build/all_reduce_perf" -b 8 -e 128M -f 2 -g 2 2>&1 | tail -6
 
 echo "===== 运行 python test (LD_PRELOAD 我们的 NCCL) ====="
 if python3 -c "import torch" 2>/dev/null; then
-  LD_PRELOAD="$MINI_NCCL_DIR/build/lib/libnccl.so.2.30.7" \
+  LD_PRELOAD="$MINI_NCCL_DIR/build/lib/libnccl.so.2" \
   NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,GRAPH,COLL \
   MASTER_PORT=29700 \
   python3 /root/allreduce_test.py 2>&1 | grep -E "r0|error|Error" | tail -5

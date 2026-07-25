@@ -18,6 +18,7 @@
 | `setup_mini_nccl.sh` | 一键环境配置 + 编译 + 跑通验证脚本 |
 | `LICENSE.txt` | NVIDIA 许可证 |
 | `src/` | 全部源码（见下） |
+| `tests/` | 仓库自带的 all_reduce 验证（取自 nccl-tests，已裁剪为只编译 `all_reduce_perf`，默认链接本仓库 `build/lib`） |
 | `build/` | 编译产物（动态库 / 静态库 / 目标文件），由 `make` 生成 |
 
 ### `src/` —— 全部源码
@@ -97,11 +98,11 @@ bash setup_mini_nccl.sh
 # 2) 或手动编译库（适配 H20 = sm_90）
 make -j$(nproc) lib CUDA_HOME=/usr/local/cuda NVCC_GENCODE="-gencode=arch=compute_90,code=sm_90"
 
-# 3) 用官方 nccl-tests 验证功能与性能
-cd /root/nccl-tests
-make -j$(nproc) NCCL_HOME=/root/mini-nccl-standalone/build CUDA_HOME=/usr/local/cuda
-LD_LIBRARY_PATH=/root/mini-nccl-standalone/build/lib \
-  ./build/all_reduce_perf -b 8 -e 128M -f 2 -g 2
+# 3) 仓库自带 tests 验证（无需外部 nccl-tests）
+make test
+# 等价于下面两条:
+#   make -C tests   # 编译 tests/build/all_reduce_perf (默认链接本仓库 build/lib)
+#   LD_LIBRARY_PATH=build/lib ./tests/build/all_reduce_perf -b 8 -e 128M -f 2 -g 2
 # 期望: Out of bounds values : 0 OK, 128MB 档 busbw ≈ 281 GB/s
 ```
 
