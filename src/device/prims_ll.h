@@ -5,14 +5,22 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/prims_ll.h — LL(低延迟)协议的 Primitives 实现
+ * ----------------------------------------------------------------------------
+ * 特化 Primitives 模板的 ProtoLL 版本：用“标志位(flag) + 数据”交替打包的 128-bit
+ * 单元搬运，发送端写数据时翻转 flag、接收端轮询 flag 变化，从而避免读写冲突、实现
+ * 极低延迟的可靠传输。是 device 端三种协议之一（另见 prims_simple.h/prims_ll128.h）。
+ */
+
 template <typename T, typename RedOp, typename Fan, int Direct, int P2p, bool isNetOffload>
 class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
   : public PrimitivesWithoutDirect<Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>> {
-  // In the case of Fan::MaxRecv == 0, we need to force MaxRecv to 1 for this to compile
-  // This is because of a recv buffer which is allocated to MaxRecv length in send-only cases.
+  // 在 ... 中 情形 of Fan::MaxRecv == 0, 需要 force MaxRecv to 1 for 此 to 编译
+  // 这是 由于 a 接收 缓冲区 该 is 已分配 to MaxRecv 长度 入 发送-仅 情形.
   static constexpr int MaxRecv = Fan::MaxRecv > 1 ? Fan::MaxRecv : 1;
 #if defined(NCCL_OS_WINDOWS)
-  // MSVC rejects zero-length arrays; clamp to 1 on Windows only.
+  // MSVC rejects zero-长度 数组; clamp to 1 on Windows 仅.
   static constexpr int MaxSend = Fan::MaxSend > 1 ? Fan::MaxSend : 1;
 #else
   static constexpr int MaxSend = Fan::MaxSend;
@@ -97,8 +105,8 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
   }
 
   inline __device__ void incSend(int i, int offset) {
-    // LL Cleanup : write all flags in the slice to make sure we don't have
-    // data corruption when flag loops over.
+    // LL Cleanup : 写入 所有 标志 在 ... 中 slice to 确保 we don't have
+    // 数据 corruption 当 标志 循环 over.
     if ((sendStep[i] & NCCL_LL_CLEAN_MASK) == NCCL_LL_CLEAN_MASK) {
       for (int o = offset; o < stepLines; o += nthreads) storeLL(sendPtr(i) + o, 0, sendFlag(i));
     }
@@ -125,7 +133,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
   __device__ void readLLBeginAll(int offset, ncclLLFifoLine (&line)[MaxRecv]) {
     NVCC_PRAGMA_UNROLL_AUTO
     for (int i = BeginIx; i < MaxRecv; i++) {
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_line]
       if (i < fan.nrecv()) {
         union ncclLLFifoLine* src = recvPtr(i) + offset;
@@ -203,12 +211,12 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
         uint32_t* p = reinterpret_cast<uint32_t*>(reinterpret_cast<uintptr_t>(src) & -uintptr_t(4));
         u4[0] = load(p + 0);
         u4[1] = misalign + eltN * sizeof(T) > 4 ? load(p + 1) : 0;
-        // u4[2] would be simpler, but that throws warnings on some compilers
+        // u4[2] 将会 simpler, 但 那个 throws warnings on 一些 compilers
         u4[sizeof(T) <= 2 ? 2 : 0] = misalign + eltN * sizeof(T) > 8 ? load(p + 2) : 0;
       } else {
         NVCC_PRAGMA_UNROLL_AUTO
         for (int i = 0; i < EltPerLine; i++) {
-          // Yes, for some template arguments this code will be unreachable.  That's fine.
+          // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
           // coverity[dead_error_line]
           if (i == 0 || i < eltN) elt[i] = load(src + i);
         }
@@ -218,7 +226,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
     __device__ uint64_t loadFinish() {
       if (sizeof(T) <= 2) {
         u4[0] = __funnelshift_r(u4[0], u4[1], 8 * misalign);
-        // u4[2] would be simpler, but that throws warnings on some compilers
+        // u4[2] 将会 simpler, 但 那个 throws warnings on 一些 compilers
         u4[1] = __funnelshift_r(u4[1], u4[sizeof(T) <= 2 ? 2 : 0], 8 * misalign);
       }
       return u8;
@@ -233,10 +241,10 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
     u8 = val;
     NVCC_PRAGMA_UNROLL_AUTO
     for (int i = 0; i < EltPerLine; i++) {
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_line]
       if (i == 0 || i < eltN)
-        // store(dst+i, elt[i]);
+        // 存储(目标+i, elt[i]);
         dst[i] = elt[i];
     }
   }
@@ -248,7 +256,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
     T* srcElts = SrcBuf == -1 ? nullptr : userBufs[SrcBuf] + srcIx;
     T* dstElts = DstBuf == -1 ? nullptr : userBufs[DstBuf] + dstIx;
 
-    // Always waitSend in case of cleanup
+    // Always waitSend 若发生 cleanup
     nelem = nelem < 0 ? 0 : nelem;
     if (SEND) waitSend(divUp(nelem, EltPerLine) * sizeof(ncclLLFifoLine));
 
@@ -278,7 +286,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
       if (RECV) {
         data = !SRC ? peerData : applyReduce(redOp, peerData, data);
         NVCC_PRAGMA_UNROLL(MaxRecv)
-        // Yes, for some template arguments this code will be unreachable.  That's fine.
+        // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
         // coverity[dead_error_line]
         for (int i = 1; i < MaxRecv && i < fan.nrecv(); i++) {
           peerData = readLLFinish(offset, line, i);
@@ -288,9 +296,9 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
 
       if (postOp) data = applyPostOp(redOp, data);
 
-      // Send : inter-node, then intra-node, then local
+      // 发送 : 节点间-节点, then 节点内-节点, then 本地
       if (SEND) {
-        // Yes, for some template arguments this code will be unreachable.  That's fine.
+        // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
         // coverity[dead_error_line]
         for (int i = 1; i < MaxSend && i < fan.nsend(); i++) storeLL(sendPtr(i) + offset, data, sendFlag(i));
         storeLL(sendPtr(0) + offset, data, sendFlag(0));
@@ -308,7 +316,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
       postRecv();
     }
     if (SEND) {
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_line]
       for (int i = 1; i < MaxSend && i < fan.nsend(); i++) incSend(i, offset);
       incSend(0, offset);
@@ -349,10 +357,10 @@ public:
     : redOp(redOpArg), tid(tid), nthreads(nthreads), wid(tid % WARP_SIZE), group(group),
       stepLines(ncclShmem.comm.buffSizes[NCCL_PROTO_LL] / NCCL_STEPS / sizeof(ncclLLFifoLine)) {
     auto* channel = &ncclShmem.channel;
-    // If we are going to support oneshot collNet + LL, then we would need to add connector index here
+    // 若 we are going to 支持 oneshot collNet + LL, then we would 需要 add connector 索引 here
     int nrecv = 0, nsend = 0;
-    // We compare with Fan::MaxRecv here because this->MaxRecv is always at least 1
-    // Yes, for some template arguments this code will be unreachable.  That's fine.
+    // We compare with Fan::MaxRecv here 因为 此->MaxRecv is always 至少 1
+    // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
     // coverity[dead_error_line]
     while (nrecv < Fan::MaxRecv && recvPeers[nrecv] >= 0) {
       loadRecvConn(&channel->peers[recvPeers[nrecv]]->recv[connIndexRecv], nrecv);
@@ -364,20 +372,20 @@ public:
       nsend++;
     }
     this->fan = Fan(nrecv, nsend);
-    // Coverity reports recvConn and sendConn being possibly NULL at this point but that won't actually
-    // happen given the two "while" loops just above.
-    // coverity[var_deref_model:FALSE]
+    // Coverity reports recvConn 并且 sendConn being possibly NULL 此时 但 那个 won't actually
+    // happen 给定的 the two "当" 循环 仅 上方.
+    // coverity[var_deref_model:假]
     loadRecvSync();
-    // coverity[var_deref_model:FALSE]
+    // coverity[var_deref_model:假]
     loadSendSync();
     setDataPtrs(inputBuf, outputBuf);
   }
 
   __device__ ~Primitives() {
-    // Save steps for the next operation
+    // Save 步骤 for 下一个 操作
     if (tid >= nthreads - WARP_SIZE && wid < fan.nrecv()) recvConn->step = recvConnHead;
     if (tid < fan.nsend()) sendConn->step = sendConnHead;
-    // Ensure all steps written back
+    // 确保 所有 步骤 written 后
     barrier();
   }
 

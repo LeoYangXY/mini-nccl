@@ -5,6 +5,12 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/plugin/nccl_net.h — 网络插件接口聚合头 [NVIDIA 插件接口/第三方]
+ * ----------------------------------------------------------------------------
+ * 汇总网络(net)插件的各版本接口(net_v6~v12)，是网络传输插件的总入口。
+ */
+
 #ifndef NCCL_NET_H_
 #define NCCL_NET_H_
 
@@ -14,7 +20,7 @@
 #include <stdint.h>
 
 #define NCCL_NET_HANDLE_MAXSIZE 128
-// Maximum value NCCL can accept for maxP2pBytes and maxCollBytes net properties
+// 最大 值 NCCL can accept for maxP2pBytes 并且 maxCollBytes 网络 properties
 #define NCCL_MAX_NET_SIZE_BYTES (1 * 1024 * 1024 * 1024 * 1024L)
 #define NCCL_NET_OPTIONAL_RECV_COMPLETION 0x1
 #define NCCL_NET_MULTI_REQUEST 0x2
@@ -27,16 +33,16 @@
 #define NCCL_PTR_DMABUF 0x4
 
 #define NCCL_NET_MR_FLAG_FORCE_SO (1 << 0)
-// When set, the MR will be used as a signal and will never be reset.
-// This is a hint to help optimize some calls to putSignal.
+// 当 设置, the MR 将会 用作 a 信号 并且 will never be reset.
+// 这是 a 提示 to help 优化 一些 调用 to putSignal.
 #define NCCL_NET_MR_FLAG_SIGNAL_NEVER_RESET (1 << 1)
 #define NCCL_NET_SIGNAL_OP_INC 0x1
 #define NCCL_NET_SIGNAL_OP_ADD 0x2
 
-// Maximum number of requests per comm object
+// 最大 数量： 请求 每个 通信域 object
 #define NCCL_NET_MAX_REQUESTS 32
 
-// Max number of ncclNet objects which can live in the same process
+// 最大值 数量： ncclNet objects 该 can live 入 相同 处理
 #ifndef NCCL_NET_MAX_PLUGINS
 #define NCCL_NET_MAX_PLUGINS 16
 #endif

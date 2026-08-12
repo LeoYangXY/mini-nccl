@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/shm.h — 共享内存(shared memory)结构定义
+ * ----------------------------------------------------------------------------
+ * 定义 NCCL 用于进程间/CPU 间通信的共享内存段结构（用于 proxy 与用户线程之间、
+ * 以及同机多进程 rank 之间交换控制信息）。声明 shm 的创建/ attach/ 映射接口。
+ */
+
 #ifndef NCCL_SHM_H_
 #define NCCL_SHM_H_
 

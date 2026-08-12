@@ -1,3 +1,10 @@
+/*
+ * tests/src/timer.cc — 计时器实现
+ * ----------------------------------------------------------------------------
+ * 实现测试用的高精度计时（基于 std::chrono::steady_clock），用于测量各集合操作的
+ * 耗时。用主机编译器（非 nvcc）编译，避免 GCC 10.3 的内部编译错误。
+ */
+
 #include "timer.h"
 
 // Make sure to compile this translation unit with the host compiler and not

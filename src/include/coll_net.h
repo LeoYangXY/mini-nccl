@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/coll_net.h — 聚合网络(collective network)接口声明
+ * ----------------------------------------------------------------------------
+ * 定义 CollNet（由交换机/NIC 硬件直接完成的集合通信，如 intraconnect/Sharp）
+ * 的插件接口：注册/连接/启动聚合操作。mini-nccl 中通常未启用，但接口保留。
+ */
+
 #ifndef COLL_NET_H_
 #define COLL_NET_H_
 
@@ -14,7 +21,7 @@
 
 typedef char collNetHandle_t[NCCL_NET_HANDLE_MAXSIZE];
 
-// Translation to external API
+// Translation to 外部 API
 static const char* collNetName(struct ncclComm* comm) {
   return comm->ncclCollNet->name;
 }

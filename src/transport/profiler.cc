@@ -4,6 +4,14 @@
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
+
+/*
+ * src/transport/profiler.cc — profiler 传输的 proxy 连接实现
+ * ----------------------------------------------------------------------------
+ * 实现 profiler 这一类“传输”的 proxy 连接回调：在 profiler 连接建立时登记，把
+ * profiler 的采样点挂入 proxy 队列，随通信过程收集性能数据。
+ */
+
 #include "transport.h"
 #include "proxy.h"
 #include "profiler.h"
@@ -16,10 +24,10 @@ static ncclResult_t profilerProxyConnect(struct ncclProxyConnection* connection,
   return ncclSuccess;
 }
 
-// The following ncclProxySubArgs are overloaded by the profiler progress function:
-// - base       : is set to the current value of workCounter[channelId]
-// - posted     : is set to sub->nsteps to indicate that the profiler has started the event
-// - transmitted: is set to sub->nsteps to indicate that the profiler has stopped the event
+// 以下内容 ncclProxySubArgs are overloaded 由 剖析器 progress 函数:
+// - base       : 被设为 to 当前 值 of workCounter[channelId]
+// - posted     : 被设为 to sub->nsteps to indicate 那个 the 剖析器 has 已开始 the 事件
+// - transmitted: 被设为 to sub->nsteps to indicate 那个 the 剖析器 has stopped the 事件
 static ncclResult_t profilerProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
   if (args->state == ncclProxyOpReady) {
     for (int s = 0; s < args->nsubs; s++) {

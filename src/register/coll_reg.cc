@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/register/coll_reg.cc — 集合操作(buffer)注册实现
+ * ----------------------------------------------------------------------------
+ * 实现与集合通信相关的用户 buffer 注册/注销：把用户传入的 buffer 登记为可被
+ * transport 直接访问的注册段，处理 IPC 句柄与地址映射。
+ */
+
 #include "register.h"
 #include "transport.h"
 #include "enqueue.h"
@@ -30,7 +37,7 @@ static ncclResult_t registerCheckP2PConnection(struct ncclComm* comm, struct ncc
     if (conn->conn.flags & (NCCL_P2P_READ | NCCL_P2P_WRITE)) {
       *needReg = true;
     } else {
-      // network connection
+      // 网络 连接
       *needReg = false;
     }
   } else {
@@ -207,12 +214,12 @@ ncclResult_t ncclRegisterCollBuffers(
       info->recvMhandle = recvHandle;
     }
   } else if (info->protocol == NCCL_PROTO_SIMPLE) {
-    // IPC buffer registration
+    // IPC 缓冲区 注册
     if (info->func == ncclFuncReduceScatter && info->algorithm != NCCL_ALGO_COLLNET_DIRECT) goto exit;
     if (info->algorithm == NCCL_ALGO_RING &&
         ((info->func == ncclFuncAllReduce && info->sendbuff == info->recvbuff) || info->func == ncclFuncReduce))
       goto exit;
-    // Disable buffer registration for TREE in-place and for cross-clique due to buffer conflicts
+    // Disable 缓冲区 注册 for 树 入-place 并且 for 跨-clique 由于 缓冲区 conflicts
     if (info->algorithm == NCCL_ALGO_TREE && (info->sendbuff == info->recvbuff || comm->p2pCrossClique)) goto exit;
     if (info->algorithm == NCCL_ALGO_COLLNET_CHAIN && info->sendbuff == info->recvbuff && comm->maxLocalRanks > 1)
       goto exit;
@@ -280,7 +287,7 @@ ncclResult_t ncclRegisterCollBuffers(
         }
       }
 
-      // register collnet buffer
+      // 寄存器 collnet 缓冲区
       bool sendRdmaCapable = false, recvRdmaCapable = false;
       NCCLCHECK(isMloPartBufRdmaCapable(comm, info->sendbuff, &sendRdmaCapable));
       NCCLCHECK(isMloPartBufRdmaCapable(comm, info->recvbuff, &recvRdmaCapable));
@@ -321,7 +328,7 @@ ncclResult_t ncclRegisterCollBuffers(
           }
         }
       }
-      // tweak nChannels for 1RPN net registration
+      // tweak nChannels for 1RPN 网络 注册
       if (comm->isOneRPN && (info->regBufType & NCCL_NET_REG_BUFFER)) info->nMaxChannels = 1;
     } else if (info->algorithm == NCCL_ALGO_RING) {
       struct ncclReg* recvRegRecord = NULL;
@@ -394,7 +401,7 @@ ncclResult_t ncclRegisterCollBuffers(
         info->regBufType = NCCL_IPC_REG_BUFFER;
       }
 
-      // start net registration
+      // 起始 网络 注册
       regBufFlag = 0;
 
       bool sendRdmaCapable = false, recvRdmaCapable = false;
@@ -466,7 +473,7 @@ ncclResult_t ncclRegisterCollBuffers(
             int peer = peers[p];
             bool peerNeedReg = false;
             struct ncclConnector* recvConn = NULL;
-            // P2P transport
+            // P2P 传输
             if (peer == -1 || peer == comm->nRanks) continue;
             recvConn = &channel->peers[peer]->recv[0];
             NCCLCHECK(registerCheckP2PConnection(comm, recvConn, &comm->graphs[info->algorithm], peer, &peerNeedReg));
@@ -499,7 +506,7 @@ ncclResult_t ncclRegisterCollBuffers(
         }
       }
 
-      // register collnet chain 1RPN buffer
+      // 寄存器 collnet chain 1RPN 缓冲区
       bool sendRdmaCapable = false, recvRdmaCapable = false;
       NCCLCHECK(isMloPartBufRdmaCapable(comm, info->sendbuff, &sendRdmaCapable));
       NCCLCHECK(isMloPartBufRdmaCapable(comm, info->recvbuff, &recvRdmaCapable));

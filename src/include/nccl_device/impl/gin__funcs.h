@@ -37,7 +37,7 @@ NCCL_DEVICE_INLINE int teamRankToGinRank(ncclDevComm const& comm, ncclTeam team,
   }
 }
 
-// Multi-segment put/get helpers
+// Multi-段 放置/获取 辅助函数
 NCCL_DEVICE_INLINE void findSegmentFromWindow(ncclWindow_t win, size_t offset, int* outSeg, size_t* outSegOffset) {
   int seg = 0;
   size_t segOffset = offset;
@@ -76,17 +76,17 @@ NCCL_DEVICE_INLINE void advanceSegmentCursor(int* seg, size_t* segOffset, size_t
 } // namespace nccl
 
 #if NCCL_CHECK_CUDACC
-// Common initialization helper for GIN backend
+// 通用 初始化 辅助 for GIN backend
 template <typename GinType>
 NCCL_DEVICE_INLINE void ncclGinInitCommon(GinType* gin, ncclDevComm const& comm, int contextIndex) {
   gin->nConnections = comm.ginConnectionCount;
 
   static_assert(NCCL_GIN_MAX_CONNECTIONS == 4, "Required for following modulo hack to work.");
-  // this->connectionId = contextIndex % comm.ginConnectionCount;
+  // 此->connectionId = contextIndex % 通信域.ginConnectionCount;
   gin->connectionId = comm.ginConnectionCount == 3 ? uint32_t(contextIndex) % 3 // 3 is only non power of 2
                                                      :
                                                      contextIndex & (comm.ginConnectionCount - 1); // powers of 2
-  // gin->contextId = contextIndex / comm.ginConnectionCount;
+  // gin->contextId = contextIndex / 通信域.ginConnectionCount;
   gin->contextId = comm.ginConnectionCount == 3 ?
                      uint32_t(contextIndex) / 3 // 3 is only non power of 2
                      :
@@ -161,7 +161,7 @@ NCCL_DEVICE_INLINE ncclGinCtx ncclGin_C_makeCtx(ncclGin_C* net) {
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-// ncclGin descriptor helpers:
+// ncclGin descriptor 辅助函数:
 
 #if NCCL_CHECK_CUDACC
 template <typename Descriptor>
@@ -182,7 +182,7 @@ NCCL_DEVICE_INLINE constexpr ncclGinDescriptorSmem* ncclGin_getDescriptor(ncclGi
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-// ncclGin signal helpers:
+// ncclGin 信号 辅助函数:
 
 #if NCCL_CHECK_CUDACC
 template <typename RemoteAction>
@@ -414,7 +414,7 @@ NCCL_DEVICE_INLINE constexpr uint64_t ncclGin_getSignalOpArg(ncclGin_WeakVASigna
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-// ncclGin counter helpers:
+// ncclGin counter 辅助函数:
 
 #if NCCL_CHECK_CUDACC
 template <typename LocalAction>
@@ -448,7 +448,7 @@ NCCL_DEVICE_INLINE constexpr ncclGinCounter_t ncclGin_getCounterId(ncclGin const
 ////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////
-// ncclGin bufType helpers:
+// ncclGin bufType 辅助函数:
 
 #if NCCL_CHECK_CUDACC
 NCCL_DEVICE_INLINE constexpr bool ncclGin_isDeviceOnly(ncclGin_SegmentDevice) {
@@ -538,8 +538,8 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::put(
           cuda::thread_scope_system, // for safety, escalate to system regardless of what the user requested
           givenRelease, optFlags);
       } else {
-        // Multi-segment case. The puts are chunked to handle multiple registration entries and src/dst windows that
-        // potentially have a different number of segments
+        // Multi-段 情形. The puts are chunked to 句柄 多个 注册 entries 并且 源/目标 windows 那个
+        // potentially have a 不同 数量： 段
         int srcSeg;
         size_t srcSegOffset;
         nccl::gin::internal::findSegmentFromWindow(srcWin, srcOffset, &srcSeg, &srcSegOffset);
@@ -554,7 +554,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::put(
           struct ncclSegmentWindow const& dstSegmentWindow = dstWin->ginMultiSegmentWins[dstSeg];
           struct ncclSegmentWindow const& srcSegmentWindow = srcWin->ginMultiSegmentWins[srcSeg];
           if (!doneSysmemFence && srcSegmentWindow.memType == CU_MEM_LOCATION_TYPE_HOST_NUMA) {
-            // for safety, escalate to system regardless of what the user requested
+            // for safety, escalate to 系统 不论 什么 用户 requested
             localRequiredRelease = cuda::thread_scope_system;
             doneSysmemFence = true;
           }
@@ -641,7 +641,7 @@ NCCL_DEVICE_INLINE void ncclGinPutValue_v2(ncclGin_C* net, ncclTeam team, int pe
       signal.indexedSignal.signalId = signalId;
     }
     ncclGinCtx ctx = ncclGin_C_makeCtx(net);
-    // Dispatch based on size to call with appropriate type
+    // Dispatch 基于 大小 to 调用 with appropriate 类型
     if (size == 1) {
       ncclGinCall<ncclGinApi_PutValue>(ctx, ncclCoopThread(), teamRankToGinRank(net->comm, team, peer),
                                        loadConst(&dstWin->ginWins[net->connectionId]),
@@ -924,7 +924,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::get(ncclTeam team, int peer
                                   4096 * size_t(loadConst(&localWnd->ginOffset4K)) + localOffset, bytes,
                                   ncclGin_isDescriptor(descriptor), ncclGin_getDescriptor(descriptor), optFlags);
     } else {
-      // Multi-segment case: chunk the get across separate per-segment registrations
+      // Multi-段 情形: 块 the 获取 across separate 每个-段 registrations
       int remoteSeg, localSeg;
       size_t remoteSegOffset, localSegOffset;
       nccl::gin::internal::findSegmentFromWindow(remoteWnd, remoteOffset, &remoteSeg, &remoteSegOffset);
@@ -1063,12 +1063,12 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::waitSignalFollowShadow(Coop
     NVCC_PRAGMA_UNROLL_DISABLED
     do after64 = cuda::atomic_ref<uint64_t>{*sig.ptr}.load(ord);
     while (!nccl::utility::rollingLessEq(least, after64, bits) && !testAbort(this->comm.abortFlag, steps));
-    // Convert NIC value back to logical space for shadow
+    // Convert NIC 值 后 to logical space for shadow
     after64 = after64 - offset;
     this->_signalShadows[signal] = after64;
   }
   if (ncclCoopWithinWarp(coop) && bits <= 32) {
-    // do a single __shfl_sync instead of 2
+    // 执行 a 单个 __shfl_sync 而非 2
     uint32_t mask = uint32_t(-1) >> (32 - bits);
     after64 = ncclCoopBcast(coop, (uint32_t)after64, 0, /*entrySync=*/false);
     *before = (Uint)(mask & before64);

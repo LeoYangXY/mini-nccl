@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/common_kernel.h — device kernel 公共头文件
+ * ----------------------------------------------------------------------------
+ * 定义 device kernel 共享的辅助：min/max、类型特性、reduce 算子、常量与内建指令，
+ * 被各集合算法 kernel 与 common.cu 引用。
+ */
+
 #ifndef NCCL_COMMON_KERNEL_H_
 #define NCCL_COMMON_KERNEL_H_
 
@@ -17,7 +24,7 @@
 
 #include <cuda_runtime.h>
 
-// Define min for ssize_t
+// 定义 ssize_t 类型的最小值
 inline __device__ int min(int a, ssize_t b) {
   return (a < b) ? a : b;
 }
@@ -37,23 +44,22 @@ __device__ __forceinline__ void reduceCopyPacks(int nThreads, int& thread, uint6
   static_assert(std::is_signed<IntBytes>::value, "IntBytes must be a signed integral type.");
   if (BytePerPack == 0) __trap();
 
-  // A hunk is the amount of contiguous data a warp consumes per loop iteration
-  // assuming all threads partake.
+  // hunk 表示一个线程束每次循环迭代所消费的数据量（假设所有线程都参与）。
   constexpr int BytePerHunk = Unroll * WARP_SIZE * BytePerPack;
   int nWarps = nThreads / WARP_SIZE;
   int warp = thread / WARP_SIZE;
   int lane = thread % WARP_SIZE;
 
-  // This thread's initial position.
+  // 本线程的初始位置。
   IntBytes threadBytesBehind = nBytesBehind + (warp * BytePerHunk + lane * BytePerPack);
   IntBytes threadBytesAhead = nBytesAhead - (warp * BytePerHunk + lane * BytePerPack);
-  // Number of hunks to be consumed over all warps.
+  // 所有线程束总共需要消费的 hunk 数量。
   IntBytes nHunksAhead = nBytesAhead / (BytePerHunk + !BytePerHunk);
-  // Advance collective position.
+  // 推进集合位置。
   nBytesBehind += nHunksAhead * BytePerHunk;
   nBytesAhead -= nHunksAhead * BytePerHunk;
   if (Unroll == 1 && BytePerPack <= nBytesAhead) {
-    // Only Unroll=1 can do partial hunks (where not all threads partake).
+    // 仅当 Unroll=1 时才能执行部分 hunk（并非所有线程都参与）。
     nHunksAhead += 1;
     nBytesBehind += nBytesAhead - (nBytesAhead % (BytePerPack + !BytePerPack));
     nBytesAhead = nBytesAhead % (BytePerPack + !BytePerPack);
@@ -70,25 +76,24 @@ __device__ __forceinline__ void reduceCopyPacks(int nThreads, int& thread, uint6
 
   NVCC_PRAGMA_UNROLL_AUTO
   for (int d = 0; d < MinDsts; d++) {
-    // Yes, for some template arguments this code will be unreachable.  That's fine.
+    // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
     // coverity[dead_error_line]
     minDsts[d] = cvta_to_global(dstPtrFn(d)) + threadBytesBehind;
   }
 
-  // We dictate loop termination condition according to whether partial hunks
-  // can be handled or not.
+  // 我们根据是否能处理部分 hunk 来决定循环终止条件。
   while (Unroll == 1 ? (BytePerPack <= threadBytesAhead) : (0 < nHunksAhead)) {
     BytePack<BytePerPack> acc[Unroll];
 
-    // minSrcs[0] cannot be nullptr so we always process it
+    // minSrcs[0] 不可能为 nullptr，因此我们总是处理它
     {
       NVCC_PRAGMA_UNROLL(Unroll)
       for (int u = 0; u < Unroll; u++) {
         if (0 < MultimemSrcs) {
-          // applyLoadMultimem uses relaxed semantics for same reason we use volatile below.
+          // applyLoadMultimem 出于与下方使用易变（relaxed）语义相同的原因而采用 relaxed 语义。
           acc[u] = applyLoadMultimem<RedFn, BytePerPack>(redFn, minSrcs[0]);
         } else {
-          // Use volatile loads in case credits are polled for with volatile (instead of acquire).
+          // 使用易变加载，以防 credits 是通过易变（而非获取）语义轮询的。
           acc[u] = ld_volatile_global<BytePerPack>(minSrcs[0]);
           if (0 < PreOpSrcs) acc[u] = applyPreOp(redFn, acc[u]);
         }
@@ -98,18 +103,18 @@ __device__ __forceinline__ void reduceCopyPacks(int nThreads, int& thread, uint6
 
     NVCC_PRAGMA_UNROLL((MinSrcs - 1 + !(MinSrcs - 1)))
     for (int s = 1; s < MinSrcs; s++) {
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_begin]
       BytePack<BytePerPack> tmp[Unroll];
       // coverity[dead_error_line]
       NVCC_PRAGMA_UNROLL(Unroll)
       for (int u = 0; u < Unroll; u++) {
         if (s < MultimemSrcs) {
-          // applyLoadMultimem uses relaxed semantics for same reason we use volatile below.
+          // applyLoadMultimem 出于与下方使用易变（relaxed）语义相同的原因而采用 relaxed 语义。
           // coverity[dead_error_line]
           tmp[u] = applyLoadMultimem<RedFn, BytePerPack>(redFn, minSrcs[s]);
         } else {
-          // Use volatile loads in case credits are polled for with volatile (instead of acquire).
+          // 使用易变加载，以防 credits 是通过易变（而非获取）语义轮询的。
           tmp[u] = ld_volatile_global<BytePerPack>(minSrcs[s]);
         }
         minSrcs[s] += WARP_SIZE * BytePerPack;
@@ -124,17 +129,17 @@ __device__ __forceinline__ void reduceCopyPacks(int nThreads, int& thread, uint6
     for (int s = MinSrcs; (MinSrcs < MaxSrcs) && (s < MaxSrcs) && (s < nSrcs); s++) {
       uintptr_t src = cvta_to_global(srcPtrFn(s)) + threadBytesBehind;
       BytePack<BytePerPack> tmp[Unroll];
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_line]
       NVCC_PRAGMA_UNROLL(Unroll)
       for (int u = 0; u < Unroll; u++) {
-        // Use volatile loads in case credits are polled for with volatile (instead of acquire).
+        // 使用 易变的 loads 以防 credits are polled for with 易变的 (而非 获取).
         tmp[u] = ld_volatile_global<BytePerPack>(src);
         src += WARP_SIZE * BytePerPack;
       }
       NVCC_PRAGMA_UNROLL(Unroll)
       for (int u = 0; u < Unroll; u++) {
-        // Yes, for some template arguments this code will be unreachable.  That's fine.
+        // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
         // coverity[dead_error_line]
         acc[u] = applyReduce(redFn, acc[u], tmp[u]);
       }
@@ -148,7 +153,7 @@ __device__ __forceinline__ void reduceCopyPacks(int nThreads, int& thread, uint6
     NVCC_PRAGMA_UNROLL((MinDsts + !MinDsts))
     for (int d = 0; d < MinDsts; d++) {
       NVCC_PRAGMA_UNROLL(Unroll)
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_begin]
       for (int u = 0; u < Unroll; u++) {
         // coverity[dead_error_condition]
@@ -176,7 +181,7 @@ __device__ __forceinline__ void reduceCopyPacks(int nThreads, int& thread, uint6
       minSrcs[s] += (nWarps - 1) * BytePerHunk;
     }
     NVCC_PRAGMA_UNROLL_AUTO
-    // Yes, for some template arguments this code will be unreachable.  That's fine.
+    // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
     // coverity[dead_error_line]
     for (int d = 0; d < MinDsts; d++) {
       minDsts[d] += (nWarps - 1) * BytePerHunk;
@@ -189,12 +194,11 @@ __device__ __forceinline__ void reduceCopyPacks(int nThreads, int& thread, uint6
   nWarps = nThreads / WARP_SIZE;
   warp = thread / WARP_SIZE;
   lane = thread % WARP_SIZE;
-  // The last loop iteration could have been partial, i.e. not taken by all
-  // threads. The threads that weren't included need an extra subtraction to
-  // make the value warp uniform.
+  // 最后一次循环迭代可能是部分的，即并非所有线程都已取走。
+  // 未被包含的线程需要额外减去一次，以使各线程束的数值保持一致。
   if (Unroll == 1 && nHunksAhead > 0) nHunksAhead -= nWarps;
-  // Rotate warps so the warp which got the least work here will be warp 0.
-  // This effectively assigns: warp = (warp-nHunks+nWarps)%nWarps;
+  // 旋转线程束，使在此处获取工作量最少的线程束成为线程束 0。
+  // 等效于：线程束 = (线程束 - nHunks + nWarps) % nWarps；
   warp = -nHunksAhead;
   thread = warp * WARP_SIZE + lane;
 }
@@ -206,10 +210,9 @@ __device__ __forceinline__ void reduceCopy(int thread, int nThreads, uint64_t re
                                            IntBytes nElts) {
   static_assert(MultimemSrcs <= MinSrcs && MultimemDsts <= MinDsts,
                 "Multimem pointers cannot exceed respective Min values.");
-  // int nWarps = nThreads/WARP_SIZE;
-  // int warp = thread/WARP_SIZE;
-  // If a multimem src is present then our biggest pack size is limited to what
-  // is supported for this redfn/type.
+  // 整型 nWarps = nThreads / WARP_SIZE；
+  // 整型 线程束 = 线程 / WARP_SIZE；
+  // 若存在 multimem 源，则我们最大的打包大小受限于该 redfn/类型所支持的值。
   constexpr int BigPackSize = (MultimemSrcs == 0) ? 16 : LoadMultimem_BigPackSize<RedFn>::BigPackSize;
 
   if (MaxDsts == 0) return;
@@ -219,7 +222,7 @@ __device__ __forceinline__ void reduceCopy(int thread, int nThreads, uint64_t re
   IntBytes nBytesAhead = nElts * sizeof(T);
 
   if NCCL_IF_CONSTEXPR (BigPackSize > sizeof(T)) {
-    // Check that all pointers are BigPackSize aligned.
+    // 检查所有指针是否都已按 BigPackSize 对齐。
     int lane = thread % WARP_SIZE;
     bool aligned = true;
     if (lane < nSrcs) aligned &= 0 == cvta_to_global(srcPtrFn(lane)) % (BigPackSize + !BigPackSize);

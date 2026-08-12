@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/scheduler/allgatherv_sched.cc — AllGatherV 调度计划生成
+ * ----------------------------------------------------------------------------
+ * 把 AllGatherV 操作拆解为一组 kernel 任务并填入执行计划：ncclScheduleBcastTasksToPlan
+ * 等计算各 rank 的切片与依赖，生成可被 planner 调度的任务列表。
+ */
+
 #ifndef NCCL_ALLGATHERV_SCHED_H_
 #define NCCL_ALLGATHERV_SCHED_H_
 
@@ -22,13 +29,13 @@ ncclResult_t ncclScheduleBcastTasksToPlan(struct ncclComm* comm, struct ncclKern
     size_t sumBcastBytes = 0;
     size_t maxBcastBytes = 0;
 
-    // Make a batch consisting of one bcast from each peer.
+    // 使 a batch consisting of one bcast from 每个 对等端.
     if (plan->nWorkBatches != 0) return ncclSuccess;
     for (int peer = planner->bcast_info.minBcastPeer; peer <= planner->bcast_info.maxBcastPeer; peer++) {
       struct ncclTaskBcast* t = ncclIntruQueueHead(&planner->peers[peer].bcastQueue);
       if (t == nullptr) continue;
-      // see if we can fit another batch to args, and a bunch of bcast to workStorage
-      // Each batch can fit 64 bcast, if batchTasks > 64 we use nextExtends to extend the batch.
+      // 参见 若 我们可以 fit 另一个 batch to args, 并且 a bunch of bcast to workStorage
+      // 每个 batch can fit 64 bcast, 若 batchTasks > 64 we 使用 nextExtends to extend the batch.
       if (!ncclTestBudget(budget, nChannels * DIVUP(batchTasks + 1, 64),
                           (batchTasks + 1) * sizeof(struct ncclDevWorkBcast)) ||
           batchTasks + 1 == maxitem) {
@@ -43,7 +50,7 @@ ncclResult_t ncclScheduleBcastTasksToPlan(struct ncclComm* comm, struct ncclKern
       return ncclSuccess;
     }
 
-    // find best protocol
+    // 查找 最佳 protocol
     struct ncclTaskColl tcoll;
     memset(&tcoll, 0, sizeof(tcoll));
     tcoll.func = ncclFuncAllGather;
@@ -54,7 +61,7 @@ ncclResult_t ncclScheduleBcastTasksToPlan(struct ncclComm* comm, struct ncclKern
     NCCLCHECK(ncclGetAlgoInfo(comm, &tcoll, /*collNetSupport=*/0, /*nvlsSupport=*/0, /*nTasksPerChannel=*/1,
                               /*simInfo=*/nullptr));
 
-    // calculate chunk size
+    // 计算 块 大小
     int proto = tcoll.protocol;
     int chunkSteps = 1;
     int sliceSteps = 1;
@@ -66,34 +73,34 @@ ncclResult_t ncclScheduleBcastTasksToPlan(struct ncclComm* comm, struct ncclKern
     nChannels = tcoll.nMaxChannels;
     chunkSize = chunkSize / grainSize * grainSize;
 
-    // Determine thread count per block
+    // Determine 线程 计数 每个 块
     int threadPerBlock =
       (int)std::max((int)(tcoll.nWarps * WARP_SIZE), (int)(64 * sizeof(ncclDevWorkBcast) / 16 + 3 * WARP_SIZE));
     plan->threadPerBlock = threadPerBlock;
 
-    // Choose kernel for plan. Based on proto, algo=ring
+    // Choose 内核 for plan. 基于 proto, algo=环
     int funcIndex = ncclDevFuncId(ncclFuncAllGatherV, /*devRedOp,type=*/0, 0, NCCL_ALGO_RING, proto);
     if (!plan->kernelSpecialized) {
       plan->kernelFn = ncclDevKernelForFunc[funcIndex];
       plan->kernelSpecialized = ncclDevKernelForFuncIsSpecialized[funcIndex];
     }
 
-    // Compute opCount for proxy work.
+    // 计算 opCount for 代理 work.
     uint64_t proxyOpCount = uint64_t(comm->collOpCount++) << 1 | /*bcast=*/0;
 
-    // Break each bcast into nParts evenly, each part assigned to a channel.
+    // Break 每个 bcast into nParts evenly, 每个 part assigned to a 通道.
     int nParts = nChannels;
     uint32_t channelWorkBytes[MAXCHANNELS] = {0};
     for (int part = 0; part < nParts; part++) {
-      // Sort tasks according to ring depth upstream from us.
+      // Sort tasks 根据 环 depth upstream from us.
       int nTasks = batchTasks;
       int channelId = part;
 
-      // reset comm->ringTasks
+      // reset 通信域->ringTasks
       struct ncclTaskBcast** ringTasks = (struct ncclTaskBcast**)comm->ringTasks;
       for (int r = 0; r < nRanks; r++) ringTasks[r] = nullptr;
 
-      // calculate, and find min and max ring depth among this plan's tasks
+      // 计算, 并且 查找 最小值 并且 最大值 环 depth 之中 此 plan's tasks
       int minRingDepth = INT_MAX;
       int maxRingDepth = INT_MIN;
       struct ncclTaskBcast* t = nullptr;
@@ -102,7 +109,7 @@ ncclResult_t ncclScheduleBcastTasksToPlan(struct ncclComm* comm, struct ncclKern
         if (t != nullptr) {
           nTasks -= 1;
           int index = comm->channels[channelId].ring.rankToIndex[peer];
-          // Need to flip from "downstream from us" to "upstream from us".
+          // 需要 flip from "downstream from us" to "upstream from us".
           int ringDepth = (index == 0) ? 0 : nRanks - index;
           ringTasks[ringDepth] = t;
           t->ringDepth = ringDepth;
@@ -111,10 +118,10 @@ ncclResult_t ncclScheduleBcastTasksToPlan(struct ncclComm* comm, struct ncclKern
         }
       }
 
-      // Start an empty dev work batch.
+      // 起始 an 空的 dev work batch.
       int sendSlices = 0, recvSlices = 0;
       int maxSendSlices = 0, maxRecvSlices = 0;
-      // Add each task to the batch in ring depth order.
+      // Add 每个 task 到 batch 入 环 depth order.
       int nBcasts = 0;
       int slices = 0;
 
@@ -161,7 +168,7 @@ ncclResult_t ncclScheduleBcastTasksToPlan(struct ncclComm* comm, struct ncclKern
         }
       }
 
-      // calculate proxy for this channel
+      // 计算 代理 for 此 通道
       if (sendSlices + recvSlices != 0) {
         struct ncclProxyOp proxyOp = {};
         proxyOp.channelId = channelId;
@@ -193,7 +200,7 @@ ncclResult_t ncclScheduleBcastTasksToPlan(struct ncclComm* comm, struct ncclKern
         proxyOp.loopOffset = 0;
         proxyOp.loopSize = 0;
 
-        // profiler support
+        // 剖析器 支持
         proxyOp.eActivationMask = 0;
         proxyOp.nChannels = nChannels;
         NCCLCHECK(ncclAddProxyOpIfNeeded(comm, plan, &proxyOp));

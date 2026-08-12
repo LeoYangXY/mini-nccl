@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/barrier__funcs.h — barrier 函数实现
+ * ----------------------------------------------------------------------------
+ * 实现 nccl_device 框架的设备 barrier 函数体（线程块间栅栏同步的 API 实现），被
+ * 上层 barrier.h 暴露。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_BARRIER__FUNCS_H_
 #define _NCCL_DEVICE_BARRIER__FUNCS_H_
 #include "barrier__types.h"
@@ -113,9 +120,9 @@ NCCL_DEVICE_INLINE ncclResult_t ncclBarrierSession<Coop>::sync(Coop, cuda::memor
       this->coop, this->outerRailGinBar.present ? nccl::utility::releaseOrderOf(ord) : ord, timeoutCycles);
     uint64_t elapsed = clock64() - startCycle;
     timeoutCycles -= min(elapsed, timeoutCycles);
-    // Because threads within a coop don't synchronize about the timeout condition,
-    // we need to invoke the second barrier even if the first one times out,
-    // to ensure that all the threads arrive at the coop sync.
+    // 因为 线程 之内 a coop don't 同步 about the 超时 condition,
+    // 需要 调用 the 第二 屏障 即使 第一个 one times 出,
+    // to 确保 那个 所有 the 线程 arrive at the coop 同步.
   }
 
   if (this->outerRailGinBar.present) {
@@ -128,7 +135,7 @@ NCCL_DEVICE_INLINE ncclResult_t ncclBarrierSession<Coop>::sync(Coop, cuda::memor
 }
 #endif
 
-// Free-function hybrid barrier: thin wrappers around session construct + sync + destruct.
+// 释放-函数 hybrid 屏障: thin wrappers around session construct + 同步 + destruct.
 #if NCCL_CHECK_CUDACC
 template <typename Coop>
 NCCL_DEVICE_INLINE void ncclBarrier(Coop coop, ncclTeamTagWorld tag, ncclGin gin, uint32_t index,

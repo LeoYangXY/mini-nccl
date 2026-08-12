@@ -5,16 +5,23 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/coop.h — 协作组(cooperative groups)封装
+ * ----------------------------------------------------------------------------
+ * 实现 nccl_device 对 CUDA Cooperative Groups 的封装（ncclCoop*），提供与 CUDA
+ * 协作组兼容的线程组抽象，便于 kernel 内协作同步。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_COOP_H_
 #define _NCCL_DEVICE_COOP_H_
 #include "utility.h"
 
-// ncclCoop[Foo]: NCCL's versions of CUDA's Cooperative Groups. They conform
-// to just this subset of the CUDA API:
-//   int Coop::thread_rank();
-//   int Coop::size();
-//   int Coop::num_threads(); // same as size()
-//   void Coop::sync();
+// ncclCoop[Foo]: NCCL's 版本 of CUDA's Cooperative 组. They conform
+// to 仅 此 subset 的 CUDA API:
+//   整型 Coop::thread_rank();
+//   整型 Coop::大小();
+//   整型 Coop::num_threads(); // 相同 as 大小()
+//   void Coop::同步();
 
 #if NCCL_CHECK_CUDACC
 struct ncclCoopAny {
@@ -127,9 +134,9 @@ struct ncclCoopLanes { // Some lanes of this warp.
 #endif
 
 #if NCCL_CHECK_CUDACC
-// A set of consecutive warps that the user has also supplied with a unique
-// id from [0..15]. It is an error for two different warp spans with the same
-// id to be in a collective concurrently.
+// A 设置 of consecutive 线程束 那个 用户 has 也 supplied with a unique
+// id from [0..15]. 这是 an 错误 for two 不同 线程束 spans with 相同
+// id to be 入 a 集合 concurrently.
 struct ncclCoopWarpSpan {
   uint32_t warp0:8, nWarps:8, id:8;
 
@@ -146,7 +153,7 @@ struct ncclCoopWarpSpan {
   }
 
   NCCL_DEVICE_INLINE void sync() {
-    // asm volatile("barrier.sync %0, %1;" :: "r"(1+id), "r"(32*nWarps) : "memory");
+    // asm 易变的("屏障.同步 %0, %1;" :: "r"(1+id), "r"(32*nWarps) : "内存");
     __barrier_sync_count(1 + id, 32 * nWarps);
   }
 };
@@ -186,8 +193,8 @@ NCCL_DEVICE_INLINE uint32_t ncclCoopGetLaneMask(ncclCoopCta coop) {
 #endif
 
 #if NCCL_CHECK_CUDACC
-// ncclCoopIsThread:
-// At compile time do we know the given coop is a single thread only.
+// ncclCoopIsThread：
+// At 编译 time 执行 we 知道 the 给定的 coop is a 单个 线程 仅.
 template <int nThreads>
 NCCL_DEVICE_INLINE constexpr bool ncclCoopIsThread(ncclCoopTile<nThreads>) {
   return nThreads == 1;
@@ -220,15 +227,15 @@ NCCL_DEVICE_INLINE constexpr bool ncclCoopWithinWarp(ncclCoopCta) {
 #endif
 
 #if NCCL_CHECK_CUDACC
-// Pick threads of our warp that are safe to use collectively.
+// Pick 线程 of our 线程束 那个 are safe to 使用 collectively.
 NCCL_DEVICE_INLINE ncclCoopLanes ncclCoopCoalesced() {
   return ncclCoopLanes{__activemask()};
 }
 #endif
 
 #if NCCL_CHECK_CUDACC
-// Pick threads of our warp that are safe to use collectively given that this
-// is a collective on the provided cooperative group.
+// Pick 线程 of our 线程束 那个 are safe to 使用 collectively 给定的 那个 此
+// is a 集合 在 ... 上 provided cooperative 组.
 template <typename Coop>
 NCCL_DEVICE_INLINE ncclCoopTile<32> ncclCoopCoalesced(Coop) {
   return ncclCoopTile<32>();

@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/shmutils.h — 共享内存工具函数声明
+ * ----------------------------------------------------------------------------
+ * 声明共享内存(shm)的辅助函数：创建/映射/销毁 POSIX 或 SysV 共享内存段，被 shm.h
+ * 与 bootstrap/proxy 复用，用于进程间交换控制数据。
+ */
+
 #ifndef NCCL_SHMUTILS_H_
 #define NCCL_SHMUTILS_H_
 

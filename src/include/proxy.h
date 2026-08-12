@@ -5,6 +5,15 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/proxy.h — proxy(代理)线程的结构与接口定义
+ * ----------------------------------------------------------------------------
+ * 定义 proxy 线程相关的结构：ncclProxyState、proxyOp(代理任务)、各传输的 proxy
+ * 进度函数指针。proxy 是运行在 CPU 后台的线程，负责驱动“无法在 GPU kernel 内完成”
+ * 的数据搬运（网络收发、CPU 侧 CE 拷贝、GDR 等），与 device kernel 通过 conn 共享
+ * 队列/标志协同。
+ */
+
 #ifndef NCCL_PROXY_H_
 #define NCCL_PROXY_H_
 
@@ -93,7 +102,7 @@ struct ncclProxyOp {
   uint8_t protocol;
   uint8_t algorithm;
   uint8_t reg;
-  // collnet/p2p/coll buffer reg handles
+  // collnet/p2p/coll 缓冲区 reg 句柄
   void* sendMhandle;
   void* recvMhandle;
   uint8_t* sendbuff;
@@ -104,20 +113,20 @@ struct ncclProxyOp {
   int nChannels;
   int nPeers;
 
-  // Profiler plugin
+  // 性能分析器插件
   union {
     struct ncclTaskColl* coll;
     struct ncclTaskP2p* p2p;
   } task;
 
-  // Profiler work counter increment flag. Set to 'true' if the profiler work counter for this channel needs
-  // increment.
-  // Always 'true' for collective operations. Grouped p2p operations are fused into one <send, recv> pair in the GPU
-  // kernel,
-  // meaning the GPU profiler code increments the work counter for the pair rather than the individual p2p. For this
-  // reason, the incWorkCounter flag is used to avoid incrementing the work counter twice in the host code. This is
-  // done
-  // by setting incWorkCounter to 'true' only for one of the p2ps in the pair during enqueue.
+  // 剖析器 work counter increment 标志. 设为 '真' 若 剖析器 work counter for 此 通道 needs
+  // 递增。
+  // Always '真' for 集合 操作. Grouped p2p 操作 are fused into one <发送, 接收> pair 在 ... 中 GPU
+  // 内核,
+  // meaning the GPU 剖析器 代码 increments the work counter 为了 pair rather than the individual p2p. For 此
+  // 原因, the incWorkCounter 标志 用于 避免 incrementing the work counter twice 入 主机 代码. 这是
+  // 已完成
+  // by setting incWorkCounter to '真' 仅 for one 的 p2ps 在 ... 中 pair 期间 enqueue.
   bool incWorkCounter;
   int eActivationMask;
   void* taskEventHandle;
@@ -140,7 +149,7 @@ struct ncclProxyEventHandle {
 struct ncclProxySubArgs {
   struct ncclProxyConnection* connection;
   int reg;
-  // collnet handles
+  // collnet 句柄
   void* sendMhandle;
   void* recvMhandle;
   uint8_t* sendbuff;
@@ -166,7 +175,7 @@ struct ncclProxySubArgs {
   int regBufferReady;
   void* requests[NCCL_STEPS];
 
-  // Profiler plugin
+  // 性能分析器插件
   int eActivationMask;
   int rank;
   ncclPid_t pid;
@@ -211,7 +220,7 @@ struct ncclProxyArgs {
 
   int idle;
 
-  // Element linking
+  // 元素 linking
   struct ncclProxyArgs* next;
   struct ncclProxyArgs* nextPeer;
   struct ncclProxyArgs** proxyAppendPtr;
@@ -220,10 +229,10 @@ struct ncclProxyArgs {
 };
 #define NCCL_MAX_NETDEVS 128
 
-// ProxyOps are used to communicate between main thread and service thread
-// Make sure we have enough to store two full rounds of operations on all channels.
-// Otherwise we'd be unable to post half of them to free new elements. Each
-// p2p work contains a send and recv proxy op hence the 2x before it.
+// ProxyOps 用于 communicate 之间 main 线程 并且 service 线程
+// 确保 我们已有 enough to 存储 two 满的 rounds of 操作 on 所有 通道.
+// 否则 we'd be unable to 后 half 的m to 释放 new 元素. 每个
+// p2p work contains a 发送 并且 接收 代理 操作 因此 the 2x 之前 it.
 #define MAX_OPS_PER_PEER (2 * MAXCHANNELS * 2 * NCCL_MAX_DEV_WORK_P2P_PER_BATCH)
 
 struct ncclProxyOpsPool {
@@ -249,7 +258,7 @@ struct ncclProxySharedP2p {
   int size;
   char* cudaBuff;
   char* hostBuff;
-  // CUDA IPC
+  // CUDA 进程间通信（IPC）
   ncclIpcDesc ipcDesc;
   struct ncclProxyArgs* proxyAppend[MAXCHANNELS]; // Separate send and recv
 };
@@ -270,7 +279,7 @@ struct ncclSharedNetComms {
 
 struct ncclProxyPool;
 struct ncclProxyProgressState {
-  // Used by main threads to send work to progress thread
+  // 已使用 by main 线程 to 发送 work to progress 线程
   struct ncclProxyOpsPool* opsPool;
   ncclShmHandle_t handle;
   char opsPoolShmSuffix[16];
@@ -285,7 +294,7 @@ struct ncclProxyProgressState {
   int nextOps;
 };
 
-// Expected proxy response fifo
+// 期望的 代理 响应 fifo
 struct ncclExpectedProxyResponse {
   void* opId;
   int respSize;
@@ -312,15 +321,15 @@ struct ncclProxyLocalPeer {
   int asyncOpCounter;
 };
 
-// Common response header for all proxyOps
-// We pack this into a struct to reduce the number of blocking send and recv calls
+// 通用 响应 头文件 对所有 proxyOps
+// We 打包 此 into a 结构体 to 规约 的数量 blocking 发送 并且 接收 调用
 struct ncclProxyRpcResponseHeader {
   void* opId;
   ncclResult_t res;
   int respSize;
 };
 
-// UDS support
+// UDS 支持
 struct ncclIpcHdr {
   int type;
   int rank;
@@ -349,7 +358,7 @@ struct ncclProxyState {
   uint32_t* abortFlag;
   bool directMode;
   struct ncclMemManager* memManager;  // Shared memory manager for proxy allocations
-  // Service threads
+  // Service 线程
   std::thread thread;
   std::thread threadUDS;
   struct ncclSocket* listenSock;
@@ -357,7 +366,7 @@ struct ncclProxyState {
   int stop;
   ncclResult_t asyncResult;
 
-  // Used by main thread
+  // 已使用 by main 线程
   union ncclSocketAddress* peerAddresses;
   struct ncclSocket* peerSocks;
   struct ncclProxyOps* proxyOps;
@@ -366,18 +375,18 @@ struct ncclProxyState {
   struct ncclIpcSocket peerIpcSock; // cuMEM API support (UDS)
   uint64_t* peerAddressesUDS; // cuMem API support (UDS)
 
-  // Progress thread
+  // Progress 线程
   struct ncclProxyProgressState progressState;
 
-  // Network plugin
+  // 网络 插件
   void* netContext;
   ncclNetAttr_t netAttr;
   void* collNetContext;
 
-  // Profiler plugin
+  // 性能分析器插件
   void* profilerContext;
 
-  // Queue of expected responses from the proxy
+  // 队列 of 期望的 responses 从 代理
   struct ncclExpectedProxyResponse* expectedResponses;
 };
 
@@ -427,7 +436,7 @@ ncclResult_t ncclProxyCreate(struct ncclComm* comm);
 ncclResult_t ncclProxyConnect(struct ncclComm* comm, int transport, int send, int proxyRank,
                               struct ncclProxyConnector* proxyConn);
 
-// NB: ncclProxyMsgTypeStr[] in proxy.cc needs to match
+// NB: ncclProxyMsgTypeStr[] 入 代理.cc 需要 match
 enum ncclProxyMsgType {
   ncclProxyMsgInit = 1,
   ncclProxyMsgSharedInit = 2,
@@ -443,20 +452,20 @@ enum ncclProxyMsgType {
   ncclProxyMsgDeregister = 12
 };
 
-// This function is called by a client of the proxy that needs to invoke any of the non-progress proxyOp types
-// Call this function on the client, supplying a locally unique opId. Then, poll on the return value of
-// ncclPollProxyResponse(), supplying the same opId to confirm the operation has completed
+// 该函数 被称为 by a client 的 代理 那个 需要 调用 任意 的 non-progress proxyOp 类型
+// 调用 该函数 在 ... 上 client, supplying a locally unique opId. Then, 轮询 在 ... 上 返回 值 of
+// ncclPollProxyResponse(), supplying 相同 opId to confirm the 操作 has 已完成
 ncclResult_t ncclProxyCallAsync(struct ncclComm* comm, struct ncclProxyConnector* proxyConn, int type, void* reqBuff,
                                 int reqSize, int respSize, void* opId);
 
-// This function will internally call ncclProxyCallAsync() and spin until ncclPollProxyResponse() confirms the result
-// is received
+// 该函数 will internally 调用 ncclProxyCallAsync() 并且 自旋 直到 ncclPollProxyResponse() confirms the 结果
+// 已接收
 ncclResult_t ncclProxyCallBlocking(struct ncclComm* comm, struct ncclProxyConnector* proxyConn, int type, void* reqBuff,
                                    int reqSize, void* respBuff, int respSize);
 ncclResult_t ncclPollProxyResponse(struct ncclComm* comm, struct ncclProxyConnector* proxyConn, void* respBuff,
                                    void* opId);
 
-// UDS support
+// UDS 支持
 ncclResult_t ncclProxyClientGetFdBlocking(struct ncclComm* comm, int rank, void* handle, int* convertedFd);
 ncclResult_t ncclProxyClientQueryFdBlocking(struct ncclComm* comm, struct ncclProxyConnector* proxyConn, int localFd,
                                             int* rmtFd);

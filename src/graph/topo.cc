@@ -63,7 +63,7 @@ static ncclResult_t findLocalCpu(struct ncclTopoNode* node, struct ncclTopoNode*
     return ncclSuccess;
   }
   for (int l = 0; l < node->nlinks; l++) {
-    // Go up the PCI tree to find the CPU. Follow only PCI switches.
+    // 沿 PCI 树向上回溯，寻找 CPU。只经过 PCI 交换机。
     if (node->links[l].type == LINK_PCI && node->links[l].remNode != from &&
         (node->links[l].remNode->type == PCI || node->links[l].remNode->type == CPU)) {
       NCCLCHECK(findLocalCpu(node->links[l].remNode, cpu, node));
@@ -185,7 +185,7 @@ ncclResult_t ncclTopoRemoveNode(struct ncclTopoSystem* system, int type, int ind
 }
 
 ncclResult_t ncclTopoConnectNodes(struct ncclTopoNode* node, struct ncclTopoNode* remNode, int type, float bw) {
-  // Aggregate links into higher bw for NVLink
+  // 把多条 NVLink 链路聚合成更高的总带宽
   struct ncclTopoLink* link;
   for (link = node->links; link - node->links != NCCL_TOPO_MAX_LINKS && link->remNode; link++) {
     if (link->remNode == remNode && link->type == type) break;
@@ -199,7 +199,7 @@ ncclResult_t ncclTopoConnectNodes(struct ncclTopoNode* node, struct ncclTopoNode
   link->remNode = remNode;
   link->bw += bw;
 
-  // Sort links in BW descending order
+  // 按带宽从高到低对链路排序
   struct ncclTopoLink linkSave;
   memcpy(&linkSave, link, sizeof(struct ncclTopoLink));
   while (link != node->links) {
@@ -211,10 +211,10 @@ ncclResult_t ncclTopoConnectNodes(struct ncclTopoNode* node, struct ncclTopoNode
   return ncclSuccess;
 }
 
-// BCM Gen4 Switches present themselves as a two-level hierarchical switch
-// even though they're supposed to sustain full BW across all ports.
-// Flatten the switch as this extra level can break the search and make
-// NCCL take wrong topology decisions.
+// 博通(Broadcom)Gen4 交换机把自己呈现为一个两级分层交换机，
+// 尽管它本应能在所有端口间保持满带宽。
+// 把这个额外的层级拍平，否则这多出来的一级会破坏搜索算法，导致
+// NCCL 做出错误的拓扑决策。
 int getBcmGen(uint64_t id, int level) {
   if ((id & 0xfffffffffffff000) == 0x1000c0101000a000) return 4;
   if ((id & 0xfffffffffffff000) == (0x1000c03010000000 | level * 0x1000)) return 5;
@@ -225,36 +225,36 @@ ncclResult_t ncclTopoFlattenBcmSwitches(struct ncclTopoSystem* system) {
   for (int s = 0; s < system->nodes[PCI].count; s++) {
     struct ncclTopoNode* pciSwitch = system->nodes[PCI].nodes + s;
     int gen = getBcmGen(pciSwitch->pci.device, 0);
-    // Flatten Gen4 PEX switches in base mode
+    // 在基础模式下拍平 Gen4 PEX 交换机
     if (gen) {
-      // Find sub switches with the same device ID.
+      // 查找具有相同设备 ID 的子交换机。
       int64_t* subSwIds;
       NCCLCHECK(ncclCalloc(&subSwIds, pciSwitch->nlinks));
       int subs = 0;
       for (int l = 0; l < pciSwitch->nlinks; l++) {
         struct ncclTopoNode* sub = pciSwitch->links[l].remNode;
-        // Only fuse sub switches with the same device ID.
+        // 只合并具有相同设备 ID 的子交换机。
         if (sub->type != PCI || getBcmGen(sub->pci.device, 1) != gen) continue;
-        // Save sub switch for later
+        // 暂存子交换机，留待后续处理
         subSwIds[subs++] = sub->id;
-        // Remove link to that sub switch
+        // 移除指向该子交换机的链路
         memmove(pciSwitch->links + l, pciSwitch->links + l + 1,
                 (pciSwitch->nlinks - l - 1) * (sizeof(struct ncclTopoLink)));
         pciSwitch->nlinks--;
-        // Don't increase l for the next iteration as we just shifted all links by one.
+        // 下一轮迭代不要增加 l，因为我们刚刚把所有链路整体左移了一位。
         l--;
       }
 
       for (int s = 0; s < subs; s++) {
-        // Find sub switch (system->nodes[PCI].nodes is changing every time we remove a node)
+        // 查找子交换机(注意：每次移除节点时 系统->节点[PCI].节点 都在变化)
         int index;
         NCCLCHECKGOTO(ncclTopoIdToIndex(system, PCI, subSwIds[s], &index), ret, fail);
         struct ncclTopoNode* sub = system->nodes[PCI].nodes + index;
-        // Connect all sub PCI devices to the parent switch
+        // 把该子交换机的所有 PCI 子设备都连到父交换机上
         for (int l = 0; l < sub->nlinks; l++) {
           struct ncclTopoNode* remNode = sub->links[l].remNode;
           if (remNode == pciSwitch) continue;
-          // Add link from parent PCI switch -> PCI device
+          // 添加“父 PCI 交换机 -> PCI 设备”的链路
           if (pciSwitch->nlinks == NCCL_TOPO_MAX_LINKS) {
             WARN("Error : too many Topo links (max %d)", NCCL_TOPO_MAX_LINKS);
             ret = ncclInternalError;
@@ -262,7 +262,7 @@ ncclResult_t ncclTopoFlattenBcmSwitches(struct ncclTopoSystem* system) {
           }
           memcpy(pciSwitch->links + pciSwitch->nlinks, sub->links + l, sizeof(struct ncclTopoLink));
           pciSwitch->nlinks++;
-          // Update link from PCI device -> parent PCI switch
+          // 更新“PCI 设备 -> 父 PCI 交换机”的链路
           for (int rl = 0; rl < remNode->nlinks; rl++) {
             if (remNode->links[rl].remNode == sub) {
               remNode->links[rl].remNode = pciSwitch;
@@ -272,10 +272,10 @@ ncclResult_t ncclTopoFlattenBcmSwitches(struct ncclTopoSystem* system) {
         }
         NCCLCHECKGOTO(ncclTopoRemoveNode(system, PCI, index), ret, fail);
       }
-      // Set subdevice to 0xffff to make sure we don't merge this switch again.
+      // 把子设备号设为 0xffff，确保这个交换机不会被再次合并。
       pciSwitch->pci.device |= 0xffff;
       free(subSwIds);
-      // Restart, as system->nodes[PCI].nodes has changed.
+      // 重新开始，因为 系统->节点[PCI].节点 已经改变。
       s = -1;  // Will be incremented to 0 in the next loop iteration
       continue;
     fail:
@@ -287,7 +287,7 @@ ncclResult_t ncclTopoFlattenBcmSwitches(struct ncclTopoSystem* system) {
 }
 
 ncclResult_t ncclTopoConnectCpus(struct ncclTopoSystem* system) {
-  // And connect all CPU nodes together
+  // 并把所有 CPU 节点彼此相连
   for (int n = 0; n < system->nodes[CPU].count; n++) {
     struct ncclTopoNode* cpu1 = system->nodes[CPU].nodes + n;
     for (int p = 0; p < system->nodes[CPU].count; p++) {
@@ -362,7 +362,7 @@ ncclResult_t ncclTopoPrint(struct ncclTopoSystem* s) {
 }
 
 static ncclResult_t ncclTopoSort(struct ncclTopoNode* node, struct ncclTopoNode* upNode) {
-  // Shift all links to have upLink as last link
+  // 调整链路顺序，使上联(uplink)链路排在最后
   if (upNode) {
     int l = 0;
     while (node->links[l].remNode != upNode) l++;
@@ -375,7 +375,7 @@ static ncclResult_t ncclTopoSort(struct ncclTopoNode* node, struct ncclTopoNode*
     memcpy(node->links + l, &upLink, sizeof(struct ncclTopoLink));
   }
 
-  // Recursively sort the PCI tree
+  // 递归地对 PCI 树进行排序
   for (int l = 0; l < node->nlinks; l++) {
     struct ncclTopoLink* link = node->links + l;
     if (link->type == LINK_PCI && link->remNode != upNode) NCCLCHECK(ncclTopoSort(link->remNode, node));
@@ -383,18 +383,18 @@ static ncclResult_t ncclTopoSort(struct ncclTopoNode* node, struct ncclTopoNode*
   return ncclSuccess;
 }
 
-// We want the graph to be organized to ease/accelerate traversal :
-// 1. NVLinks (already the case)
-// 2. PCI down
-// 3. PCI up
-// 4. SYS (already the case)
+// 我们希望拓扑图的排列能便于/加速遍历，顺序为：
+// 1. NVLinks(已经如此)
+// 2. PCI 下行
+// 3. PCI 上行
+// 4. SYS(已经如此)
 ncclResult_t ncclTopoSortSystem(struct ncclTopoSystem* system) {
   for (int n = 0; n < system->nodes[CPU].count; n++) NCCLCHECK(ncclTopoSort(system->nodes[CPU].nodes + n, NULL));
   return ncclSuccess;
 }
 
-// Minimum network BW of a single device accessible by rank.
-// Note: This function does not sum up the bw over multiple NICs if many are accessible.
+// 某 rank 可访问的单个设备的最小网络带宽。
+// 注意：即使有多块网卡可访问，本函数也不会把它们的带宽相加。
 ncclResult_t ncclTopoGetMinNetBw(struct ncclTopoSystem* system, int rank, float* bw) {
   int g = 0;
   while (g < system->nodes[GPU].count && system->nodes[GPU].nodes[g].gpu.rank != rank) g++;
@@ -412,7 +412,7 @@ ncclResult_t ncclTopoGetMinNetBw(struct ncclTopoSystem* system, int rank, float*
 
     minBw = std::min(minBw, system->nodes[GPU].nodes[g].paths[NET][net].bw);
   }
-  // if no net is found, return 0 as a minimum bw
+  // 若没找到任何网卡，则返回 0 作为最小带宽
   *bw = (minBw < FLT_MAX) ? minBw : 0.0;
   return ncclSuccess;
 }
@@ -427,7 +427,7 @@ ncclResult_t ncclTopoAddNet(struct ncclXmlNode* xmlNet, struct ncclTopoSystem* s
   NCCLCHECK(ncclTopoCreateNode(system, &net, NET, netId));
   net->net.dev = dev;
   const char* str;
-  // if not guid is present use the net->id unique id instead, which will be unique within the node/NVLD
+  // 若没有 guid，则改用 网络->id 作为唯一 ID，它在节点/NVLD 范围内是唯一的
   NCCLCHECK(xmlGetAttr(xmlNet, "guid", &str));
   net->net.asic = (str) ? strtoull(str, NULL, 16) : netId;
 
@@ -448,13 +448,13 @@ ncclResult_t ncclTopoAddNet(struct ncclXmlNode* xmlNet, struct ncclTopoSystem* s
   net->net.railId = railId;
   net->net.planeId = planeId;
 
-  // build the PCI id using the parent PCI link
+  // 利用父 PCI 链路构造 PCI id
   uint64_t hacc[2] = {1, 1};
   const char* busId = NULL;
   struct ncclXmlNode* parent = xmlNet->parent;
   while (parent != NULL && strcmp(parent->name, "pci") != 0) parent = parent->parent;
   if (parent) NCCLCHECK(xmlGetAttr(parent, "busid", &busId));
-  // If we fail to find the PCIe path, we use the GUID instead.
+  // 如果找不到 PCIe 路径，就改用 GUID。
   if (busId) eatHash(hacc, busId, strlen(busId));
   else eatHash(hacc, &net->net.asic);
   net->net.pciId = digestHash(hacc);
@@ -511,11 +511,11 @@ ncclResult_t ncclTopoAddNic(struct ncclXmlNode* xmlNic, struct ncclTopoSystem* s
     if (strcmp(xmlNet->name, "net") != 0) continue;
     int index;
     NCCLCHECK(xmlGetAttrIndex(xmlNet, "dev", &index));
-    // This means that the "dev" attribute wasn't set on this net xml node. That means it should not be added to
-    // the system topology graph
+    // 这意味着该 网络 的 XML 节点没有设置 dev 属性，因此它不应被加入
+    // 系统拓扑图中
     if (index == -1) continue;
 
-    // Backward compatibility: net withouh "net" attr is a net dev, net without a "gin" is not a gin dev
+    // 向后兼容：没有 网络 属性的 网络 视为网卡设备；没有 gin 属性的不是 GIN 设备
     int net = 0, gin = 0, rma = 0;
     NCCLCHECK(xmlGetAttrIntDefault(xmlNet, "net", &net, 1));
     NCCLCHECK(xmlGetAttrIntDefault(xmlNet, "gin", &gin, 0));
@@ -533,7 +533,7 @@ ncclResult_t ncclTopoAddGpu(struct ncclXmlNode* xmlGpu, struct ncclTopoSystem* s
   NCCLCHECK(xmlGetAttrInt(xmlGpu, "dev", &gpu->gpu.dev));
   NCCLCHECK(xmlGetAttrInt(xmlGpu, "gdr", &gpu->gpu.gdrSupport));
   NCCLCHECK(xmlGetAttrIntDefault(xmlGpu, "mlopart", &gpu->gpu.mloPart, NCCL_TOPO_UNDEF));
-  // Do not go any further, nvlinks will be added in a second pass
+  // 先到这里，NVLink 会在第二轮添加
   return ncclSuccess;
 }
 
@@ -574,7 +574,7 @@ struct kvDict kvDictPciGen[] = {{"2.5 GT/s", 15},
                                 {"64.0 GT/s PCIe", 480},
                                 {NULL, 60 /* Default fallback */}}; // x100 Mbps per lane
 
-// Return all DEV nodes whose id matches baseId with mlopart bits masked out.
+// 返回所有 DEV 节点，其 id 在屏蔽掉 mlopart 位后与 baseId 匹配。
 ncclResult_t ncclTopoGetDevNodes(struct ncclTopoSystem* system, int64_t baseId, struct ncclTopoNode** nodes,
                                  int* nNodes) {
   *nNodes = 0;
@@ -594,7 +594,7 @@ ncclResult_t ncclTopoGetDevNodes(struct ncclTopoSystem* system, int64_t baseId, 
 }
 
 static ncclResult_t ncclTopoCheckMloPartBusId(int64_t busId) {
-  // check that the bits used for mlopart information are free and always 0 to avoid collision.
+  // 检查用于 mlopart 信息的比特位是否空闲且恒为 0，以避免冲突。
   if (busId & NCCL_TOPO_MLOPART_MASK) {
     WARN(
       "BusId 0x%lx has non-zero bits in MLOPart mask 0x%llx, cannot encode MLOPart partition index without collision",
@@ -631,7 +631,7 @@ static ncclResult_t ncclTopoAddGpuSub(struct ncclXmlNode* xmlPci, struct ncclXml
     NCCLCHECK(xmlGetAttrInt(xmlGpu, "dev", &gpudeviceNode->dev.dev));
     NCCLCHECK(ncclTopoConnectNodes(gpudeviceNode, parent, LINK_PCI, bw));
     NCCLCHECK(ncclTopoConnectNodes(parent, gpudeviceNode, LINK_PCI, bw));
-    // add the local link with the existing uGPUs.
+    // 把本地链路添加到已有的 uGPU 列表中。
     struct ncclTopoNode* sibDevs[NCCL_TOPO_MLOPART_DEV_MAX];
     int nSibDevs = 0;
     NCCLCHECK(ncclTopoGetDevNodes(system, gpudeviceNode->id, sibDevs, &nSibDevs));
@@ -670,7 +670,7 @@ ncclResult_t ncclTopoAddPci(struct ncclXmlNode* xmlPci, struct ncclTopoSystem* s
     int width, speed;
     NCCLCHECK(xmlGetAttrInt(xmlPci, "link_width", &width));
     NCCLCHECK(xmlGetAttrStr(xmlPci, "link_speed", &str));
-    // Manage cases where speed was not indicated in /sys
+    // 处理 /sys 中没有给出速率信息的情形
     if (width == 0) width = 16;
     NCCLCHECK(kvConvertToInt(str, &speed, kvDictPciGen)); // Values in 100Mbps, per lane (we want GB/s in the end)
     bw = width * speed / 80.0;
@@ -690,7 +690,7 @@ ncclResult_t ncclTopoAddPci(struct ncclXmlNode* xmlPci, struct ncclTopoSystem* s
   NCCLCHECK(xmlGetSub(xmlPci, "nic", &xmlNic));
   if (xmlNic != NULL) {
     type = NIC;
-    // Ignore sub device ID and merge multi-port NICs into one PCI device.
+    // 忽略子设备 ID，把多端口网卡合并成单个 PCI 设备。
     struct ncclTopoNode* nicNode = NULL;
     int64_t localNicId = NCCL_TOPO_LOCAL_NIC_ID(numaId, busId);
     int64_t id = NCCL_TOPO_ID(systemId, localNicId);
@@ -707,7 +707,7 @@ ncclResult_t ncclTopoAddPci(struct ncclXmlNode* xmlPci, struct ncclTopoSystem* s
     for (int s = 0; s < xmlPci->nSubs; s++) {
       struct ncclXmlNode* xmlSubPci = xmlPci->subs[s];
       if (strcmp(xmlSubPci->name, "pcilink") != 0) {
-        // PCI links will be added later
+        // PCI 链路稍后再添加
         NCCLCHECK(ncclTopoAddPci(xmlSubPci, system, node, systemId, numaId));
       }
     }
@@ -808,7 +808,7 @@ static ncclResult_t ncclTopoGetGpuDevNode(struct ncclXmlNode* xmlGpu, const char
   return ncclSuccess;
 }
 
-// Return true only for the first GPU sibling (in XML order) that shares the same DEV node.
+// 仅对共享同一 DEV 节点、且在 XML 顺序中排在最前的那个 GPU 兄弟节点返回 真。
 static ncclResult_t ncclTopoXmlIsPrimaryGpuForDev(struct ncclXmlNode* xmlGpu, bool* isPrimary) {
   *isPrimary = true;
   int myMloPart = NCCL_TOPO_UNDEF;
@@ -856,7 +856,7 @@ ncclResult_t ncclTopoAddNvLinks(struct ncclXmlNode* node, struct ncclTopoSystem*
       int remDevsCount = 0;
       struct ncclTopoNode* remDevs[NCCL_TOPO_MLOPART_DEV_MAX];
       NCCLCHECK(ncclTopoGetDevNodes(system, NCCL_TOPO_ID(systemId, busId), remDevs, &remDevsCount));
-      // Bandwidth is split between the different devices both at source and destination.
+      // 带宽在源端和目的端都会在不同设备之间被分摊。
       for (int j = 0; j < remDevsCount; j++) {
         NCCLCHECK(ncclTopoConnectNodes(devNode, remDevs[j], LINK_NVL, count * nvlBw / remDevsCount / localDevsCount));
       }
@@ -945,8 +945,8 @@ ncclResult_t ncclTopoAddC2c(struct ncclXmlNode* node, struct ncclTopoSystem* sys
     if (cpu == NULL) return ncclSuccess;
 
     if (nSibDevs > 1) {
-      // Use a C2C bridge node to guarantee the total bw of the C2C link is shared between the devices.
-      // Note: pBusId is the dev busId; we have checked that the 2 last bits are 0 in ncclTopoAddGpuSub
+      // 使用 a C2C bridge 节点 to 保证 总计 bw 的 C2C 链路 is shared 在 ... 之间 设备.
+      // 注意: pBusId is the dev busId; 我们已有 checked 那个 the 2 最后 位 are 0 入 ncclTopoAddGpuSub
       int64_t xc2cId = devNode->id & ~(int64_t)NCCL_TOPO_MLOPART_MASK;
       struct ncclTopoNode* xc2cNode = NULL;
       NCCLCHECK(ncclTopoGetNode(system, &xc2cNode, CXB, xc2cId));
@@ -1010,7 +1010,7 @@ ncclResult_t ncclTopoGetSystemFromXml(struct ncclXml* xml, struct ncclTopoSystem
 
 NCCL_PARAM(TopoDumpFileRank, "TOPO_DUMP_FILE_RANK", 0);
 
-// Only set values if not already set
+// 仅当尚未设置时才赋值
 static ncclResult_t xmlInitAttrInt(struct ncclXmlNode* node, const char* attrName, const int value) {
   int index;
   NCCLCHECK(xmlGetAttrIndex(node, attrName, &index));
@@ -1047,7 +1047,7 @@ static ncclResult_t xmlInitAttrFloat(struct ncclXmlNode* node, const char* attrN
 
 ncclResult_t ncclTopoRefreshBcmP2pLinks(void) {
 #ifdef NCCL_OS_LINUX
-  // refresh the switch topology by reading the link below
+  // 通过读取下方的链路来刷新交换机拓扑
   FILE* fp = fopen("/sys/kernel/pci_switch_link/refresh_switch_toplogy", "r");
   if (fp != NULL) {
     int tmp;
@@ -1059,16 +1059,16 @@ ncclResult_t ncclTopoRefreshBcmP2pLinks(void) {
   return ncclSuccess;
 }
 
-// This is just checking for direct descendence
+// 这里只是检查是否存在直接上下级关系
 int ncclTopoCheckPix(ncclXmlNode* common, ncclXmlNode** nodes, int nNodes) {
   const char* tempBusId;
-  // If the common parent isn't a pci switch, then this isn't PIX
+  // 如果公共父节点不是 PCI 交换机，则不是 PIX(同交换机)关系
   NCCLCHECK(xmlGetAttrStr(common, "busid", &tempBusId));
   if (tempBusId == NULL) return 0;
   TRACE(NCCL_GRAPH, "Checking pix for busid=%s", tempBusId);
 
-  // All the nodes must have a "nic" which is a parent, and then a pci node (busid) which must be a child of the
-  // "common"
+  // 所有节点都必须有一个作为父节点的 nic，然后是一个 PCI 节点(busid)，且该 PCI 节点必须是
+  // 那个“公共节点”的子节点
   for (int i = 0; i < nNodes; i++) {
     ncclXmlNode* node = nodes[i];
     if (strcmp(node->name, "net") == 0) {
@@ -1077,7 +1077,7 @@ int ncclTopoCheckPix(ncclXmlNode* common, ncclXmlNode** nodes, int nNodes) {
       if (strcmp(node->name, "nic") == 0) {
         node = node->parent;
         if (node == NULL) return 0;
-        // All nodes must descend from the same first level pci switch
+        // 所有节点必须源自同一个一级 PCI 交换机
         if (strcmp(node->name, "pci") == 0) {
           TRACE(NCCL_GRAPH, "Comparing parent of node=%p to common=%p", node->parent, common);
           if (node->parent != common) return 0;
@@ -1133,12 +1133,12 @@ ncclResult_t ncclFindFirstPciParent(ncclXmlNode** parent) {
   return ncclSuccess;
 }
 
-// 1. Find the common parent xmlNode between the given set of nodes
+// 1. 在给定的一组节点之间找到它们的公共父 XML 节点
 ncclResult_t ncclTopoGetPath(ncclXmlNode** nodes, int nNodes, int* path, ncclXmlNode** parent) {
-  // Track a stack of parents per-net node being merged
+  // 为每个正在合并的 网络 节点维护一个父节点栈
   xmlNodeStack* parents;
   NCCLCHECK(ncclCalloc(&parents, nNodes));
-  // Find the common parent
+  // 找到公共父节点
   ncclXmlNode* common = NULL;
 
   if (nNodes == 1) {
@@ -1176,9 +1176,9 @@ ncclResult_t ncclTopoGetPath(ncclXmlNode** nodes, int nNodes, int* path, ncclXml
       for (int i = 0; i < nNodes; i++) {
         parents[i].pop();
       }
-      // Check multi-port while we still have the mismatched parents
-      // For multi-port to be true, all parents (peers) must have the busId attribute with all but the last character
-      // matching
+      // 在我们还持有不匹配父节点时，检查多端口情况
+      // 要让多端口成立，所有父节点(对端)的 busId 属性除最后一个字符外
+      // 必须完全相同
     } else {
       int multiPort = 1;
       const char* tempBusId;
@@ -1243,7 +1243,7 @@ ncclResult_t ncclTopoMakeUniqueBusId(struct ncclXml* xml, char* busId, struct nc
   int i = 0;
   int64_t rBusId;
   NCCLCHECK(busIdToInt64(busId, &rBusId));
-  // Try to find an unused busid - NCCL expects leaf busid to be unique
+  // 尝试找一个未被使用的 busid——NCCL 要求叶子节点的 busid 唯一
   while (i < 100) {
     rBusId++;
     TRACE(NCCL_GRAPH, "Trying to make new busId %lx", rBusId);
@@ -1264,7 +1264,7 @@ ncclResult_t ncclTopoMakeUniqueBusId(struct ncclXml* xml, char* busId, struct nc
   return ncclInternalError;
 }
 
-// Add a new PCI node with a unique busId under (*parent) and overwrite the value of (*parent) to point to the new node
+// 在 (*父) 下新增一个具有唯一 busId 的 PCI 节点，并把 (*父) 改写为指向这个新节点
 ncclResult_t ncclTopoMakePciParent(struct ncclXml* xml, struct ncclXmlNode** parent, struct ncclXmlNode* physNetNode) {
   struct ncclXmlNode* newBusId = NULL;
   struct ncclXmlNode* pci = physNetNode->parent;
@@ -1275,7 +1275,7 @@ ncclResult_t ncclTopoMakePciParent(struct ncclXml* xml, struct ncclXmlNode** par
         char busId[NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];
         memset(busId, 0, sizeof(busId));
         const char* originalBusId;
-        // Seed busId with the current NIC 0's busId to make discovering a unique hash quicker
+        // 用当前 0 号网卡的 busId 作为种子，加快寻找唯一哈希的速度
         NCCLCHECK(xmlGetAttrStr(pci, "busid", &originalBusId));
         snprintf(busId, sizeof(busId), "%s", originalBusId);
         NCCLCHECK(ncclTopoMakeUniqueBusId(xml, busId, &newBusId, *parent));
@@ -1305,13 +1305,13 @@ ncclResult_t ncclTopoMakeVnic(struct ncclXml* xml, struct ncclTopoNetInfo* netIn
     return ncclInternalError;
   }
 
-  // Don't make vNics of size 1
+  // 不要创建大小为 1 的虚拟网卡(vNic)
   if (vProps->ndevs == 1) {
     TRACE(NCCL_GRAPH, "TOPO/NET : Skipping vNic of size 1");
     return ncclSuccess;
   }
 
-  // Trigger the merge, then get the new device's properties
+  // 触发合并，然后获取新设备的属性
   int vDevIndex = 0;
   ncclResult_t ret;
   NOWARN(ret = netInfo->makeVDevice(&vDevIndex, vProps), NCCL_GRAPH | NCCL_INIT | NCCL_NET);
@@ -1371,7 +1371,7 @@ ncclResult_t ncclTopoForceMerge(struct ncclXml* xml, struct ncclTopoNetInfo* net
 
     ret = ncclTopoMakeVnic(xml, netInfo, &vProps, physNetNodes);
     if (ret == ncclSuccess) {
-      // Only set that a device is "placed" after successfully making a vNic (it's possible to exit before this)
+      // 只有在成功创建 vNic 之后才把设备标记为“已放置”(在此之前有可能提前退出)
       for (int i = 0; i < vProps.ndevs; i++) {
         placedDevs[vProps.devs[i]] = 1;
       }
@@ -1393,7 +1393,7 @@ fail:
 
 ncclResult_t ncclTopoAutoMerge(struct ncclXml* xml, struct ncclTopoNetInfo* netInfo, int* placedDevs,
                                ncclNetProperties_t* propsList, struct ncclXmlNode** physNetNodes, int nPhysDevs) {
-  // Compute the path type between each device
+  // 计算每对设备之间的路径类型
   int* paths = NULL;
   ncclResult_t res = ncclSuccess;
   ncclCalloc(&paths, nPhysDevs * nPhysDevs);
@@ -1408,19 +1408,19 @@ ncclResult_t ncclTopoAutoMerge(struct ncclXml* xml, struct ncclTopoNetInfo* netI
     }
   }
 
-  // Place all remaining physical devices into a virtual device given the mergeLevel criteria
+  // 按照 mergeLevel 准则，把其余所有物理设备归并到一个虚拟设备里
   for (int i = 0; i < nPhysDevs; i++) {
-    // Select the first unplaced device "i" as the root
+    // 选取第一个尚未放置的设备 i 作为根
     if (placedDevs[i] == 0) {
-      // Init a new vDevice
+      // 初始化一个新的虚拟设备
       ncclNetVDeviceProps_t vProps;
       vProps = {0};
       vProps.devs[vProps.ndevs++] = i;
       placedDevs[i] = 1;
       TRACE(NCCL_GRAPH, "Placed dev %d", i);
 
-      // Select each unplaced device "j" which is at most "mergeLevel" distance from "i", but not equal to "i"
-      // (Don't merge the same device with itself)
+      // 选取每个尚未放置、且距 i 不超过 mergeLevel、但不等于 i 的设备 j
+      // (不能把设备与自己合并)
       for (int j = 0; j < nPhysDevs; j++) {
         if ((paths[i * nPhysDevs + j] <= netInfo->mergeLevel) && (placedDevs[j] == 0 && j != i) &&
             (netInfo->mergePolicy != NCCL_NET_MERGE_POLICY_RAIL ||
@@ -1439,9 +1439,9 @@ ncclResult_t ncclTopoAutoMerge(struct ncclXml* xml, struct ncclTopoNetInfo* netI
 
       ncclResult_t ret = ncclTopoMakeVnic(xml, netInfo, &vProps, physNetNodes);
 
-      // Merging failed.
-      // Mark all as unplaced and increase their distance to disconnected (PATH_DIS)
-      // Set i to 0 to restart the automatic merging process and ensure all are placed
+      // 合并失败。
+      // 把所有设备标记为未放置，并把它们的距离拉大到“断开”(PATH_DIS)
+      // 把 i 重置为 0，重启自动合并流程，确保所有设备最终都被放置
       if (ret != ncclSuccess) {
         INFO(NCCL_GRAPH | NCCL_INIT | NCCL_NET,
              "Marking physical devices as unplaced, increasing distance and restarting search.");
@@ -1464,7 +1464,7 @@ out:
   return res;
 }
 
-// clang-format off
+// 关闭 clang-格式 自动格式化
 struct kvDict nicPathKvList[] = {
   { "LOC",  PATH_LOC },
   { "PORT", PATH_PORT },
@@ -1476,7 +1476,7 @@ struct kvDict nicPathKvList[] = {
   { "SYS",  PATH_SYS },
   { NULL, 0 }
 };
-// clang-format on
+// 开启 clang-格式 自动格式化
 
 ncclResult_t ncclTopoFindLinkWidthRec(ncclXmlNode* node, ncclXmlNode** physNetNodes, int ndevs, int* foundPhysNet,
                                       int* linkWidth) {
@@ -1492,7 +1492,7 @@ ncclResult_t ncclTopoFindLinkWidthRec(ncclXmlNode* node, ncclXmlNode** physNetNo
   }
 
   *foundPhysNet = 0;
-  // Detect if a physical child is found. This information will be propagated up the stack.
+  // 检测是否找到了物理子节点。这一信息将向上(调用栈)传播。
   int devId = 0;
   while (devId < ndevs && !(*foundPhysNet)) *foundPhysNet = (node == physNetNodes[devId++]);
 
@@ -1509,19 +1509,19 @@ ncclResult_t ncclTopoFindLinkWidthRec(ncclXmlNode* node, ncclXmlNode** physNetNo
   }
 
   if (*foundPhysNet == 0) {
-    // No child NICs were found, do not accrue any detected link_width
+    // 没有找到任何子网卡，因此不累计任何检测到的链路宽度
     *linkWidth = 0;
     TRACE(NCCL_GRAPH, "Did not find child net device. Returning link_width=%d totalChildLinkWidth=%d", *linkWidth,
           totalChildLinkWidth);
   } else if (totalChildLinkWidth == 0) {
-    // If A child NIC was found but no link_width was detected among children, assign the link_width to mine (I am
-    // the first pci node right above the physNetNode).
+    // 如果找到了子网卡，但在子节点间没检测到 link_width，则把 link_width 设为我自己的值(我是
+    // 紧挨在 physNetNode 上方的第一个 PCI 节点)。
     *linkWidth = myLinkWidth;
     TRACE(NCCL_GRAPH, "Found child net device for %s. Returning link_width=%d totalChildLinkWidth=%d", node->name,
           *linkWidth, totalChildLinkWidth);
   } else {
-    // Standard recursive accrual of link_width. The link_width is either the bottleneck of this PCI node's width or
-    // the sum of its children's width.
+    // 标准的递归累计 link_width：它要么是本 PCI 节点带宽的瓶颈，要么是
+    // 其子节点带宽之和。
     *linkWidth = myLinkWidth > 0 ? std::min(myLinkWidth, totalChildLinkWidth) : totalChildLinkWidth;
     TRACE(NCCL_GRAPH, "Found child net device for %s. Returning link_width=%d totalChildLinkWidth=%d", node->name,
           *linkWidth, totalChildLinkWidth);
@@ -1530,8 +1530,8 @@ ncclResult_t ncclTopoFindLinkWidthRec(ncclXmlNode* node, ncclXmlNode** physNetNo
   return ncclSuccess;
 }
 
-// DFS over nodes under common parent
-// Exclude link widths of non-physNetNodes chains
+// 对公共父节点下的所有节点做深度优先搜索(DFS)
+// 排除非 physNetNode 链路的链路宽度
 ncclResult_t ncclTopoFindLinkWidth(ncclXmlNode* parent, ncclXmlNode** physNetNodes, int ndevs, int* linkWidth) {
   *linkWidth = 0;
   for (int i = 0; i < parent->nSubs; i++) {
@@ -1566,20 +1566,20 @@ ncclResult_t ncclTopoGetVNicParent(struct ncclXml* xml, ncclResult_t (*getProper
     NCCLCHECK(ncclTopoFindLinkWidth(*parent, physNetNodes, vProps->ndevs, &aggregateWidth));
   }
 
-  // If the common parent is a PCI switch or the CPU, we must reparent the new NIC under a made up pci device with a
-  // unique busid
-  // This adds a pci node between the physNetParent and the fused NIC.
+  // 如果公共父节点是 PCI 交换机或 CPU，我们必须把新网卡重新挂到一个虚构的 PCI 设备上，
+  // 该虚构设备具有唯一的 busid
+  // 这会在 physNetParent 与融合后的网卡之间插入一个 PCI 节点。
   struct ncclXmlNode* physNetParent = *parent;
   if (*parent) {
     if (strcmp((*parent)->name, "pci") == 0) {
-      // Compare PCI class here to avoid NCCL WARN when the "class" attribute doesn't exist
+      // 在这里比较 PCI 类，以避免在 类 属性缺失时触发 NCCL 警告
       const char* c;
       NCCLCHECK(xmlGetAttrStr(*parent, "class", &c));
       if (c && strcmp(c, PCI_BRIDGE_DEVICE_CLASS) == 0) {
         NCCLCHECK(ncclTopoMakePciParent(xml, parent, physNetNodes[0]));
       }
     } else if (strcmp((*parent)->name, "cpu") == 0) {
-      // If the common parent is a CPU, we must reparent the new NIC under a made up pci device with a unique busid
+      // 如果公共父节点是 CPU，我们必须把新网卡重新挂到一个具有唯一 busid 的虚构 PCI 设备上
       NCCLCHECK(ncclTopoMakePciParent(xml, parent, physNetNodes[0]));
     } else if (strcmp((*parent)->name, "system") == 0) {
       WARN("Fusing NET devices from different NUMA domains is not supported.");
@@ -1587,7 +1587,7 @@ ncclResult_t ncclTopoGetVNicParent(struct ncclXml* xml, ncclResult_t (*getProper
     }
   }
 
-  // Update the speed for all the pci nodes between the parent and the physNetparent
+  // 更新从父节点到 physNetParent 之间所有 PCI 节点的速率
   if (aggregateWidth > 0) {
     struct ncclXmlNode* node = *parent;
     while (node) {
@@ -1642,9 +1642,9 @@ static ncclResult_t ncclTopoPopulateNics(ncclXml* xml, int startIndex, int endIn
     if (virtualNics) {
       struct ncclXmlNode* net = NULL;
       NCCLCHECK(xmlFindTagKv(xml, "net", &net, "name", props.name));
-      // In the event of multithreaded use case, we need to re-discover the shared parent of the given devices for
-      // this vNIC
-      // Only run this if the net doesn't exist locally - this may alter the XML state
+      // 在多线程使用场景下，我们需要重新发现给定设备之间的共享父节点，以便
+      // 创建这个虚拟网卡(vNIC)
+      // 仅当该网卡在本地不存在时才运行——这可能会改变 XML 状态
       if (net == NULL) NCCLCHECK(ncclTopoGetVNicParent(xml, netInfo->getProperties, &props.vProps, &parent));
     }
 
@@ -1673,13 +1673,13 @@ static ncclResult_t ncclTopoPopulateNics(ncclXml* xml, int startIndex, int endIn
          props.name);
     NCCLCHECK(xmlInitAttrInt(netNode, "gdr", gdrSupport));
 
-    // GIN and COLL plugins must set "net=0"; it's absence is interpretted as "net=1" in ncclTopoAddNic.
+    // GIN 与 COLL 插件必须把 网络 设为 0；缺省会被 ncclTopoAddNic 理解为 网络=1。
     int isNet = 0;
     const char* netAttr = NULL;
     NCCLCHECK(xmlGetAttr(netNode, "net", &netAttr));
     if (netAttr) isNet = strtol(netAttr, NULL, 0);
     NCCLCHECK(xmlSetAttrInt(netNode, "net", netInfo->net || isNet));
-    // Only set coll or gin if it's not 0
+    // 仅当不为 0 时才设置 coll 或 gin
     if (netInfo->coll) NCCLCHECK(xmlInitAttrInt(netNode, "coll", netInfo->coll));
     if (netInfo->gin) NCCLCHECK(xmlInitAttrInt(netNode, "gin", netInfo->gin));
     if (netInfo->rma) NCCLCHECK(xmlInitAttrInt(netNode, "rma", netInfo->rma));
@@ -1711,12 +1711,12 @@ static ncclResult_t ncclTopoUpdateVNics(ncclXml* xml, struct ncclTopoNetInfo* ne
       NCCLCHECK(xmlFindTagKv(xml, "net", &physNetNode, "name", physProps.name));
       if (physNetNode) {
         NCCLCHECK(xmlSetAttrInt(physNetNode, net->net ? "net" : (net->gin ? "gin" : "coll"), 0));
-        // net is always present (see ncclTopoPopulateNics).
+        // 网络 始终存在(见 ncclTopoPopulateNics)。
         int net = 0, gin = 0, coll = 0;
         NCCLCHECK(xmlGetAttrInt(physNetNode, "net", &net));
         NCCLCHECK(xmlGetAttrIntDefault(physNetNode, "gin", &gin, 0));
         NCCLCHECK(xmlGetAttrIntDefault(physNetNode, "coll", &coll, 0));
-        // Set "keep = 0" only if no plugin is using the physical device
+        // 仅当没有任何插件使用该物理设备时，才把 保留 设为 0
         if (net == 0 && gin == 0 && coll == 0) NCCLCHECK(xmlSetAttrInt(physNetNode, "keep", 0));
       }
     }
@@ -1724,29 +1724,29 @@ static ncclResult_t ncclTopoUpdateVNics(ncclXml* xml, struct ncclTopoNetInfo* ne
   return ncclSuccess;
 }
 
-// Calls to network plugin APIs should be protected. This function should be called inside a per-process lock.
+// 对网络插件 API 的调用应当受到保护。本函数应当在进程级锁内部调用。
 ncclResult_t ncclTopoProcessNet(ncclXml* xml, const char* dumpXmlFile, struct ncclTopoNetInfo* net) {
   bool usePhysicalDevices = (dumpXmlFile || net->makeVDevice == NULL);
   int nPhysicalNics, nVirtualNics;
   NCCLCHECK(net->getDevCount(net->netPluginIndex, &nPhysicalNics, &nVirtualNics));
-  // List the physical devices in the topo and set keep = 1
+  // 列出拓扑中的物理设备，并把 保留 设为 1
   NCCLCHECK(ncclTopoPopulateNics(xml, 0, nPhysicalNics, net, /*virtual=*/false));
   if (!usePhysicalDevices) {
-    // Virtual devices are only created once per network
+    // 每个网络只创建一次虚拟设备
     if (nVirtualNics == NCCL_UNDEF_DEV_COUNT) {
       NCCLCHECK(ncclTopoMakeVNics(xml, net, nPhysicalNics));
-      // Update the number of virtual devices both locally and in the state tracking the plugin.
-      // Note: 0 is a valid number of virtual devices
+      // 在本地以及插件的状态跟踪结构中同时更新虚拟设备的数量。
+      // 注意：0 也是虚拟设备数量的有效取值
       int nDevs;
       NCCLCHECK(net->devices(&nDevs));
       nVirtualNics = nDevs - nPhysicalNics;
       NCCLCHECK(net->setVirtDevCount(net->netPluginIndex, nVirtualNics));
     }
-    // populate the virtual devices if any
+    // 如果存在虚拟设备，则填充它们
     if (nVirtualNics > 0) {
-      // Note: ncclTopoMakeVnic doesn't create a vNic if ndevs = 1; no special case needed
+      // 注意：当 ndevs=1 时 ncclTopoMakeVnic 不会创建 vNic，因此无需特判
       NCCLCHECK(ncclTopoUpdateVNics(xml, net, nPhysicalNics, nVirtualNics));
-      // Populate the virtual devices and set keep = 1
+      // 填充虚拟设备并把 保留 设为 1
       NCCLCHECK(ncclTopoPopulateNics(xml, nPhysicalNics, nPhysicalNics + nVirtualNics, net, /*virtual=*/true));
     }
   }
@@ -1795,20 +1795,20 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
     INFO(NCCL_ENV, "NCCL_TOPO_FILE set by environment to %s", xmlTopoFile);
     NCCLCHECKGOTO(ncclTopoGetXmlFromFile(xmlTopoFile, xml, 1), ret, fail);
   } else {
-    // Try default XML topology location
+    // 尝试默认的 XML 拓扑位置
     NCCLCHECKGOTO(ncclTopoGetXmlFromFile("/var/run/nvidia-topologyd/virtualTopology.xml", xml, 0), ret, fail);
   }
-  // Fixup the cpu's host_hashes.
+  // 修正各 CPU 的 host_hash 值。
   struct ncclXmlNode* node;
-  // Update every cpu node's host_hash attribute since those are not
-  // intended to be preserved from the XML files that have been read.
+  // 更新每个 CPU 节点的 host_hash 属性，因为从已读取的 XML 文件导入时
+  // 这些值本就不打算被保留。
   NCCLCHECKGOTO(xmlFindTag(xml, "cpu", &node), ret, fail);
   while (node != nullptr) {
     NCCLCHECKGOTO(xmlSetAttrLong(node, "host_hash", getHostHash()), ret, fail);
     NCCLCHECKGOTO(xmlFindNextTag(xml, "cpu", node, &node), ret, fail);
   }
   if (xml->maxIndex == 0) {
-    // Create top tag
+    // 创建顶层(顶)标签
     struct ncclXmlNode* top;
     NCCLCHECKGOTO(xmlAddNode(xml, NULL, "system", &top), ret, fail);
     NCCLCHECKGOTO(xmlSetAttrInt(top, "version", NCCL_TOPO_XML_VERSION), ret, fail);
@@ -1816,7 +1816,7 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
 
   NCCLCHECKGOTO(ncclTopoRefreshBcmP2pLinks(), ret, fail);
 
-  // Detect only the GPU managed by this process.  We'll get any others through XML fusion.
+  // 只检测本进程管理的 GPU。其余的将通过 XML 融合获得。
   char busId[NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];
   NCCLCHECKGOTO(int64ToBusId(comm->peerInfo[comm->rank].busId, busId), ret, fail);
   NCCLCHECKGOTO(ncclTopoFillGpu(xml, busId, &node), ret, fail);
@@ -1827,8 +1827,8 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
     NCCLCHECKGOTO(xmlSetAttrInt(node, "mlopart", comm->peerInfo[comm->rank].mloPart), ret, fail);
   }
 
-  // Auto-detect NICs if needed, net/gin/collnet share the same xml/graph nodes.
-  // Start with gin, then with collnet so that they precedence.
+  // 必要时自动检测网卡；网络/gin/collnet 共享同一套 xml/拓扑节点。
+  // 先处理 gin，再处理 collnet，使它们具有优先顺序。
   {
     std::lock_guard<std::mutex> lock(netMutex);
     INFO(NCCL_GRAPH, "TOPO/NET : Importing network plugins to topology");
@@ -1899,17 +1899,17 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
     NCCLCHECKGOTO(ncclTopoProcessNet(xml, dumpXmlFile, &netInfo), ret, fail);
   }
 
-  // Remove XML branches which don't have a node with keep="1" (typically when importing a topology)
+  // 移除没有 保留="1" 节点的 XML 分支(通常在导入拓扑时)
   NCCLCHECKGOTO(ncclTopoTrimXml(xml), ret, fail);
 
-  // XML topo fusion.
+  // XML 拓扑融合。
   if (comm->MNNVL) {
-    // MNNVL clique support
+    // MNNVL clique(可直连分组)支持
     nLocalRanks = comm->clique.size;
     localRank = comm->cliqueRank;
     localRanks = comm->clique.ranks;
   } else {
-    // Intra-node fusion.  Much of the comm is not initialized yet at this point so we need to do our own calculations.
+    // 节点内融合。此时通信域的大部分尚未初始化，因此我们需要自己做计算。
     NCCLCHECKGOTO(ncclCalloc(&localRanks, comm->nRanks), ret, fail);
     for (int i = 0; i < comm->nRanks; i++) {
       if (comm->peerInfo[i].hostHash == comm->peerInfo[comm->rank].hostHash) {
@@ -1922,18 +1922,18 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
   rankXml = (struct ncclXml*)(mem + xmlMemSize(NCCL_TOPO_XML_MAX_NODES) * localRank);
   memcpy(rankXml, xml, xmlMemSize(NCCL_TOPO_XML_MAX_NODES));
   NCCLCHECKGOTO(ncclTopoConvertXml(rankXml, (uintptr_t)xml->nodes, 1), ret, fail);
-  // nLocalRanks can't actually be 0, or we wouldn't be running at all...
+  // nLocalRanks 实际上不可能为 0，否则程序根本不会运行……
   // coverity[divide_by_zero]
   NCCLCHECKGOTO(bootstrapIntraNodeAllGather(comm->bootstrap, localRanks, localRank, nLocalRanks, mem,
                                             xmlMemSize(NCCL_TOPO_XML_MAX_NODES)),
                 ret, fail);
   if (comm->MNNVL) {
-    // Ensure that we have enough room when fusing topos from multiple nodes.
+    // 从多节点融合拓扑时，确保有足够空间容纳。
     free(xml);
     xml = NULL;
     NCCLCHECKGOTO(xmlAlloc(&xml, nLocalRanks * NCCL_TOPO_XML_MAX_NODES), ret, fail);
   } else {
-    // In the intra-node case there's no need to enlarge the topo xml.
+    // 节点内的情形无需扩充拓扑 XML。
     xml->maxIndex = 0;
   }
   for (int i = 0; i < nLocalRanks; i++) {
@@ -1947,7 +1947,7 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
     NCCLCHECKGOTO(ncclTopoDumpXmlToFile(dumpXmlFile, xml), ret, fail);
   }
 
-  // Only update our topo tracking structure if we aren't dumping (separate steps)
+  // 仅当不是在 转储(导出)时才更新拓扑跟踪结构(二者是分开的步骤)
   if (dumpXmlFile == NULL) NCCLCHECKGOTO(ncclTopoGetSystemFromXml(xml, system, getHostHash()), ret, fail);
 
 exit:
@@ -1991,8 +1991,8 @@ ncclResult_t ncclTopoGetLocal(struct ncclTopoSystem* system, int type, int index
 }
 
 ncclResult_t ncclTopoGetLocalNetCountByBw(struct ncclTopoSystem* system, int gpu, int* count, float* bw) {
-  // Assuming BW to CPU reflects the GPU bandwidth via P2P or C2C.
-  // Caveat, this could be wrong if there is a PCIe switch, and a narrower link to the CPU.
+  // 假设到 CPU 的带宽反映了经 P2P 或 C2C 的 GPU 带宽。
+  // 注意：如果存在 PCIe 交换机、且到 CPU 的链路更窄，这个假设可能不成立。
   int c;
   NCCLCHECK(ncclGetLocalCpu(system, gpu, &c));
   float gpuBw = system->nodes[GPU].nodes[gpu].paths[CPU][c].bw;
@@ -2084,8 +2084,8 @@ ncclResult_t ncclTopoGetLocalNetType(struct ncclTopoSystem* system, int type, in
     return ncclInternalError;
   }
 
-  // Starting net is chosen to avoid collision and follow a similar pattern for all GPUs.
-  // localGpuCount GPUs share localNetCount NET devs; each GPU using netsPerGpu NET devs.
+  // 起始网卡的选择旨在避免冲突，并对所有 GPU 遵循相似的模式。
+  // localGpuCount 张 GPU 共享 localNetCount 个网络设备；每张 GPU 使用 netsPerGpu 个网络设备。
   int net = system->nodes[GPU].nodes[gpu].gpu.dev % localGpuCount;
   if (isPow2(localNetCount)) net = mirrorBits(net, localNetCount);
   net += channelId % (netsPerGpu);
@@ -2174,26 +2174,26 @@ ncclResult_t ncclTopoGetCpuAffinity(struct ncclTopoSystem* system, int rank, ncc
   gpu = system->nodes[GPU].nodes + gpuIndex;
   cpu = system->nodes[CPU].nodes + cpuIndex;
 
-  // Query the CPU affinity set we were provided
+  // 查询我们被赋予的 CPU 亲和性集合
   ncclAffinity mask;
   NCCLCHECK(ncclOsGetAffinity(&mask));
 
-  // Get the affinity of the CPU close to our GPU.
+  // 获取离我们 GPU 最近的 CPU 的亲和性。
   ncclAffinity cpuMask = cpu->cpu.affinity;
 
-  // Get the final affinity
+  // 获取最终的亲和性
   ncclAffinity finalMask;
   if (ncclParamIgnoreCpuAffinity()) {
-    // Ignore the CPU affinity set and use the GPU one instead
+    // 忽略 CPU 亲和性集合，改用 GPU 的亲和性
     finalMask = cpuMask;
   } else {
-    // Use a subset of the GPU affinity set
+    // 使用 GPU 亲和性集合的一个子集
     finalMask = ncclOsCpuAnd(mask, cpuMask);
   }
 
   memcpy(affinity, &finalMask, sizeof(ncclAffinity));
 
-  // display the final affinity
+  // 显示最终的亲和性
   char msg[1024] = "";
   snprintf(msg + strlen(msg), sizeof(msg) - strlen(msg), "Affinity for GPU %d is ", gpu->gpu.dev);
   if (ncclOsCpuCount(finalMask)) {

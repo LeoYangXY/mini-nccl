@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/symmetric/gin_scratch__funcs.h — [GIN 相关] gin scratch 函数定义
+ * ----------------------------------------------------------------------------
+ * 定义 GIN(第三方 GPU 内部接口库) scratch 区域的函数：ncclGinOutboxSession 等
+ * outbox 收发会话的接口。GIN 由 Meta 引入，mini-nccl 精简版下多被 stub。
+ */
+
 #ifndef _NCCL_DEVICE_GIN_SCRATCH__FUNCS_H_
 #define _NCCL_DEVICE_GIN_SCRATCH__FUNCS_H_
 #include "gin_scratch__types.h"
@@ -143,7 +150,7 @@ NCCL_DEVICE_INLINE ncclGinInboxA2ASession<Coop, ginBackendMask>::ncclGinInboxA2A
   : ncclGinInboxA2ASession_internal<Coop, ginBackendMask>{coop, gin.comm, gin, team, handle, (int)index} {
   this->nPeers = team.nRanks - 1;
   this->state = this->getStatePtr()->unpadded;
-  // The `index` to `context` relationship must be 1:1.
+  // The `索引` to `上下文` relationship 必须为 1:1.
   assert(this->state.ginContextId_plus_1 == 0 || this->state.ginContextId_plus_1 == gin.contextId + 1);
   this->state.ginContextId_plus_1 = gin.contextId + 1;
 }
@@ -167,7 +174,7 @@ NCCL_DEVICE_INLINE void ncclGinInboxA2ASession<Coop, ginBackendMask>::apportion(
   int nBufs_log2_cur = this->state.nBufs_log2_plus_1 - 1;
   if (nBufs_log2_cur != nBufs_log2_next) {
     if (subcoopIsNonTrivial) {
-      // Send initial C2S's for all bufs for next (+1) phase.
+      // 发送 初始的 C2S's 对所有 bufs for 下一个 (+1) 阶段.
       int nPeers = this->nPeers;
       int nBufs = 1 << nBufs_log2_next;
       uint32_t nBufs_div_nPeers, nBufs_mod_nPeers;
@@ -178,12 +185,12 @@ NCCL_DEVICE_INLINE void ncclGinInboxA2ASession<Coop, ginBackendMask>::apportion(
         this->sendC2S(/*phaseDelta=*/+1, step, /*step_lt_nPeers=*/true, credits);
       }
 
-      // Reset all signals of previous (-1) phase. The current phase can have
-      // inbound C2S still in flight but the previous cannot because of signal's
-      // release semantics combined with fact that we've communicated with all peers.
+      // Reset 所有 信号 of 前一个 (-1) 阶段. 当前 阶段 can have
+      // inbound C2S 仍 进行中 但 上一个 cannot 由于 信号's
+      // 释放 semantics combined with fact 那个 we've communicated with 所有 对等端.
       this->resetSignals(subcoop, /*phaseDelta=*/-1);
     }
-    // Move to next phase
+    // 移动到 下一个 阶段
     this->state.nBufs_log2_plus_1 = nBufs_log2_next + 1;
     this->state.phase += 1; // implicitly modulo 4
     this->state.monoRound = 0; // round resets with phase change.
@@ -273,7 +280,7 @@ NCCL_DEVICE_INLINE void ncclGinInboxA2ASession<Coop, ginBackendMask>::finishRecv
   int nBufs_mod_nPeers = imodFast32(1 << nBufs_log2, this->nPeers, this->handle.nPeers_rcp32);
   NVCC_PRAGMA_UNROLL_DISABLED
   for (int i = subcoop.thread_rank(); i < nSteps; i += subcoop.size()) {
-    // Determine next step that will alias the buffer of this step.
+    // Determine 下一个 步骤 那个 will alias 该缓冲区 of 此 步骤.
     int step = step0 + i; // guaranteed: step < nPeers
     int nextStep = step + nBufs_mod_nPeers;
     if (this->nPeers <= nextStep) nextStep -= this->nPeers; // modulo for + nBufs_mod_nPeers

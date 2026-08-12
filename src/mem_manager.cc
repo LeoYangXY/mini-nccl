@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/mem_manager.cc — 用户注册内存管理器实现
+ * ----------------------------------------------------------------------------
+ * 实现 ncclMemoryManager：把用户传入的 host/device buffer 登记为可被 transport 直接
+ * 访问的“注册段”，管理其 IPC 句柄、引用计数、地址映射与生命周期。被 register.cc
+ * 与 transport 复用。
+ */
+
 #include "comm.h"
 #include "alloc.h"
 #include "checks.h"
@@ -24,17 +32,17 @@
 #include <stdlib.h>
 #include <mutex>
 
-// Internal parameter to disable memory manager for testing
+// 内部参数：用于测试时禁用内存管理器
 NCCL_PARAM(MemManagerDisable, "DISABLE_MEM_MANAGER", 0);
 
-// Initialize memory manager
+// 初始化内存管理器
 ncclResult_t ncclMemManagerInit(struct ncclComm* comm) {
   if (ncclParamMemManagerDisable()) return ncclSuccess;
   if (comm == nullptr) return ncclInvalidArgument;
 
   ncclMemManager* mgr;
   NCCLCHECK(ncclCalloc(&mgr, 1));
-  // Explicitly construct std::mutex using placement new
+  // 用 placement new 显式构造 std::mutex
   new (&mgr->lock) std::mutex();
 
   mgr->entries = nullptr;
@@ -58,7 +66,7 @@ ncclResult_t ncclMemManagerInit(struct ncclComm* comm) {
   return ncclSuccess;
 }
 
-// Destroy memory manager and free all resources
+// 销毁内存管理器并释放全部资源
 ncclResult_t ncclMemManagerDestroy(struct ncclComm* comm) {
   if (ncclParamMemManagerDisable()) return ncclSuccess;
   if (comm == nullptr) return ncclInvalidArgument;
@@ -71,17 +79,17 @@ ncclResult_t ncclMemManagerDestroy(struct ncclComm* comm) {
     return ncclSuccess;
   }
 
-  // Decrement reference count
+  // 递减引用计数
   int refCount = ncclAtomicRefCountDecrement(&mgr->refCount);
 
   if (refCount > 0) {
-    // Other comms still using this manager
+    // 还有其它 comm 正在使用本管理器
     INFO(NCCL_ALLOC, "MemManager: Decremented refCount to %d", refCount);
     comm->memManager = nullptr;  // Clear this comm's pointer
     return ncclSuccess;
   }
 
-  // refCount == 0, at this point proxy threads should be joined
+  // 引用计数为 0，此时 proxy 线程应当已经 join 完毕
   INFO(NCCL_ALLOC, "MemManager: Destroying (refCount=0)");
   COMPILER_ATOMIC_STORE(&mgr->initialized, 0, std::memory_order_release);
 
@@ -89,12 +97,12 @@ ncclResult_t ncclMemManagerDestroy(struct ncclComm* comm) {
   while (entry != nullptr) {
     ncclDynMemEntry* next = entry->next;
 
-    // Free CPU backup if exists
+    // 若存在则释放 CPU 备份内存
     if (entry->cpuBackup != nullptr) {
       ncclCudaHostFree(entry->cpuBackup);
     }
 
-    // Close shareable FD if valid (defensive cleanup for POSIX FD handle type)
+    // 若共享 FD 有效则关闭(对 POSIX FD 句柄类型的防御性清理)
     if (!entry->isImportedFromPeer && entry->desc.local.shareableHandleValid &&
         entry->handleType == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR && entry->desc.local.shareableHandle.fd >= 0) {
       close(entry->desc.local.shareableHandle.fd);
@@ -102,12 +110,12 @@ ncclResult_t ncclMemManagerDestroy(struct ncclComm* comm) {
       entry->desc.local.shareableHandleValid = false;
     }
 
-    // Only local entries have exportedPeerRanks (imported entries use desc.imported union member)
+    // 只有本地条目才有 exportedPeerRanks(导入条目使用 desc.imported 联合体成员)
     if (!entry->isImportedFromPeer && entry->desc.local.exportedPeerRanks != nullptr) {
       free(entry->desc.local.exportedPeerRanks);
     }
 
-    // Free the entry itself
+    // 释放条目自身
     free(entry);
     entry = next;
   }
@@ -115,9 +123,9 @@ ncclResult_t ncclMemManagerDestroy(struct ncclComm* comm) {
   mgr->entries = nullptr;
   mgr->numEntries = 0;
 
-  // Explicitly call destructor for std::mutex
+  // 显式调用 std::mutex 的析构函数
   mgr->lock.~mutex();
-  // Free the manager struct
+  // 释放管理器结构体
   free(mgr);
   comm->memManager = nullptr;
 
@@ -125,7 +133,7 @@ ncclResult_t ncclMemManagerDestroy(struct ncclComm* comm) {
   return ncclSuccess;
 }
 
-// Internal helper to create and track memory entry
+// 内部辅助函数：创建并跟踪一个内存条目
 static ncclResult_t ncclMemTrackInternal(struct ncclMemManager* manager, void* ptr, size_t size,
                                          CUmemGenericAllocationHandle handle, CUmemAllocationHandleType handleType,
                                          ncclMemType_t memType, bool isImportedFromPeer, int ownerRank, int ownerDev,
@@ -137,7 +145,7 @@ static ncclResult_t ncclMemTrackInternal(struct ncclMemManager* manager, void* p
     return ncclInternalError;
   }
 
-  // Persistent memory: atomic update only
+  // 持久内存：仅做原子更新
   if (memType == ncclMemPersist) {
     if (isImportedFromPeer) {
       (void)COMPILER_ATOMIC_ADD_FETCH(&manager->totalPersistImported, size, std::memory_order_relaxed);
@@ -149,14 +157,14 @@ static ncclResult_t ncclMemTrackInternal(struct ncclMemManager* manager, void* p
     return ncclSuccess;
   }
 
-  // Scratch/Offload: create linked list entry
+  // Scratch/Offload：创建链表条目
   ncclDynMemEntry* entry = (ncclDynMemEntry*)malloc(sizeof(ncclDynMemEntry));
   if (entry == nullptr) {
     WARN("MemManager: Failed to allocate memory entry");
     return ncclSystemError;
   }
 
-  // Initialize common fields
+  // 初始化公共字段
   memset(entry, 0, sizeof(ncclDynMemEntry));
   entry->ptr = ptr;
   entry->size = size;
@@ -168,7 +176,7 @@ static ncclResult_t ncclMemTrackInternal(struct ncclMemManager* manager, void* p
   entry->cpuBackup = nullptr;
   entry->isImportedFromPeer = isImportedFromPeer;
 
-  // Initialize ownership-specific fields
+  // 初始化与所有权相关的字段
   if (isImportedFromPeer) {
     entry->desc.imported.ownerRank = ownerRank;
     entry->desc.imported.ownerDev = ownerDev;
@@ -185,13 +193,13 @@ static ncclResult_t ncclMemTrackInternal(struct ncclMemManager* manager, void* p
 
   { // lock the mutex to add the entry to the linked list
     std::lock_guard<std::mutex> lock(manager->lock);
-    // Add to linked list (prepend)
+    // 加入链表(头插法)
     entry->next = manager->entries;
     manager->entries = entry;
     manager->numEntries++;
   } // lock_guard automatically releases mutex
 
-  // Update statistics
+  // 更新统计信息
   if (isImportedFromPeer) {
     if (memType == ncclMemScratch) {
       (void)COMPILER_ATOMIC_ADD_FETCH(&manager->totalScratchImported, size, std::memory_order_relaxed);
@@ -213,31 +221,31 @@ static ncclResult_t ncclMemTrackInternal(struct ncclMemManager* manager, void* p
   return ncclSuccess;
 }
 
-// Track a new allocation
+// 跟踪一次新的分配
 ncclResult_t ncclMemTrack(struct ncclMemManager* manager, void* ptr, size_t size, CUmemGenericAllocationHandle handle,
                           CUmemAllocationHandleType handleType, ncclMemType_t memType) {
   return ncclMemTrackInternal(manager, ptr, size, handle, handleType, memType, false, -1, -1, nullptr);
 }
 
-// Track imported allocation from peer
+// 跟踪从对端导入的分配
 ncclResult_t ncclMemTrackImportFromPeer(struct ncclMemManager* manager, void* ptr, size_t size,
                                         CUmemGenericAllocationHandle handle, CUmemAllocationHandleType handleType,
                                         ncclMemType_t memType, int ownerRank, int ownerDev, void* ownerPtr) {
   return ncclMemTrackInternal(manager, ptr, size, handle, handleType, memType, true, ownerRank, ownerDev, ownerPtr);
 }
 
-// Untrack allocation
+// 取消对分配的跟踪
 ncclResult_t ncclMemUntrack(struct ncclMemManager* manager, void* ptr, size_t size) {
   if (ncclParamMemManagerDisable()) return ncclSuccess;
   if (manager == nullptr || ptr == nullptr) return ncclInternalError;
 
-  // Atomic check to avoid locking destroyed mutex
+  // 用原子检查避免对已被销毁的互斥量加锁
   if (!COMPILER_ATOMIC_LOAD(&manager->initialized, std::memory_order_acquire)) {
     WARN("MemManager: Cannot untrack allocation ptr=%p, manager not initialized", ptr);
     return ncclInternalError;
   }
 
-  // Variables to save values before releasing lock
+  // 在释放锁之前保存值的临时变量
   size_t entrySize = 0;
   int numEntries COMPILER_ATTRIBUTE_UNUSED = 0;  // May be unused if TRACE compiled out
   bool isImportedFromPeer = false;
@@ -251,7 +259,7 @@ ncclResult_t ncclMemUntrack(struct ncclMemManager* manager, void* ptr, size_t si
 
     while (entry != nullptr) {
       if (entry->ptr == ptr) {
-        // Remove from linked list
+        // 从链表中移除
         if (prev == nullptr) {
           manager->entries = entry->next;
         } else {
@@ -259,13 +267,13 @@ ncclResult_t ncclMemUntrack(struct ncclMemManager* manager, void* ptr, size_t si
         }
         manager->numEntries--;
 
-        // Free CPU backup if exists
+        // 若存在则释放 CPU 备份内存
         if (entry->cpuBackup != nullptr) {
           manager->cpuBackupUsage -= entry->size;
           ncclCudaHostFree(entry->cpuBackup);
         }
 
-        // Close shareable FD if valid (defensive cleanup for POSIX FD handle type)
+        // 若共享 FD 有效则关闭(对 POSIX FD 句柄类型的防御性清理)
         if (!entry->isImportedFromPeer && entry->desc.local.shareableHandleValid &&
             entry->handleType == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR &&
             entry->desc.local.shareableHandle.fd >= 0) {
@@ -274,18 +282,18 @@ ncclResult_t ncclMemUntrack(struct ncclMemManager* manager, void* ptr, size_t si
           entry->desc.local.shareableHandleValid = false;
         }
 
-        // Only local entries have exportedPeerRanks (imported entries use desc.imported union member)
+        // 只有本地条目才有 exportedPeerRanks(导入条目使用 desc.imported 联合体成员)
         if (!entry->isImportedFromPeer && entry->desc.local.exportedPeerRanks != nullptr) {
           free(entry->desc.local.exportedPeerRanks);
         }
 
-        // Save values before unlock for logging (may be unused if TRACE is compiled out)
+        // 在解锁前保存值以供日志使用(若 TRACE 被编译掉则可能未使用)
         entrySize = entry->size;
         numEntries = manager->numEntries;
         isImportedFromPeer = entry->isImportedFromPeer;
         memType = entry->memType;
 
-        // Safety check: log if tracked size doesn't match passed size
+        // 安全检查：若跟踪到的尺寸与传入尺寸不符则记录日志
         if (entrySize != size) {
           INFO(NCCL_ALLOC, "MemManager: Untrack size mismatch ptr=%p tracked=%zu passed=%zu", ptr, entrySize, size);
         }
@@ -298,9 +306,9 @@ ncclResult_t ncclMemUntrack(struct ncclMemManager* manager, void* ptr, size_t si
     }
   } // lock_guard automatically releases mutex
 
-  // Update statistics
+  // 更新统计信息
   if (entrySize > 0) {
-    // Entry found in linked list
+    // 在链表中找到了该条目
     if (isImportedFromPeer) {
       if (memType == ncclMemScratch) {
         (void)COMPILER_ATOMIC_SUB_FETCH(&manager->totalScratchImported, entrySize, std::memory_order_relaxed);
@@ -317,7 +325,7 @@ ncclResult_t ncclMemUntrack(struct ncclMemManager* manager, void* ptr, size_t si
 
     TRACE(NCCL_ALLOC, "MemManager: Untrack ptr=%p size=%zu entries=%d", ptr, entrySize, numEntries);
   } else {
-    // Entry not found in linked list - must be persistent memory
+    // 链表中未找到该条目——必为持久内存
     (void)COMPILER_ATOMIC_SUB_FETCH(&manager->totalPersist, size, std::memory_order_relaxed);
     TRACE(NCCL_ALLOC, "MemManager: Untrack Persistent ptr=%p size=%zu", ptr, size);
   }
@@ -325,10 +333,10 @@ ncclResult_t ncclMemUntrack(struct ncclMemManager* manager, void* ptr, size_t si
   return ncclSuccess;
 }
 
-// Track that a buffer is being shared with a peer (for suspend/resume coordination)
-// NOTE: Only for dynamic memory (scratch/offload) that's in the linked list.
-// Persistent memory doesn't need export tracking since it's never suspended.
-// Call this after allocating dynamic memory and the peer imports it.
+// 标记某缓冲区正与对端共享(用于挂起/恢复时的协调)
+// 注意：仅对链表中的动态内存(scratch/offload)有效。
+// 持久内存无需导出跟踪，因为它永远不会被挂起。
+// 在分配动态内存、且对端导入它之后调用本函数。
 ncclResult_t ncclDynMemMarkExportToPeer(struct ncclMemManager* manager, void* ptr, int peerRank) {
   if (ncclParamMemManagerDisable()) return ncclSuccess;
   if (manager == nullptr || ptr == nullptr) return ncclInternalError;
@@ -338,7 +346,7 @@ ncclResult_t ncclDynMemMarkExportToPeer(struct ncclMemManager* manager, void* pt
   }
   std::lock_guard<std::mutex> lock(manager->lock);
 
-  // Find entry in linked list (only contains scratch/offload, not persistent)
+  // 在链表中查找条目(链表只含 scratch/offload，不含持久内存)
   ncclDynMemEntry* entry = manager->entries;
   while (entry != nullptr && entry->ptr != ptr) {
     entry = entry->next;
@@ -351,13 +359,13 @@ ncclResult_t ncclDynMemMarkExportToPeer(struct ncclMemManager* manager, void* pt
     return ncclInternalError;
   }
 
-  // Verify this is a local entry, not an imported one
+  // 确认这是一个本地条目，而非导入条目
   if (entry->isImportedFromPeer) {
     WARN("MemManager: Cannot mark export for ptr=%p - this is an imported buffer, not a local one", ptr);
     return ncclInternalError;
   }
 
-  // Check if peer already exists
+  // 检查该对端是否已存在
   for (int i = 0; i < entry->desc.local.numExportedPeers; i++) {
     if (entry->desc.local.exportedPeerRanks[i] == peerRank) {
       WARN("MemManager: Buffer ptr=%p already exported to peer rank %d", ptr, peerRank);
@@ -377,7 +385,7 @@ ncclResult_t ncclDynMemMarkExportToPeer(struct ncclMemManager* manager, void* pt
     entry->desc.local.exportedPeersCapacity = newCapacity;
   }
 
-  // Add peer to export list
+  // 把该对端加入导出列表
   entry->desc.local.exportedPeerRanks[entry->desc.local.numExportedPeers++] = peerRank;
 
   TRACE(NCCL_ALLOC, "MemManager: ExportToPeer ptr=%p peerRank=%d numExportedPeers=%d", ptr, peerRank,
@@ -417,18 +425,18 @@ ncclResult_t ncclCommMemSuspend(struct ncclComm* comm) {
   CUDACHECK(cudaDeviceSynchronize());
   NCCLCHECKGOTO(bootstrapBarrier(comm->bootstrap, comm->rank, comm->nRanks, 0xBEEF), ret, fail);
 
-  // Step 1: Unmap all peer-imported buffers first
+  // 第一步：先解除所有对端导入缓冲区的映射
   entry = manager->entries;
   while (entry != nullptr) {
     if (entry->isImportedFromPeer && entry->state == ncclDynMemStateActive) {
       TRACE(NCCL_ALLOC, "MemManager: Unmapping peer-imported buffer ptr=%p from rank %d", entry->ptr,
             entry->desc.imported.ownerRank);
 
-      // Unmap our local mapping of the peer's memory
+      // 解除我们对端内存的本地映射
       CUCHECKIGNORE(cuMemUnmap((CUdeviceptr)entry->ptr, entry->size));
 
-      // Release our reference to the peer's handle if we have one
-      // For same-process imports, handle may be 0 if the reference was already released after mapping
+      // 若持有对端句柄的引用则释放它
+      // 对同进程导入，若映射后引用已被释放，句柄可能为 0
       if (entry->handle != 0) {
         CUCHECKIGNORE(cuMemRelease(entry->handle));
         entry->handle = 0;  // Clear invalid handle
@@ -441,22 +449,22 @@ ncclResult_t ncclCommMemSuspend(struct ncclComm* comm) {
     entry = entry->next;
   }
 
-  // Step 2: Offload and release local memory
+  // 第二步：卸载(offload)并释放本地内存
   entry = manager->entries;
   while (entry != nullptr) {
-    // Skip buffer imported from peer
+    // 跳过从对端导入的缓冲区
     if (entry->isImportedFromPeer) {
       entry = entry->next;
       continue;
     }
 
-    // Skip already released
+    // 跳过已释放的缓冲区
     if (entry->state == ncclDynMemStateReleased) {
       entry = entry->next;
       continue;
     }
 
-    // For OFFLOAD type: copy to CPU backup first
+    // 对 OFFLOAD 类型：先拷到 CPU 备份
     if (entry->memType == ncclMemOffload) {
       NCCLCHECKGOTO(ncclCudaHostCalloc((char**)&entry->cpuBackup, entry->size), ret, fail);
       if (entry->cpuBackup == nullptr) {
@@ -465,7 +473,7 @@ ncclResult_t ncclCommMemSuspend(struct ncclComm* comm) {
         goto fail;
       }
 
-      // Copy GPU to CPU
+      // 把 GPU 数据拷到 CPU
       cudaError_t err = cudaMemcpy(entry->cpuBackup, entry->ptr, entry->size, cudaMemcpyDeviceToHost);
       if (err != cudaSuccess) {
         ncclCudaHostFree(entry->cpuBackup);
@@ -481,7 +489,7 @@ ncclResult_t ncclCommMemSuspend(struct ncclComm* comm) {
       releasedScratch += entry->size;
     }
 
-    // Close the shareable FD if valid (for POSIX handles)
+    // 若共享 FD 有效则关闭(针对 POSIX 句柄)
     if (entry->desc.local.shareableHandleValid && entry->handleType == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR &&
         entry->desc.local.shareableHandle.fd >= 0) {
       close(entry->desc.local.shareableHandle.fd);
@@ -489,10 +497,10 @@ ncclResult_t ncclCommMemSuspend(struct ncclComm* comm) {
       entry->desc.local.shareableHandleValid = false;
     }
 
-    // Unmap physical memory but keep virtual address reservation
+    // 解除物理内存映射，但保留虚拟地址的预留
     CUCHECKIGNORE(cuMemUnmap((CUdeviceptr)entry->ptr, entry->size));
 
-    // Release physical memory handle
+    // 释放物理内存句柄
     CUCHECKIGNORE(cuMemRelease(entry->handle));
     entry->handle = 0;  // Clear invalid handle
 
@@ -550,22 +558,22 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
   ncclDynMemP2pHandleInfo* localInfos = nullptr;
   ncclDynMemP2pHandleInfo* allInfos = nullptr;
 
-  // Step 1: Restore all local memory
+  // 第一步：恢复所有本地内存
   ncclDynMemEntry* entry = manager->entries;
   while (entry != nullptr) {
-    // Skip peer-imported entries
+    // 跳过从对端导入的条目
     if (entry->isImportedFromPeer) {
       entry = entry->next;
       continue;
     }
 
-    // Skip entries that weren't released
+    // 跳过未被释放的条目
     if (entry->state != ncclDynMemStateReleased) {
       entry = entry->next;
       continue;
     }
 
-    // Re-create physical allocation
+    // 重新创建物理分配
     CUmemAllocationProp prop = {};
     prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
     prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
@@ -575,7 +583,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
     CUmemGenericAllocationHandle newHandle;
     CUCHECKGOTO(cuMemCreate(&newHandle, entry->size, &prop, 0), ret, fail);
 
-    // Re-map to the same virtual address and set access permissions for local device
+    // 重新映射到同一虚拟地址，并为本地设备设置访问权限
     ret = ncclCuMemMapAndSetAccess(entry->ptr, entry->size, newHandle, entry->cudaDev);
     if (ret != ncclSuccess) {
       CUCHECKIGNORE(cuMemRelease(newHandle));
@@ -583,11 +591,11 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
       goto fail;
     }
 
-    // Restore peer access for all previously exported peers
+    // 为所有此前已导出的对端恢复访问权限
     for (int i = 0; i < entry->desc.local.numExportedPeers; i++) {
       int peerRank = entry->desc.local.exportedPeerRanks[i];
       if (peerRank >= 0 && peerRank < comm->nRanks) {
-        // Only set access for peers on the same node and same process
+        // 仅为同一节点、同一进程内的对端设置访问权限
         if (comm->peerInfo[peerRank].pidHash == comm->peerInfo[comm->rank].pidHash &&
             comm->peerInfo[peerRank].hostHash == comm->peerInfo[comm->rank].hostHash) {
           int peerDev = comm->peerInfo[peerRank].cudaDev;
@@ -602,10 +610,10 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
       }
     }
 
-    // Update handle
+    // 更新句柄
     entry->handle = newHandle;
 
-    // For OFFLOAD type: restore data from CPU backup
+    // 对 OFFLOAD 类型：从 CPU 备份恢复数据
     if (entry->memType == ncclMemOffload && entry->cpuBackup != NULL) {
       cudaError_t err = cudaMemcpy(entry->ptr, entry->cpuBackup, entry->size, cudaMemcpyHostToDevice);
       if (err != cudaSuccess) {
@@ -613,7 +621,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
         ret = ncclUnhandledCudaError;
         goto fail;
       }
-      // Free CPU backup on successful restore
+      // 恢复成功后释放 CPU 备份
       ncclCudaHostFree(entry->cpuBackup);
       entry->cpuBackup = nullptr;
       manager->cpuBackupUsage -= entry->size;
@@ -644,7 +652,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
     entry = entry->next;
   }
 
-  // Step 2: Barrier to ensure all ranks have resumed their local memory
+  // 第二步：用屏障确保所有 rank 都已恢复各自的本地内存
   if (comm->bootstrap != nullptr) {
     INFO(NCCL_ALLOC, "MemManager: rank %d resumed %d local entries, waiting at barrier", comm->rank,
          restoredLocalCount);
@@ -662,7 +670,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
    * We use a simple approach: each rank sends to all peers that imported its buffers.
    */
 
-  // Count local buffers that have peers (need to broadcast new handle info)
+  // 统计拥有对端的本地缓冲区(需要广播新的句柄信息)
   localBroadcastCount = 0;
   entry = manager->entries;
   while (entry != nullptr) {
@@ -672,9 +680,9 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
     entry = entry->next;
   }
 
-  // Gather counts from all ranks using AllGather
+  // 用 AllGather 从所有 rank 收集计数
   if (comm->bootstrap != nullptr && comm->nRanks > 1) {
-    // Allocate buffer for all counts
+    // 为所有计数分配缓冲区
     allCounts = (int*)malloc(comm->nRanks * sizeof(int));
     if (allCounts == nullptr) {
       WARN("MemManager: Failed to allocate allCounts");
@@ -683,7 +691,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
     memset(allCounts, 0, comm->nRanks * sizeof(int));
     allCounts[comm->rank] = localBroadcastCount;
 
-    // AllGather counts: each rank contributes sizeof(int) at its position
+    // AllGather 计数：每个 rank 在自身位置贡献 sizeof(int) 个字节
     ret = bootstrapAllGather(comm->bootstrap, allCounts, sizeof(int));
     if (ret != ncclSuccess) {
       free(allCounts);
@@ -691,7 +699,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
       return ret;
     }
 
-    // Calculate total and offsets
+    // 计算总量与各 rank 的偏移
     int* offsets = (int*)malloc(comm->nRanks * sizeof(int));
     if (offsets == nullptr) {
       free(allCounts);
@@ -705,7 +713,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
     }
 
     if (totalInfoCount > 0) {
-      // Prepare local info to send
+      // 准备要发送的本地信息
       int localAllocCount = localBroadcastCount > 0 ? localBroadcastCount : 1;
       localInfos = (ncclDynMemP2pHandleInfo*)malloc(localAllocCount * sizeof(ncclDynMemP2pHandleInfo));
       if (localInfos == nullptr) {
@@ -726,7 +734,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
           localInfos[idx].handleType = entry->handleType;
 
           if (entry->handleType == CU_MEM_HANDLE_TYPE_FABRIC) {
-            // For FABRIC: copy the exported fabric handle (can be shared directly)
+            // 对 FABRIC：拷贝导出的 fabric 句柄(可直接共享)
             if (entry->desc.local.shareableHandleValid) {
               memcpy(&localInfos[idx].fabricHandle, &entry->desc.local.shareableHandle.fabricHandle,
                      sizeof(CUmemFabricHandle));
@@ -734,7 +742,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
               WARN("MemManager: FABRIC handle not valid for entry ptr=%p", entry->ptr);
             }
           } else {
-            // For POSIX FD: store the cuMem handle (for FD conversion via proxy)
+            // 对 POSIX FD：保存 cuMem 句柄(供经由 proxy 转换为 FD)
             memcpy(&localInfos[idx].handleData, &entry->handle, sizeof(CUmemGenericAllocationHandle));
           }
 
@@ -743,7 +751,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
         entry = entry->next;
       }
 
-      // Allocate buffer for all infos
+      // 为所有信息分配缓冲区
       allInfos = (ncclDynMemP2pHandleInfo*)malloc(totalInfoCount * sizeof(ncclDynMemP2pHandleInfo));
       if (allInfos == nullptr) {
         free(allCounts);
@@ -752,12 +760,12 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
         return ncclSystemError;
       }
 
-      // Copy local data to correct position
+      // 把本地数据拷到正确位置
       if (localBroadcastCount > 0) {
         memcpy(allInfos + offsets[comm->rank], localInfos, localBroadcastCount * sizeof(ncclDynMemP2pHandleInfo));
       }
 
-      // Exchange using Send/Recv (send first, then receive to avoid deadlock)
+      // 用 Send/Recv 交换(先发后收，避免死锁)
       for (int r = 0; r < comm->nRanks; r++) {
         if (r != comm->rank && localBroadcastCount > 0) {
           ret = bootstrapSend(comm->bootstrap, r, 0xFEED, localInfos,
@@ -799,7 +807,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
   entry = manager->entries;
   while (entry != nullptr) {
     if (entry->isImportedFromPeer && entry->state == ncclDynMemStateReleased) {
-      // Find matching info from AllGather results
+      // 从 AllGather 结果中找到匹配的信息
       ncclDynMemP2pHandleInfo* matchedInfo = nullptr;
 
       if (allInfos != nullptr) {
@@ -826,7 +834,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
       CUresult curet;
 
       if (matchedInfo->handleType == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
-        // POSIX FD handles only work within the same node - check hostHash
+        // POSIX FD 句柄只在同一节点内有效——检查 hostHash
         if (comm->peerInfo && comm->peerInfoValid &&
             comm->peerInfo[entry->desc.imported.ownerRank].hostHash != comm->peerInfo[comm->rank].hostHash) {
           WARN("MemManager: Cannot re-import peer buffer from rank %d (different node) using POSIX FD - skipping",
@@ -835,11 +843,11 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
           continue;
         }
 
-        // For POSIX FD: We need to get the FD from the owner
-        // Use proxy to convert cuMem handle to FD
+        // 对 POSIX FD：需要从拥有者处获取 FD
+        // 用 proxy 把 cuMem 句柄转换为 FD
         int fd = -1;
 
-        // The handleData contains the cuMem handle - request FD conversion
+        // handleData 中含有 cuMem 句柄——请求进行 FD 转换
         ret = ncclProxyClientGetFdBlocking(comm, entry->desc.imported.ownerRank, &matchedInfo->handleData, &fd);
         if (ret != ncclSuccess || fd < 0) {
           WARN("MemManager: Failed to get FD from rank %d for ptr=%p", entry->desc.imported.ownerRank, entry->ptr);
@@ -851,7 +859,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
                                                      CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
         close(fd);
       } else if (matchedInfo->handleType == CU_MEM_HANDLE_TYPE_FABRIC) {
-        // For FABRIC: Import directly using the fabric handle
+        // 对 FABRIC：用 fabric 句柄直接导入
         curet =
           CUPFN(cuMemImportFromShareableHandle(&newHandle, &matchedInfo->fabricHandle, CU_MEM_HANDLE_TYPE_FABRIC));
       } else {
@@ -866,7 +874,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
         continue;
       }
 
-      // Re-map to the same virtual address and set access permissions
+      // 重新映射到同一虚拟地址并设置访问权限
       ncclResult_t mapResult = ncclCuMemMapAndSetAccess(entry->ptr, entry->size, newHandle, comm->cudaDev);
       if (mapResult != ncclSuccess) {
         CUCHECKIGNORE(cuMemRelease(newHandle));
@@ -889,13 +897,13 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
 
   manager->released = 0;
 
-  // Final barrier to ensure all ranks have completed peer import setup
+  // 最后用屏障确保所有 rank 都已完成对端导入的设置
   if (comm->bootstrap != nullptr) {
     INFO(NCCL_ALLOC, "MemManager: rank %d resumed %d local + %d peer entries (%zu + %zu bytes)", comm->rank,
          restoredLocalCount, restoredPeerCount, restoredLocalBytes, restoredPeerBytes);
     ret = bootstrapBarrier(comm->bootstrap, comm->rank, comm->nRanks, 0xCAFE);
     if (ret != ncclSuccess) {
-      // Cleanup
+      // 清理
       if (allCounts) free(allCounts);
       if (localInfos) free(localInfos);
       if (allInfos) free(allInfos);
@@ -904,7 +912,7 @@ ncclResult_t ncclCommMemResume(struct ncclComm* comm) {
     }
   }
 
-  // Cleanup
+  // 清理
   if (allCounts) free(allCounts);
   if (localInfos) free(localInfos);
   if (allInfos) free(allInfos);
@@ -941,7 +949,7 @@ ncclResult_t ncclCommSuspend(ncclComm_t comm, int flags) {
       ret = ncclInvalidUsage;
       goto fail;
     }
-    // Check if manager is shared
+    // 检查管理器是否被共享
     if (comm->memManager && comm->memManager->refCount > 1) {
       WARN("Memory suspend not supported with split_share communicators (refCount=%d)", comm->memManager->refCount);
       ret = ncclInvalidUsage;
@@ -983,7 +991,7 @@ ncclResult_t ncclCommResume(ncclComm_t comm) {
     ret = ncclInvalidUsage;
     goto fail;
   }
-  // Check if manager is shared
+  // 检查管理器是否被共享
   if (comm->memManager && comm->memManager->refCount > 1) {
     WARN("Memory resume not supported with split_share communicators (refCount=%d)", comm->memManager->refCount);
     ret = ncclInvalidUsage;
@@ -1039,7 +1047,7 @@ ncclResult_t ncclCommMemStats(ncclComm_t comm, ncclCommMemStat_t stat, uint64_t*
              COMPILER_ATOMIC_LOAD(&manager->totalOffload, std::memory_order_relaxed);
     return ncclSuccess;
   case ncclStatGpuMemSuspended:
-    // Boolean: 0=active, 1=suspended
+    // 布尔量：0=活跃，1=已挂起
     *value = manager->released ? 1 : 0;
     return ncclSuccess;
   default:

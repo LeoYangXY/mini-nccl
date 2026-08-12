@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/debug.h — 调试/日志级别与 INFO/WARN 声明
+ * ----------------------------------------------------------------------------
+ * 定义调试宏与日志级别：INFO/WARN/ERROR 输出、NCCL_DEBUG 等级控制、函数名/行号
+ * 打印辅助。几乎所有源文件都包含本文件以使用日志。
+ */
+
 #ifndef NCCL_INT_DEBUG_H_
 #define NCCL_INT_DEBUG_H_
 
@@ -14,7 +21,7 @@
 #include <thread>
 #include "compiler.h"
 
-// Conform to pthread and NVTX standard
+// Conform to pthread 并且 NVTX 标准
 #define NCCL_THREAD_NAMELEN 16
 
 extern int ncclDebugLevel;
@@ -43,7 +50,7 @@ void ncclDebugLogInternal(ncclDebugLogLevel level, unsigned long flags, const ch
                           const char* fmt, ...);
 #endif
 
-// Let code temporarily downgrade WARN into INFO
+// Let 代码 temporarily downgrade WARN into 信息
 extern thread_local int ncclDebugNoWarn;
 extern char ncclLastError[];
 

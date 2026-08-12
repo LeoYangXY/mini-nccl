@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/ibvwrap.h — InfiniBand verbs 函数包装
+ * ----------------------------------------------------------------------------
+ * 通过 dlopen 动态加载 libibverbs/libmlx5，把 IB verbs 函数指针封装成统一接口，
+ * 使 NCCL 在无 IB 环境下也能编译运行（运行时按需解析符号）。
+ */
+
 #ifndef NCCL_IBVWRAP_H_
 #define NCCL_IBVWRAP_H_
 
@@ -95,24 +102,24 @@ static inline ncclResult_t wrap_ibv_post_recv(struct ibv_qp* qp, struct ibv_recv
 
 ncclResult_t wrap_ibv_event_type_str(char** ret, enum ibv_event_type event);
 
-// converts a GID into a readable string. On success, returns a non-null pointer to gidStr.
-// NULL is returned if there was an error, with errno set to indicate the error.
-// errno = ENOSPC if the converted string would exceed strLen.
+// converts a GID into a readable string. 成功时, 返回 a non-null 指针 to gidStr.
+// NULL is 已返回 若re was an 错误, with errno 设为 indicate the 错误.
+// errno = ENOSPC 若 converted string would exceed strLen.
 static inline const char* ibvGetGidStr(union ibv_gid* gid, char* gidStr, size_t strLen) {
-  // GID is a 16B handle, to convert it to a readable form, we use inet_ntop
-  // sizeof(ibv_gid) == sizeof(struct in6_addr), so using AF_INET6
+  // GID is a 16B 句柄, to convert it to a readable form, we 使用 inet_ntop
+  // sizeof(ibv_gid) == sizeof(结构体 in6_addr), 所以 使用 AF_INET6
   static_assert(sizeof(union ibv_gid) == sizeof(struct in6_addr),
                 "the sizeof struct ibv_gid must be the size of struct in6_addr");
   return inet_ntop(AF_INET6, gid->raw, gidStr, strLen);
 }
 
-// Helper function to convert IB work completion status to string
+// 辅助 函数 to convert IB work 完成 status to string
 const char* ibvWcStatusStr(enum ibv_wc_status status);
 
-// Helper function to convert IB work completion opcode to string
+// 辅助 函数 to convert IB work 完成 opcode to string
 const char* ibvWcOpcodeStr(enum ibv_wc_opcode opcode);
 
-// Helper function to convert IB work request opcode to string
+// 辅助 函数 to convert IB work 请求 opcode to string
 const char* ibvWrOpcodeStr(enum ibv_wr_opcode opcode);
 
 #endif // End include guard

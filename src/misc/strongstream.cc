@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/misc/strongstream.cc — CUDA stream 封装(strong stream)实现
+ * ----------------------------------------------------------------------------
+ * 实现 include/strongstream.h 的“强 stream”：在普通 CUDA stream 之上增加捕获/
+ * 事件管理能力，支撑 CUDA graph 的录制与回放，被 kernel 启动复用。
+ */
+
 #include "strongstream.h"
 #include "cudawrap.h"
 #include "checks.h"
@@ -18,7 +25,7 @@
 #define cudaStreamUpdateCaptureDependencies_v2 cudaStreamUpdateCaptureDependencies
 #endif
 
-// Tracks the captured work a given graph captured identified by its graph id.
+// Tracks the captured work a 给定的 图 captured identified by its 图 id.
 struct ncclStrongStreamCapture {
   struct ncclStrongStreamCapture* next;
   cudaGraph_t graph;
@@ -66,7 +73,7 @@ void ncclCudaContextDrop(struct ncclCudaContext* cxt) {
     struct ncclCudaContext** pp = &cxtListHead;
     while (*pp != cxt) pp = &(*pp)->next;
     *pp = cxt->next; // remove from list
-    // Destroy resources held in cxt
+    // 销毁 resources 已持有 入 cxt
     ncclStrongStreamDestruct(&cxt->launchOrder);
     delete cxt;
   }
@@ -118,7 +125,7 @@ ncclResult_t ncclCudaGraphAddDestructor(struct ncclCudaGraph graph, cudaHostFn_t
 #if CUDART_VERSION >= 11030
   cudaUserObject_t object;
   CUDACHECK(cudaUserObjectCreate(&object, arg, fn, /*initialRefcount=*/1, cudaUserObjectNoDestructorSync));
-  // Hand over ownership to CUDA Graph
+  // Hand over ownership to CUDA 图
   CUDACHECK(cudaGraphRetainUserObject(graph.graph, object, 1, cudaGraphUserObjectMove));
   return ncclSuccess;
 #else
@@ -179,14 +186,14 @@ ncclResult_t ncclStrongStreamAcquire(struct ncclCudaGraph graph, struct ncclStro
     std::unique_lock<std::mutex> lock(ss->mutex, std::defer_lock);
     if (concurrent) lock.lock();
 
-    // Look for capture in our list of active captures.
+    // Look for capture 入 our 列表 of 活跃的 captures.
     struct ncclStrongStreamCapture** pcap = &ss->captureHead;
     struct ncclStrongStreamCapture* cap;
     struct ncclStrongStreamCapture* spare = nullptr;
     while (*pcap != nullptr) {
       cap = *pcap;
       if (cap->graphId == graph.graphId) {
-        // Capture node already exists.
+        // Capture 节点 已经 exists.
         *workStream = cap->captureStream;
         cap->acquiredBy = localThreadId();
         return ncclSuccess;
@@ -196,10 +203,10 @@ ncclResult_t ncclStrongStreamAcquire(struct ncclCudaGraph graph, struct ncclStro
         if (status == cudaStreamCaptureStatusActive) {
           pcap = &cap->next; // Active capture doesn't match, on to next.
         } else {
-          // Capture no longer active
+          // Capture 不再 活跃的
           *pcap = cap->next; // Remove from current list
           if (spare == nullptr) {
-            // Keep one spare to reuse below.
+            // 保留 one spare to reuse 下方.
             spare = cap;
           } else {
             cudaStreamDestroy(cap->captureStream);
@@ -208,7 +215,7 @@ ncclResult_t ncclStrongStreamAcquire(struct ncclCudaGraph graph, struct ncclStro
         }
       }
     }
-    // No matching capture, need a new entry.
+    // 无 matching capture, 需要 a new entry.
     cap = spare;
     if (cap == nullptr) {
       cap = (struct ncclStrongStreamCapture*)calloc(1, sizeof(struct ncclStrongStreamCapture));
@@ -216,7 +223,7 @@ ncclResult_t ncclStrongStreamAcquire(struct ncclCudaGraph graph, struct ncclStro
     }
     cap->graphId = graph.graphId;
     cap->acquiredBy = localThreadId();
-    // Push to capturing list.
+    // Push to capturing 列表.
     cap->next = ss->captureHead;
     ss->captureHead = cap;
 
@@ -226,7 +233,7 @@ ncclResult_t ncclStrongStreamAcquire(struct ncclCudaGraph graph, struct ncclStro
 
     *workStream = cap->captureStream;
 
-    // Bring captureStream into the graph but without any dependencies.
+    // Bring captureStream 入到 图 但 在没有 ... 的情况下 任意 dependencies.
     cudaEvent_t scratch;
     CUDACHECK(cudaEventCreateWithFlags(&scratch, cudaEventDisableTiming));
     CUDACHECK(cudaEventRecord(scratch, graph.origin));
@@ -243,7 +250,7 @@ ncclResult_t ncclStrongStreamAcquire(struct ncclCudaGraph graph, struct ncclStro
       CUDACHECK(cudaEventRecord(ss->serialEvent, ss->liveStream));
     }
     if (mixing) {
-      // First dependency is to wait on serialEvent
+      // 第一 dependency is to 等待 serialEvent
       CUDACHECK(cudaStreamWaitEvent(cap->captureStream, ss->serialEvent, cudaEventWaitExternal));
     }
   }
@@ -269,12 +276,12 @@ ncclResult_t ncclStrongStreamAcquiredWorkStream(struct ncclCudaGraph graph, stru
   return ncclSuccess;
 }
 
-// Add `event` as a record node on `stream` with stream's current capture frontier
-// as explicit dependencies. If updateFrontier is true, advance stream's capture
-// pointer to that node (needed for captureStream so subsequent NCCL work on the
-// same stream depends on the record). For the graph origin stream pass false —
-// the origin's frontier must not be modified or nodes captured on it after NCCL
-// will get unexpected topology that breaks cudaGraphExecUpdate.
+// Add `事件` as a record 节点 on `流` with 流's 当前的 capture frontier
+// as explicit dependencies. 若 updateFrontier is 真, advance 流's capture
+// 指针 to 那个 节点 (已需要 for captureStream 所以 subsequent NCCL work 在 ... 上
+// 相同 流 取决于 the record). 为了 图 origin 流 pass 假 —
+// the origin's frontier must 不 be modified 或者 节点 captured on it 之后 NCCL
+// will 获取 unexpected 拓扑 那个 breaks cudaGraphExecUpdate.
 #if CUDART_VERSION >= 11030
 static ncclResult_t recordEventOnStream(struct ncclCudaGraph graph, cudaEvent_t event, cudaStream_t stream,
                                         bool updateFrontier) {
@@ -356,9 +363,9 @@ ncclResult_t ncclStrongStreamRelease(struct ncclCudaGraph graph, struct ncclStro
   return ncclSuccess;
 }
 
-// Record `event` on `stream` as a graph node with the stream's current capture
-// frontier as dependencies. Used when GRAPH_STREAM_ORDERING=0 to serialize
-// collectives across graph launches without an ss-owned captureStream.
+// Record `事件` on `流` as a 图 节点 带有 流's 当前的 capture
+// frontier as dependencies. 已使用 当 GRAPH_STREAM_ORDERING=0 to serialize
+// 集合通信 across 图 launches 在没有 ... 的情况下 an ss-owned captureStream.
 ncclResult_t ncclCudaGraphRecordEvent(struct ncclCudaGraph graph, cudaEvent_t event, cudaStream_t stream) {
 #if CUDART_VERSION >= 11030
   if (graph.graphId != ULLONG_MAX) {
@@ -393,7 +400,7 @@ ncclResult_t ncclStreamAdvanceToEvent(struct ncclCudaGraph g, cudaStream_t s, cu
 
 #if CUDART_VERSION >= 12030
     if (res == cudaErrorLossyQuery) {
-      // CUDA is telling us the dependencies have edge annotations.
+      // CUDA 告知我们这些依赖带有边注解。
       cudaGraphEdgeData const* edges;
       CUDACHECK(cudaStreamGetCaptureInfo_v3(tmp, &status, nullptr, nullptr, &nodes, &edges, &count));
       CUDACHECK(cudaStreamUpdateCaptureDependencies_v2(s, (cudaGraphNode_t*)nodes, edges, count,

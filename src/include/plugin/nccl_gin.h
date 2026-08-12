@@ -5,6 +5,12 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/plugin/nccl_gin.h — GIN 插件接口聚合头 [NVIDIA 插件接口/第三方]
+ * ----------------------------------------------------------------------------
+ * 汇总 GIN(GPU 内部网络)插件的各版本接口(gin_v13/v14)。
+ */
+
 #ifndef NCCL_GIN_H_
 #define NCCL_GIN_H_
 
@@ -16,7 +22,7 @@
 #define NCCL_GIN_HANDLE_MAXSIZE 128
 #define MAX_GIN_SIZE (1024 * 1024 * 1024L) // Rather than send INT_MAX which is 2G-1, send a power of two.
 
-// Max number of ncclNet objects which can live in the same process
+// 最大值 数量： ncclNet objects 该 can live 入 相同 处理
 #ifndef NCCL_GIN_MAX_PLUGINS
 #define NCCL_GIN_MAX_PLUGINS 16
 #endif

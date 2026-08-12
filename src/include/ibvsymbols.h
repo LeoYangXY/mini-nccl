@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/ibvsymbols.h — [第三方/Low-level] InfiniBand verbs 符号声明
+ * ----------------------------------------------------------------------------
+ * 声明 libibverbs/libmlx5 的符号结构体，供 ibvwrap 通过 dlopen 动态解析 IB 函数。
+ * 源自第三方 verbs 库，非 mini-nccl 自有逻辑，不建议改动。
+ */
+
 #ifndef NCCL_IBV_SYMBOLS_H_
 #define NCCL_IBV_SYMBOLS_H_
 

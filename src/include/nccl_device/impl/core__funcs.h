@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/core__funcs.h — nccl_device core 函数实现
+ * ----------------------------------------------------------------------------
+ * 实现 nccl_device 框架核心 API 的函数体（ncclDevice* 系列），是设备端调用 NCCL
+ * 的入口实现。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_CORE__FUNCS_H_
 #define _NCCL_DEVICE_CORE__FUNCS_H_
 #include "core__types.h"

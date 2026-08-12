@@ -5,6 +5,20 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/param/parser_enum.h — 枚举型参数解析器
+ * ----------------------------------------------------------------------------
+ * 提供 oneOfResolve：从一组候选枚举值中按字符串匹配出对应枚举。
+ * 大小写不敏感地比较输入与候选名，命中则返回该枚举值。
+ */
+
+/*
+ * src/include/param/parser_enum.h — 枚举型参数解析器
+ * ----------------------------------------------------------------------------
+ * 支持把字符串匹配到一组枚举候选项（oneOf），例如把 "Ring"/"Tree"
+ * 解析成对应的算法枚举值。匹配失败返回错误。
+ */
+
 #ifndef PARAM_PARSER_ENUM_H_INCLUDED
 #define PARAM_PARSER_ENUM_H_INCLUDED
 
@@ -48,7 +62,7 @@ std::string oneOfToString(const void* ctx, const T& value) {
 } // namespace param
 } // namespace nccl
 
-// ncclParamOneOf: create parser for mapping enum string to value
+// ncclParamOneOf: 创建 parser for 映射 枚举 string to 值
 template <typename T, size_t N>
 ncclParamParser<T> ncclParamOneOf(ncclOptionSet<T, N> options) {
   using namespace nccl::param::parser;

@@ -5,6 +5,17 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/graph.h — 拓扑图与算法图的数据结构定义
+ * ----------------------------------------------------------------------------
+ * 定义“硬件拓扑”与“算法图”两大核心结构，是 graph/(拓扑搜索、建链) 与
+ * init/(建 communicator) 之间的契约：
+ *   - ncclTopoSystem / ncclTopoNode / ncclTopoLink : 探测到的硬件节点与链路(带宽)。
+ *   - ncclTopoGraph : 某种算法(ring/tree/nvls/collnet)的 channel 排列与带宽需求，
+ *     由 ncclTopoCompute 搜索得到，供 connect.cc 翻译成实际 channel 连接。
+ *   - 相关枚举：topoNodeType(节点类型)、topoLinkType(链路类型)、topoPattern(图模式)。
+ */
+
 #ifndef NCCL_GRAPH_H_
 #define NCCL_GRAPH_H_
 
@@ -20,7 +31,7 @@
 ncclResult_t ncclTopoCudaPath(int cudaDev, char** path);
 
 struct ncclTopoSystem;
-// Build the topology
+// 构建 the 拓扑
 ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** system, const char* dumpXmlFile = NULL);
 ncclResult_t ncclTopoSortSystem(struct ncclTopoSystem* system);
 ncclResult_t ncclTopoPrint(struct ncclTopoSystem* system);
@@ -36,7 +47,7 @@ ncclResult_t ncclTopoPathAllNVLink(struct ncclTopoSystem* system, int* allNvLink
 ncclResult_t ncclTopoPathAllDirectNVLink(struct ncclTopoSystem* system, bool* allNvlinkConnected);
 ncclResult_t ncclTopoComputeCommCPU(struct ncclComm* comm);
 
-// Query topology
+// Query 拓扑
 ncclResult_t ncclTopoGetNetDev(struct ncclComm* comm, int rank, struct ncclTopoGraph* graph, int channelId,
                                int peerRank, int64_t* id, int* dev, int* proxyRank);
 ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* system, int rank1, int rank2, int* p2p,
@@ -72,7 +83,7 @@ ncclResult_t ncclGetLocalCpu(struct ncclTopoSystem* system, int gpu, int* retCpu
 
 ncclResult_t ncclGetUserP2pLevel(int* level);
 
-// Find CPU affinity
+// 查找 CPU affinity
 ncclResult_t ncclTopoGetCpuAffinity(struct ncclTopoSystem* system, int rank, ncclAffinity* affinity);
 
 #define NCCL_TOPO_CPU_ARCH_X86 1
@@ -106,76 +117,76 @@ enum netDevsPolicy {
 };
 ncclResult_t ncclTopoGetNetDevsPolicy(enum netDevsPolicy* policy, int* policyNum);
 
-// Allows for up to 576 GPUs (e.g., NVLD144) with headroom for internal operations
+// Allows for 多达 576 GPU (e.g., NVLD144) with headroom for 内部 操作
 #define NCCL_TOPO_MAX_NODES 640
 ncclResult_t ncclTopoGetLocal(struct ncclTopoSystem* system, int type, int index, int resultType,
                               int locals[NCCL_TOPO_MAX_NODES], int* localCount, int* pathType);
 ncclResult_t ncclTopoGetDevNodes(struct ncclTopoSystem* system, int64_t baseId, struct ncclTopoNode** nodes,
                                  int* nNodes);
 
-// Local (myself)
+// 本地 (myself)
 #define PATH_LOC 0
 
-// Connection traversing NVLink
+// 连接 traversing NVLink
 #define PATH_NVL 1
 
-// Connection through NVLink using an intermediate GPU
+// 连接 through NVLink 使用 an intermediate GPU
 #define PATH_NVB 2
 
-// Connection through C2C
+// 连接 through C2C
 #define PATH_C2C 3
 
-// Connection traversing at most a single PCIe bridge
+// 连接 traversing at most a 单个 PCIe bridge
 #define PATH_PIX 4
 
-// Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)
+// 连接 traversing 多个 PCIe bridges (在没有 ... 的情况下 traversing the PCIe 主机 Bridge)
 #define PATH_PXB 5
 
-// Connection between a GPU and a NIC using the C2C connection to the CPU and the PCIe connection to the NIC
+// 连接 之间 a GPU 并且 a NIC 使用 the C2C 连接 到 CPU 以及 PCIe 连接 到 NIC
 #define PATH_P2C 6
 
-// Connection between a GPU and a NIC using an intermediate GPU. Used to enable rail-local, aggregated network
-// send/recv operations.
+// 连接 之间 a GPU 并且 a NIC 使用 an intermediate GPU. 用于 enable rail-本地, aggregated 网络
+// 发送/接收 操作.
 #define PATH_PXN 7
 
-// Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)
+// 连接 traversing PCIe 以及 a PCIe 主机 Bridge (typically the CPU)
 #define PATH_PHB 8
 
-// Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)
+// 连接 traversing PCIe 以及 the SMP interconnect 之间 NUMA 节点 (e.g., QPI/UPI)
 #define PATH_SYS 9
 
-// Connection through the network
+// 连接 through the 网络
 #define PATH_NET 10
 
-// New type of path which should precede PATH_PIX
+// New 类型 of 路径 该 should precede PATH_PIX
 #define PATH_PORT PATH_NVL
 
-// Disconnected
+// 已断开
 #define PATH_DIS 11
 extern const char* topoPathTypeStr[];
 
-// Init search. Needs to be done before calling ncclTopoCompute
+// 初始化 search. 需要 be 已完成 调用之前 ncclTopoCompute
 ncclResult_t ncclTopoSearchInit(struct ncclTopoSystem* system);
 
 #define NCCL_TOPO_PATTERN_BALANCED_TREE \
   1   // Spread NIC traffic between two GPUs (Tree parent + one child on first
-                                            // GPU, second child on second GPU)
+                                            // GPU, 第二 子 on 第二 GPU)
 #define NCCL_TOPO_PATTERN_SPLIT_TREE \
   2      // Spread NIC traffic between two GPUs (Tree parent on first GPU, tree
-                                            // children on the second GPU)
+                                            // 子节点 在 ... 上 第二 GPU)
 #define NCCL_TOPO_PATTERN_TREE 3            // All NIC traffic going to/from the same GPU
 #define NCCL_TOPO_PATTERN_RING 4            // Ring
 #define NCCL_TOPO_PATTERN_NVLS 5            // NVLS+SHARP and NVLS+Tree
 #define NCCL_TOPO_PATTERN_COLLNET_DIRECT 6  // Collnet Direct
 struct ncclTopoGraph {
-  // Input / output
+  // 输入 / 输出
   int id; // ring : 0, tree : 1, collnet : 2, nvls : 3, collnetDirect : 4
   int pattern;
   int crossNic;
   int collNet;
   int minChannels;
   int maxChannels;
-  // Output
+  // 输出参数
   int nChannels;
   float bwIntra;
   float bwInter;

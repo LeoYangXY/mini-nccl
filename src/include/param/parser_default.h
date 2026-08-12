@@ -5,6 +5,20 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/param/parser_default.h — 默认类型参数解析器
+ * ----------------------------------------------------------------------------
+ * 提供整型、布尔、字符串等“默认类型”的字符串→值解析实现。
+ * 采用模板特化：通用模板用于报错（不支持的类型），各具体类型各自特化。
+ */
+
+/*
+ * src/include/param/parser_default.h — 默认类型参数解析器
+ * ----------------------------------------------------------------------------
+ * 为整型、浮点、布尔、字符串等“默认类型”提供从字符串到类型值的解析逻辑。
+ * 通过模板特化区分不同类型；不支持的类型由主模板兜底报错。
+ */
+
 #ifndef PARAM_PARSER_DEFAULT_H_INCLUDED
 #define PARAM_PARSER_DEFAULT_H_INCLUDED
 
@@ -16,9 +30,9 @@
 #include <cstdlib>
 #include <cerrno>
 
-// Parsers for default types
+// Parsers for 默认 类型
 
-// Primary template - catch all for unsupported types
+// Primary 模板 - catch 所有 for unsupported 类型
 template <typename T>
 struct ncclParamParserDefault {
   static ncclResult_t resolve(const char*, T&) {
@@ -36,7 +50,7 @@ struct ncclParamParserDefault {
   static constexpr const char* desc = "Unsupported parser";
 };
 
-// Specialization for bool
+// 针对 bool 的特化
 template <>
 struct ncclParamParserDefault<bool> {
   static ncclResult_t resolve(const char* input, bool& out) {
@@ -65,9 +79,9 @@ struct ncclParamParserDefault<bool> {
   static constexpr const char* desc = "Boolean: 1/T/TRUE or 0/F/FALSE";
 };
 
-// Specialization for const char*
-// Note: This parser returns a pointer into the provided input; ncclParam<const char*>
-// owns/copies the string into internal storage in ncclParam
+// Specialization for 常量 char*
+// 注意: 此 parser 返回 a 指针 入到 provided 输入; ncclParam<常量 char*>
+// owns/拷贝 the string into 内部 storage 入 ncclParam
 template <>
 struct ncclParamParserDefault<const char*> {
   static ncclResult_t resolve(const char* input, const char*& out) {
@@ -86,7 +100,7 @@ struct ncclParamParserDefault<const char*> {
   static constexpr const char* desc = "String";
 };
 
-// Helper base for integer types
+// 辅助 base for 整数 类型
 template <typename T>
 struct ncclIntegerParser {
   static ncclResult_t resolve(const char* input, T& out) {
@@ -116,7 +130,7 @@ struct ncclIntegerParser {
   static constexpr const char* desc = "Integer";
 };
 
-// Explicit specializations for integer types
+// Explicit specializations for 整数 类型
 template <>
 struct ncclParamParserDefault<int8_t> : ncclIntegerParser<int8_t> {};
 template <>
@@ -135,7 +149,7 @@ template <>
 struct ncclParamParserDefault<uint64_t> : ncclIntegerParser<uint64_t> {};
 
 // ============================================================================
-// nccl::param::parser — adapt static methods to function-pointer signatures
+// nccl::param::parser — adapt 静态 方法 to 函数-指针 signatures
 // ============================================================================
 namespace nccl {
 namespace param {
@@ -173,7 +187,7 @@ bool boundedValidate(const void* ctx, const T& val) {
 } // namespace nccl
 
 // ============================================================================
-// Factory for default parser of type T
+// Factory for 默认 parser of 类型 T
 // ============================================================================
 template <typename T>
 const ncclParamParser<T>& ncclParamDefault() {
@@ -184,11 +198,11 @@ const ncclParamParser<T>& ncclParamDefault() {
 }
 
 // ============================================================================
-// Bounded Parser Factory
+// 有界解析器工厂
 // ============================================================================
 
-// ncclParamBounded: is based on default parser with upper and lower bounds
-// using resolve and toString of the default parser, customize validate function
+// ncclParamBounded: is 基于 默认 parser with upper 并且 lower 边界
+// 使用 resolve 并且 toString of 默认值 parser, customize 校验 函数
 template <typename T>
 ncclParamParser<T> ncclParamBounded(T lower, T upper) {
   using namespace nccl::param::parser;

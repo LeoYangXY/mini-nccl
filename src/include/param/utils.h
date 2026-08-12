@@ -5,6 +5,22 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/param/utils.h — 参数系统通用工具
+ * ----------------------------------------------------------------------------
+ * 提供参数解析过程中复用的一些小工具：字符串修剪、空白/大小写处理、
+ * 数值与字符串之间的安全转换、错误信息的格式化等。
+ * 被 param 目录下各类 parser（default/enum/bitset/list）共同依赖。
+ */
+
+/*
+ * src/include/param/utils.h — 参数系统通用工具
+ * ----------------------------------------------------------------------------
+ * 提供参数解析过程中复用的一些小工具：字符串修剪、空白/大小写处理、
+ * 数值与字符串之间的安全转换、错误信息的格式化等。
+ * 被 param 目录下各类 parser（default/enum/bitset/list）共同依赖。
+ */
+
 #ifndef PARAM_UTILS_H_INCLUDED
 #define PARAM_UTILS_H_INCLUDED
 
@@ -19,7 +35,7 @@
 #include <cstdio>
 #include <cstring>
 
-// TODO: This should be consolidate with NCCL_IF_CONSTEXPR in device headers
+// 待办: 此 应当 consolidate with NCCL_IF_CONSTEXPR 入 设备 头文件
 #if defined(__cpp_if_constexpr) && __cpp_if_constexpr >= 201606
 #ifndef NCCL_PARAM_IF_CONSTEXPR
 #define NCCL_PARAM_IF_CONSTEXPR constexpr
@@ -30,7 +46,7 @@
 #endif
 #endif
 
-// Compiler detection macros
+// 编译器 detection 宏
 #if defined(__GNUC__) || defined(__clang__)
 #define NCCL_PARAM_COMPILER_EXPECT(x, v) __builtin_expect((x), (v))
 #elif defined(_MSC_VER)
@@ -88,8 +104,8 @@ inline constexpr const char* srcEnvPlugin() {
   return "EnvPlugin";
 }
 
-// simple formatting helper that does
-// std::string s = string_format("Name: %s, type: %s", name, type);
+// simple formatting 辅助 那个 执行
+// std::string s = string_format("Name: %s, 类型: %s", name, 类型);
 template <typename... Args>
 std::string stringFormat(const char* fmt, Args... args) {
   int n = std::snprintf(nullptr, 0, fmt, args...);
@@ -100,7 +116,7 @@ std::string stringFormat(const char* fmt, Args... args) {
   return std::string(buf.data());
 }
 
-// Case-insensitive ASCII compare without allocating.
+// 情形-insensitive ASCII compare 在没有 ... 的情况下 allocating.
 inline bool iequals(std::string a, std::string b) {
   if (a.size() != b.size()) return false;
   for (size_t i = 0; i < a.size(); ++i) {

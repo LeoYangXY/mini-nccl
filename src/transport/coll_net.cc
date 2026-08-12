@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/transport/coll_net.cc — 聚合网络(collnet)传输实现
+ * ----------------------------------------------------------------------------
+ * 实现 CollNet（由交换机/NIC 硬件直接完成的集合通信，如 intraconnect/Sharp）：
+ * 注册/连接/启动聚合操作。mini-nccl 通常未启用，但接口与插件机制保留。
+ */
+
 #include "comm.h"
 #include "coll_net.h"
 #include "graph.h"
@@ -82,10 +89,10 @@ struct connectMapMem {
 
 struct connectMap {
   int shared;
-  // First 3 bits of offsets determine the mem bank. 001 is host mem, 011 is dev mem, 101 is shared host mem and 111
-  // is shared dev mem.
+  // 偏移量的低 3 位决定内存库(bank)：001 为主机内存，011 为设备显存，101 为共享主机内存，111 为共享设备显存。
+  // 
   struct connectMapMem mems[NCCL_NET_MAP_MEMS];
-  // Offsets. 3 MSBs indicate mem bank, 111 indicates NULL.
+  // 偏移量。高 3 位表示内存库，111 表示 NULL(空)。
   struct {
     uint32_t sendMem;
     uint32_t recvMem;
@@ -143,16 +150,16 @@ struct recvResources {
 
 static ncclResult_t canConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo* info1,
                                struct ncclPeerInfo* info2) {
-  // This transport cannot be used for p2p
+  // 该传输层不能用于 P2P
   *ret = 0;
   return ncclSuccess;
 }
 
-// Returns the flags to be used by a call to cuMemGetHandleForAddressRange.
+// 返回供 cuMemGetHandleForAddressRange 调用使用的标志位。
 static inline int getHandleForAddressRangeFlags(ncclTopoGdrMode useGdr) {
   int flags = 0;
 #if CUDA_VERSION >= 12080
-  // Force mapping on PCIe on systems with both PCI and C2C attachments.
+  // 在同时有 PCI 与 C2C 连接的系统上，强制走 PCIe 映射。
   if (useGdr == ncclTopoGdrModePci) flags = CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE;
 #endif
   return flags;
@@ -199,7 +206,7 @@ static ncclResult_t recvSetup(struct ncclComm* comm, struct ncclTopoGraph* graph
   NCCLCHECK(ncclTopoGetNetDev(comm, myInfo->rank, graph, channelId, -1, &netId, &req.netDev, &proxyRank));
   NCCLCHECK(ncclTopoCheckGdr(comm->topo, myInfo->rank, netId, 0, &req.useGdr));
   recv->conn.flags |= req.useGdr ? NCCL_DIRECT_NIC : 0;
-  // Determine whether we need to flush the GDR buffer on recv or not
+  // 判断在接收侧是否需要刷新 GDR 缓冲区
   if (req.useGdr) NCCLCHECK(ncclTopoNeedFlush(comm, netId, req.netDev, myInfo->rank, &req.needFlush));
 
   recv->proxyConn.tpLocalRank = comm->topParentLocalRanks[comm->localRank];
@@ -253,16 +260,16 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
 
 static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* connectInfos, int nranks, int rank,
                                 struct ncclConnector* send) {
-  // We're on the same process as the proxy. We can pass a pointer to a struct.
+  // 我们与 代理 处于同一进程，因此可以直接传结构体指针。
   struct collNetConnectArgs args = {rank, nranks, connectInfos};
   struct connectMap* map;
   NCCLCHECK(ncclProxyCallBlocking(comm, &send->proxyConn, ncclProxyMsgConnect, &args, sizeof(struct collNetConnectArgs),
                                   &map, sizeof(struct connectMap*)));
 
-  // If collnet connect failed, propagate error to fallback on regular p2p
+  // 若 collnet 连接失败，把错误向上传递以便回退到常规 P2P
   if (map == NULL) return ncclSystemError;
 
-  // NCCLCHECK(collNetDumpMap(map));
+  // NCCLCHECK(collNetDumpMap(映射));
 
   struct ncclSendMem* sendMem = (struct ncclSendMem*)NCCL_NET_MAP_GET_POINTER(map, gpu, sendMem);
   void* gdcMem = map->mems[NCCL_NET_MAP_GDCMEM].gpuPtr;
@@ -287,16 +294,16 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
 
 static ncclResult_t recvConnect(struct ncclComm* comm, struct ncclConnect* connectInfos, int nranks, int rank,
                                 struct ncclConnector* recv) {
-  // We're on the same process as the proxy. We can pass a pointer to a struct.
+  // 我们与 代理 处于同一进程，因此可以直接传结构体指针。
   struct collNetConnectArgs args = {rank, nranks, connectInfos};
   struct connectMap* map;
   NCCLCHECK(ncclProxyCallBlocking(comm, &recv->proxyConn, ncclProxyMsgConnect, &args, sizeof(struct collNetConnectArgs),
                                   &map, sizeof(struct connectMap*)));
 
-  // If collnet connect failed, propagate error to fallback on regular p2p
+  // 若 collnet 连接失败，把错误向上传递以便回退到常规 P2P
   if (map == NULL) return ncclSystemError;
 
-  // NCCLCHECK(collNetDumpMap(map));
+  // NCCLCHECK(collNetDumpMap(映射));
 
   struct ncclSendMem* sendMem = (struct ncclSendMem*)NCCL_NET_MAP_GET_POINTER(map, gpu, sendMem);
   recv->conn.head = &sendMem->head;
@@ -378,7 +385,7 @@ static ncclResult_t sharedConnect(struct ncclProxyState* proxyState, int netDev,
                                   int nranks, int rank, struct ncclCollNetSharedRes* collNet, void** collNetComm) {
   struct sharedResources* resources = (struct sharedResources*)collNet->resources;
   if (resources->collNetComms[netDev] == NULL) {
-    // Connect to coll comm
+    // 连接到集合通信(集合 通信域)
     collNetHandle_t** handlePtrs = NULL;
     NCCLCHECK(ncclCalloc(&handlePtrs, nranks));
     for (int i = 0; i < nranks; i++) {
@@ -389,7 +396,7 @@ static ncclResult_t sharedConnect(struct ncclProxyState* proxyState, int netDev,
       (void**)handlePtrs, nranks, rank, resources->collNetListenComms[netDev], resources->collNetComms + netDev);
     free(handlePtrs);
     if (ret == ncclSuccess) {
-      // Close listen comm
+      // 关闭监听 通信域
       NCCLCHECK(proxyState->ncclCollNet->closeListen(resources->collNetListenComms[netDev]));
     } else {
       resources->collNetListenComms[netDev] = NULL;
@@ -438,7 +445,7 @@ static ncclResult_t sharedBuffersDestroy(struct ncclCollNetSharedRes* collNet, s
   if (collNet->size == 0) return ncclSuccess;
   NCCLCHECK(ncclCudaFree(collNet->cudaBuff, proxyState->memManager));
   NCCLCHECK(ncclCudaHostFree(collNet->hostBuff));
-  // This will be called multiple times, with multiple channels and send/recv. Make sure we only do it once.
+  // 本函数会被多次调用(对应多个 通道 以及收发方向)。务必保证只真正执行一次。
   collNet->size = 0;
   return ncclSuccess;
 }
@@ -489,7 +496,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
 
   struct sendResources* resources = (struct sendResources*)(connection->transportResources);
 
-  // Get info from recv side
+  // 从接收侧获取信息
   resources->collNetRank = args->rank;
   resources->reqFifo = (struct reqSlot(*)[NCCL_STEPS])(info->reqFifo);
 
@@ -498,7 +505,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
   NCCLCHECK(sharedConnect(proxyState, resources->netDev, args->connectInfos, args->nranks, args->rank,
                           connection->collNet, &resources->collNetComm));
 
-  // Collnet connect is allowed to fail. Gracefully handle that case by returning NULL to the caller.
+  // collnet 连接允许失败。请优雅处理：向调用者返回 NULL。
   if (respSize != sizeof(struct connectMap*)) {
     WARN("sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*));
     return ncclInternalError;
@@ -529,10 +536,10 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
 
   resources->sendMem = (struct ncclSendMem*)NCCL_NET_MAP_GET_POINTER(map, cpu, sendMem);
   resources->recvMem = (struct ncclRecvMem*)NCCL_NET_MAP_GET_POINTER(map, cpu, recvMem);
-  // Don't give credits yet in shared mode.
+  // 共享模式下暂时不发放信用(credit)。
   (resources->gdcSync ? *resources->gdcSync : resources->sendMem->head) = -NCCL_STEPS;
 
-  // Allocate & Register shared buffers for the Simple protocol
+  // 为 Simple 协议分配并注册共享缓冲区
   int bank = resources->useGdr ? NCCL_NET_MAP_SHARED_DEVMEM : NCCL_NET_MAP_SHARED_HOSTMEM;
   struct connectMapMem* mapMem = map->mems + bank;
   NCCLCHECK(sharedBuffersInit(connection->collNet, resources->useGdr, &mapMem->gpuPtr, &mapMem->cpuPtr, &mapMem->size,
@@ -588,7 +595,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
   NCCLCHECK(sharedConnect(proxyState, resources->netDev, args->connectInfos, args->nranks, args->rank,
                           connection->collNet, &resources->collNetComm));
 
-  // Collnet connect is allowed to fail. Gracefully handle that case by returning NULL to the caller.
+  // collnet 连接允许失败。请优雅处理：向调用者返回 NULL。
   if (respSize != sizeof(struct connectMap*)) {
     WARN("sendProxyConnect: respSize is %d != %ld", respSize, sizeof(void*));
     return ncclInternalError;
@@ -612,7 +619,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
     NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 2, &resources->gdrDesc, proxyState->memManager, gdcFlag));
 
     if (ncclParamGdrCopySyncEnable()) {
-      // No flush needed if control flow is mapped on the PCIe instead of C2C
+      // 若控制流映射到 PCIe 而非 C2C，则无需刷新
       if (gdcFlag == GDR_PIN_FLAG_FORCE_PCIE) resources->needFlush = ncclTopoFlushNone;
       resources->gdcSync = cpuPtr;
       struct connectMapMem* gdcMem = map->mems + NCCL_NET_MAP_GDCMEM;
@@ -626,7 +633,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
   resources->sendMem = (struct ncclSendMem*)NCCL_NET_MAP_GET_POINTER(map, cpu, sendMem);
   resources->recvMem = (struct ncclRecvMem*)NCCL_NET_MAP_GET_POINTER(map, cpu, recvMem);
 
-  // Allocate & Register shared buffers for the Simple protocol
+  // 为 Simple 协议分配并注册共享缓冲区
   int bank = resources->useGdr ? NCCL_NET_MAP_SHARED_DEVMEM : NCCL_NET_MAP_SHARED_HOSTMEM;
   struct connectMapMem* mapMem = map->mems + bank;
   NCCLCHECK(sharedBuffersInit(connection->collNet, resources->useGdr, &mapMem->gpuPtr, &mapMem->cpuPtr, &mapMem->size,
@@ -655,7 +662,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
                                              &resources->mhandles[NCCL_PROTO_SIMPLE]));
   }
 
-  // Pass info to send side
+  // 把信息传递给发送侧
   info->reqFifo = resources->reqFifo;
   for (int p = 0; p < NCCL_NUM_PROTOCOLS; p++) info->mhandles[p] = resources->mhandles[p];
 
@@ -765,7 +772,7 @@ static ssize_t calcRegionOffset(struct ncclProxyArgs* args, int isRecvNotSend, i
 #define LAST_OF_GROUP(args, s) ((s) % COLLNET_GROUP_NSUBS == COLLNET_GROUP_NSUBS - 1 || (s) == (args)->nsubs - 1)
 
 static constexpr int calcStepsPerGroup(int nGroups) {
-  // return NCCL_STEPS/nGroups;
+  // 返回 NCCL_STEPS / nGroups；
   return NCCL_STEPS;
 }
 
@@ -774,14 +781,14 @@ static ncclResult_t collNetRegIallreduce(struct ncclProxyState* proxyState, stru
                                          ssize_t* nBytesInOut, void** request) {
   ssize_t loopSize, winOffset, nBytes;
   ssize_t eltSize = ncclTypeSize((ncclDataType_t)args->dtype);
-  // for UB iallreduce 1RPN case, user's send and recv buffers are both directly accessed by collnet network.
-  // we can just issue maximal collnet bytes by resources->maxCollBytes for each iallreduce.
-  // for multi-RPN case, we have to consider pipeline, so each time we only send groupSize * chunkSize (i.e.,
+  // 对 UB(用户缓冲区)iallreduce 的 1RPN 情形，用户的发送与接收缓冲区都由 collnet 网络直接访问。
+  // 每次 iallreduce 都可以直接按 resources->maxCollBytes 发出最大的 collnet 字节数。
+  // 对多 RPN 的情形，必须考虑流水线，因此每次只发送 groupSize * chunkSize(即
   // nBytesInOut)
-  // sub->loopOffset is data offset to the buffer for this head rank in each loop
-  // winOffset is used to find actual offset from send and recv buffer for this iallreduce
-  // loopSize is all bytes sent by all channels and head ranks in each loop.
-  // send and recv mem handle are retrieved from sub in which user buffer mem handles are stored.
+  // sub->loopOffset 是本 头 rank 在每轮循环中相对于缓冲区的偏移
+  // winOffset 用于在本 iallreduce 的发送/接收缓冲区中定位实际偏移
+  // loopSize 是每轮中所有 通道 与所有 头 rank 发送的总字节数。
+  // 发送与接收的内存句柄从 sub 中取出，其中存着用户缓冲区的句柄。
   if (sub->isOneRPN) {
     winOffset = 0;
     nBytes = std::min((size_t)sub->nbytes, resources->maxCollBytes);
@@ -797,7 +804,7 @@ static ncclResult_t collNetRegIallreduce(struct ncclProxyState* proxyState, stru
       resources->collNetComm, sub->sendbuff + winOffset, sub->recvbuff + winOffset, nBytes / eltSize,
       (ncclDataType_t)args->dtype, (ncclRedOp_t)args->redOp, sub->sendMhandle, sub->recvMhandle, request));
     if (*request) {
-      // if issued successfully, we need to move the pointer forward and reduce the existing nbytes.
+      // 若成功下发，需要把指针前移并减少剩余 nbytes。
       sub->nbytes -= loopSize;
       sub->sendbuff += loopSize;
       sub->recvbuff += loopSize;
@@ -819,8 +826,8 @@ static ncclResult_t collNetIallreduce(struct ncclProxyState* proxyState, struct 
   void* recvMhandle = resources->recvMhandles[NCCL_PROTO_SIMPLE];
   char* region = NCCL_NET_MAP_GET_POINTER(&resources->map, gpu, buffs[NCCL_PROTO_SIMPLE]);
   ssize_t eltSize = ncclTypeSize((ncclDataType_t)args->dtype);
-  // non-UB iallreduce, region is intermediate buffer and sendBeg/recvBeg is the corresponding offset
-  // for send and recv data. The send and recv mem handle are retrieved from resources.
+  // 非 UB 的 iallreduce：区域 是中间缓冲区，sendBeg/recvBeg 是相应的偏移
+  // 对应发送与接收数据。发送/接收句柄从 resources 中取出。
   NCCLCHECK(proxyState->ncclCollNet->iallreduce(resources->collNetComm, region + sendBeg, region + recvBeg,
                                                 nBytes / eltSize, (ncclDataType_t)args->dtype, (ncclRedOp_t)args->redOp,
                                                 sendMhandle, recvMhandle, request));
@@ -840,12 +847,12 @@ static ncclResult_t collNetRegIallgather(struct ncclProxyState* proxyState, stru
   ssize_t nBytes;
   ssize_t winOffset;
   void* sendbuff;
-  // UB iallgather 1RPN logic is the same as iallreduce.
-  // If iallgather is not 1RPN, we can let collnet network directly access sendbuff but not recvbuff;
-  // the main reason is non-1RPN case will cause non-contiguous recv data from network, so
-  // we have to use intermediate buffer "region" to recv data and copy into the recvbuff.
-  // so allBeg and recvMhandle, which are global window offset of recv buffer and mem handle for region,
-  // are only used in multi-RPN case.
+  // UB iallgather 的 1RPN 逻辑与 iallreduce 相同。
+  // 若 iallgather 不是 1RPN，可以让 collnet 网络直接访问 sendbuff 但不能访问 recvbuff；
+  // 主要原因是：非 1RPN 情形会导致从网络收到的接收数据不连续，因此
+  // 我们必须用中间缓冲区 区域 接收数据，再拷入 recvbuff。
+  // 因此 allBeg 与 recvMhandle(分别是接收缓冲区的全局窗口偏移与 区域 的句柄)
+  // 只在多 RPN 情形下使用。
   if (sub->isOneRPN) {
     nBytes = std::min((size_t)sub->nbytes, resources->maxCollBytes);
     winOffset = sub->offset;
@@ -889,10 +896,10 @@ static ncclResult_t collNetIallgather(struct ncclProxyState* proxyState, struct 
   recvParts.mhandle = recvMhandle;
   recvParts.address = region + recvBeg;
   recvParts.size = nBytes;
-  // non-UB iallgather, we use intermidate region buffers for both send and recv data.
-  // sendMhandle and recvMhandle are send and recv mem handles for region, and allBeg is
-  // the global window offset of recv buffer. sendBeg and recvBeg are offset to the region
-  // for intermediate data.
+  // 非 UB 的 iallgather：发送与接收数据都使用中间 区域 缓冲区。
+  // sendMhandle 与 recvMhandle 是 区域 的发送/接收句柄，allBeg 是
+  // 接收缓冲区的全局窗口偏移。sendBeg/recvBeg 是相对于 区域 的偏移
+  // 对应中间数据。
   NCCLCHECK(proxyState->ncclCollNet->iallgather(resources->collNetComm, region + sendBeg, 1, &recvParts, sizePerRank,
                                                 allBeg, nBytes, sendMhandle, request));
   if (*request) {
@@ -911,9 +918,9 @@ static ncclResult_t collNetRegIreducescatter(struct ncclProxyState* proxyState, 
   ssize_t nBytes;
   size_t winOffset;
   void* recvbuff;
-  // Similar to iallgather, if ireducescatter is not 1RPN, we can let collnet network
-  // directly access recvbuff but not sendbuff. We use intermediate buffer "region" to
-  // send data and directly recv into the recvbuff.
+  // 与 iallgather 类似，若 ireducescatter 不是 1RPN，可以让 collnet 网络
+  // 直接访问 recvbuff 但不能访问 sendbuff。我们用中间缓冲区 区域
+  // 来发送数据，并直接接收进 recvbuff。
   if (sub->isOneRPN) {
     nBytes = std::min((size_t)sub->nbytes, resources->maxCollBytes);
     winOffset = sub->offset;
@@ -958,7 +965,7 @@ static ncclResult_t collNetIreducescatter(struct ncclProxyState* proxyState, str
   sendParts.mhandle = sendMhandle;
   sendParts.address = region + sendBeg;
   sendParts.size = nBytes;
-  // non-UB ireducescatter is the same as non-UB iallgather but in the reverse direction.
+  // 非 UB 的 ireducescatter 与非 UB iallgather 逻辑相同，但方向相反。
   NCCLCHECK(proxyState->ncclCollNet->ireducescatter(resources->collNetComm, 1, &sendParts, region + recvBeg,
                                                     sizePerRank, allBeg, nBytes, (ncclDataType_t)args->dtype,
                                                     (ncclRedOp_t)args->redOp, recvMhandle, request));
@@ -974,11 +981,11 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
     for (int s = 0; s < args->nsubs; s++) {
       struct ncclProxySubArgs* sub = args->subs + s;
       struct sendResources* resources = (struct sendResources*)(sub->connection->transportResources);
-      // Round to next multiple of sliceSteps
+      // 向上取整到 sliceSteps 的整数倍
       sub->base = ROUNDUP(resources->step, args->chunkSteps);
       sub->posted = sub->received = sub->transmitted = sub->done = 0;
       resources->step = sub->base + sub->nsteps;
-      // adjust nsteps for registerd buffers as device signals a single step
+      // 针对已注册缓冲区调整 nsteps(设备只会发出单个 步骤 信号)
       if (sub->reg && sub->isOneRPN) sub->nsteps = DIVUP((size_t)sub->nbytes, resources->maxCollBytes);
     }
     args->state = ncclProxyOpProgress;
@@ -1008,7 +1015,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
               &resources->recvMem->connFifo[buffSlot].offset, long(*sendHead),
               long(sub->base + sub->posted + args->sliceSteps - NCCL_STEPS));
         sub->posted += args->sliceSteps;
-        // Only post one credit for registered buffer
+        // 对已注册缓冲区只发放一个信用
         if (sub->reg == 0 || !sub->isOneRPN || sub->posted == args->sliceSteps)
           *sendHead = sub->base + sub->posted - NCCL_STEPS;
         if (resources->gdcSync) wc_store_fence(); // Flush out WC write
@@ -1017,7 +1024,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
         int buffSlot = (sub->base + sub->received) % NCCL_STEPS;
         volatile struct ncclConnFifo* connFifo = (volatile struct ncclConnFifo*)resources->recvMem->connFifo;
         volatile uint64_t* recvTail = &resources->recvMem->tail;
-        // device progresses tail by only 1 for registered buffers
+        // 对注册缓冲区，设备侧只前进 1 个 尾
         uint64_t tail = sub->base + (sub->reg && sub->isOneRPN ? 0 : sub->received);
         if ((connFifo[buffSlot].size != -1 || sub->reg) && (*recvTail > tail)) {
           if (args->coll != ncclFuncAllReduce && sub->reg == 0) {
@@ -1033,7 +1040,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
           args->idle = 0;
         }
       }
-      // Enforce collective ordering of collnet ops.
+      // 强制 collnet 操作的集合顺序性。
       bool ordered = s == 0 ? args->subs[args->nsubs - 1].transmitted == sub->transmitted :
                               sub->transmitted < (sub - 1)->transmitted;
       if (ordered && (sub->transmitted < sub->received)) {
@@ -1072,7 +1079,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
                                             sendMhandle, recvMhandle, &sub->requests[buffSlot]));
               }
             } else {
-              // reducescatter
+              // 规约-散播(规约散射)
               nBytes = allEnd - allBeg;
               if (sub->reg) {
                 NCCLCHECK(collNetRegIreducescatter(proxyState, resources, args, sub, nBytes, allBeg, sendBeg,
@@ -1089,7 +1096,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
         args->idle = 0;
         continue;
       }
-      // Check whether the network has completed some send operations.
+      // 检查网络是否已完成某些发送操作。
       if (LAST_OF_GROUP(args, s) && sub->done < sub->transmitted) {
         int done, size;
         int buffSlot = (sub->base + sub->done) % NCCL_STEPS;
@@ -1154,7 +1161,7 @@ static ncclResult_t collNetRecvFlush(struct ncclProxyState* proxyState, struct r
           offset = 0;
           nBytes = groupEndOffset % sizePerRank;
         } else {
-          // dummy flush
+          // 空刷新
           offset = 0;
         }
       }
@@ -1177,11 +1184,11 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
     for (int s = 0; s < args->nsubs; s++) {
       struct ncclProxySubArgs* sub = args->subs + s;
       struct recvResources* resources = (struct recvResources*)(sub->connection->transportResources);
-      // Round to next multiple of sliceSteps
+      // 向上取整到 sliceSteps 的整数倍
       sub->base = ROUNDUP(resources->step, args->chunkSteps);
       sub->posted = sub->received = sub->flushed = sub->transmitted = sub->done = 0;
       resources->step = sub->base + sub->nsteps;
-      // adjust nsteps for registerd buffers as device signals a single step
+      // 针对已注册缓冲区调整 nsteps(设备只会发出单个 步骤 信号)
       if (sub->reg && sub->isOneRPN) sub->nsteps = DIVUP((size_t)sub->nbytes, resources->maxCollBytes);
       memset(sub->requests, 0, sizeof(sub->requests));
     }
@@ -1197,7 +1204,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
       struct recvResources* resources = (struct recvResources*)(sub->connection->transportResources);
       auto reqFifo = resources->reqFifo;
 
-      // Enforce sync between operations of the same group.
+      // 强制同一组内各操作之间的同步。
       if (LAST_OF_GROUP(args, s) && (sub->posted < sub->done + calcStepsPerGroup(nGroups)) &&
           (sub->posted < sub->nsteps)) {
         int buffSlot = (sub->base + sub->posted) % NCCL_STEPS;
@@ -1210,7 +1217,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
       if (LAST_OF_GROUP(args, s) && (sub->received < sub->posted)) {
         int buffSlot = (sub->base + sub->received) % NCCL_STEPS;
         if (!reqFifo[group][buffSlot].turnIsSendNotRecv) {
-          // Buffer is cleared : coll is complete
+          // 缓冲区已清空：集合通信完成
           ssize_t recvBeg = calcRegionOffset(args, 1, groupStart, sub->received, 0);
           ssize_t recvEnd = calcRegionOffset(args, 1, s, sub->received, 1);
           ssize_t totalSize = recvEnd - recvBeg;
@@ -1218,19 +1225,19 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
                 buffSlot, totalSize, args->chunkSize);
           sub->received += args->sliceSteps;
           if ((reqFifo[group][buffSlot].size > 0 || sub->reg) && resources->useGdr && resources->needFlush) {
-            // GDRCOPY support
+            // GDRCOPY 支持
             if (resources->gdcFlush) {
 #if defined(__x86_64__)
-              // Order CQE-poll loads ahead of the flush load: prevents the WC
-              // read from being speculatively dispatched onto PCIe before the
-              // NIC's posted writes have entered the fabric.
+              // 让 CQE 轮询的 加载 排在 刷写 的 加载 之前：防止 WC(写合并)
+              // 读被投机地派发到 PCIe 上，早于
+              // 网卡的 posted 写进入 fabric(互联网络)。
               asm volatile("mfence" ::: "memory");
-              // Force a PCIe read from GPU memory: stalls the CPU until all prior
-              // PCIe posted writes (including NIC DMA) to this endpoint are committed.
+              // 强制从 GPU 显存做一次 PCIe 读：让 CPU 停顿，直到所有先前的
+              // PCIe posted 写(含网卡 DMA)都提交到该端点。
               asm volatile("mov (%0), %%eax" ::"l"(resources->gdcFlush) : "%eax", "memory");
 #else
-              // Portable equivalent. seq_cst fence keeps the load inside
-              // ncclGdrCudaRead from being reordered ahead of the CQE poll.
+              // 可移植的等价写法。seq_cst 内存栅栏阻止该 加载 被重排到
+              // ncclGdrCudaRead 内部、跑到 CQE 轮询之前。
               std::atomic_thread_fence(std::memory_order_seq_cst);
               uint64_t dummy;
               NCCLCHECK(ncclGdrCudaRead(resources->gdrDesc, &dummy, resources->gdcFlush, sizeof(dummy)));
@@ -1245,7 +1252,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
         }
       }
       if (LAST_OF_GROUP(args, s) && (sub->flushed < sub->received)) {
-        // Progress flush operations
+        // 推进 刷写 操作
         int buffSlot = (sub->base + sub->flushed) % NCCL_STEPS;
         int done = 1;
         if (sub->requests[buffSlot]) NCCLCHECK(proxyState->ncclCollNet->test(sub->requests[buffSlot], &done, NULL));
@@ -1254,7 +1261,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           TRACE(NCCL_NET, "recvProxy [%ld/%d/%d] flushed", (long)sub->flushed, group, buffSlot);
           for (int i = group * COLLNET_GROUP_NSUBS; i <= s; i++) args->subs[i].flushed += args->sliceSteps;
           args->idle = 0;
-          // continue;
+          // 继续；
         }
       }
       if (sub->transmitted < sub->flushed) {
@@ -1266,7 +1273,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
         }
         volatile uint64_t* recvTail = resources->gdcSync ? resources->gdcSync : &resources->recvMem->tail;
         if (sub->reg && sub->isOneRPN) {
-          // We may have bumped net steps, but reg operations only have a single step w.r.t. the GPU.
+          // 我们可能已经增加了网络步数，但注册类操作相对 GPU 而言只有一个 步骤。
           if (sub->flushed == sub->nsteps) *recvTail = sub->base + args->sliceSteps;
         } else {
           *recvTail = sub->base + sub->flushed;
@@ -1276,9 +1283,9 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
         args->idle = 0;
         continue;
       }
-      // Enforce sync here to make sure the last sub doesn't increase "done" before all others in the group have
-      // reached the same point, otherwise we would start posting buffers to the send proxy before we're done
-      // processing all the shared buffer.
+      // 在此强制同步，确保组内最后一个 sub 不会在其它 sub 都到达同一点之前就提前增加 已完成，
+      // 否则我们会在尚未处理完所有共享缓冲区时，就提前把缓冲区提交给发送 代理。
+      // 
       bool groupSync = s == 0 ? args->subs[args->nsubs - 1].done == sub->done : (sub - 1)->done > sub->done;
       volatile uint64_t* sendHead = &resources->sendMem->head;
       int done = sub->reg && sub->isOneRPN ? 0 : sub->done;
@@ -1306,7 +1313,7 @@ static ncclResult_t collnetRegisterBuffer(struct ncclComm* comm, const void* use
   int gdrEnable = -1;
   if (regRecord) {
     if (regRecord->state & COLLNET_REG_COMPLETE) {
-      // reuse previous registration
+      // 复用之前的注册结果
       *outRegBufFlag = 2;
       *outHandle = regRecord->collnetHandle;
       INFO(NCCL_REG, "rank %d - COLLNET reuse register userbuff %p (handle %p), buffSize %ld, type %s", comm->rank,
@@ -1586,7 +1593,7 @@ ncclResult_t ncclCollNetChainBufferSetup(ncclComm_t comm) {
   char line[1024];
 
   if (comm->config.collnetEnable == 0 || comm->collNetChainSupport == 0) goto exit;
-  // Connect Collnet + chain
+  // 建立 Collnet + chain 连接
   for (int c = 0; c < comm->nChannels; c++) {
     struct ncclChannel* channel = comm->channels + c;
     NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &channel->collnetChain.up, 1, channel->collnetChain.down, 0), ret,
@@ -1620,7 +1627,7 @@ ncclResult_t ncclCollNetDirectBufferSetup(ncclComm_t comm) {
 
   if (comm->config.collnetEnable == 0) goto exit;
 
-  // Connect intra-node CollNet + Direct
+  // 建立节点内 CollNet + Direct 连接
   for (int c = 0; c < comm->nChannels; c++) {
     struct ncclChannel* channelRecv = comm->channels + c;
     NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, NCCL_MAX_DIRECT_ARITY, channelRecv->collnetDirect.up,
@@ -1651,7 +1658,7 @@ static ncclResult_t collNetInitRailRankMap(ncclComm_t comm) {
 
   comm->collNetDenseToUserRank = ncclMemoryStackAlloc<int>(&comm->memPermanent, comm->nRanks);
   comm->collNetUserToDenseRank = ncclMemoryStackAlloc<int>(&comm->memPermanent, comm->nRanks);
-  // initialize collNetUserToDenseRank[rank]
+  // 初始化 collNetUserToDenseRank[rank](用户 rank 到密集 rank 的映射)
   comm->collNetUserToDenseRank[rank] = -1;
   for (int h = 0; h < comm->collNetHeadsNum; h++) {
     nonHeadMask ^= 1ull << comm->rankToLocalRank[comm->collNetHeads[h]];
@@ -1672,7 +1679,7 @@ static ncclResult_t collNetInitRailRankMap(ncclComm_t comm) {
   return ncclSuccess;
 }
 
-// Checks if the heads used by collNetChain are either a subset of, or equal to comm->collNetHeads
+// 检查 collNetChain 使用的 头 是否为 通信域->collNetHeads 的子集或与之相等
 static int isCollNetChainHeadsSubset(ncclComm_t comm, struct ncclTopoGraph* collNetChainGraph) {
   uint64_t chainHeadMask = 0, collNetHeadMask = 0;
 
@@ -1708,7 +1715,7 @@ ncclResult_t ncclCollNetSetup(ncclComm_t comm, ncclComm_t parent, struct ncclTop
     collNetGraph = graphs[NCCL_ALGO_COLLNET_DIRECT];
     NCCLCHECKGOTO(ncclCalloc(&comm->collNetHeads, collNetGraph->nChannels), ret, fail);
     uint64_t mask = 0;
-    // Head GPU index is always 0
+    // 作为 头 的 GPU 索引恒为 0
     for (int c = 0; c < collNetGraph->nChannels; c++) {
       int head = collNetGraph->intra[c * comm->localRanks + 0];
       assert(comm->rankToNode[head] == comm->node);
@@ -1717,16 +1724,16 @@ ncclResult_t ncclCollNetSetup(ncclComm_t comm, ncclComm_t parent, struct ncclTop
       if (mask != mask0) comm->collNetHeads[comm->collNetHeadsNum++] = head;
     }
   } else {
-    // Use the NVLS graph to get the head ranks for collnet setup. comm->nvlsHeads already has unique heads.
-    // nHeads is the same on all the channels, see connectNvls function
+    // 用 NVLS 图来获取 collnet 建连所需的 头 rank。通信域->nvlsHeads 已是去重后的 头。
+    // 所有 通道 的 nHeads 相同，参见 connectNvls 函数
     collNetGraph = graphs[NCCL_ALGO_NVLS];
     NCCLCHECKGOTO(ncclCalloc(&comm->collNetHeads, collNetGraph->nChannels), ret, fail);
     comm->collNetHeadsNum = comm->channels[0].nvls.nHeads;
-    // Copy over comm->collNetHeads from comm->nvlsHeads since they are freed in different places.
+    // 从 通信域->nvlsHeads 拷贝出 通信域->collNetHeads，因为两者在不同地方释放。
     memcpy(comm->collNetHeads, comm->nvlsHeads, comm->collNetHeadsNum * sizeof(int));
   }
 
-  // CollNetChain can only use heads that will have CollNet resources set up.
+  // CollNetChain 只能使用那些已建立 CollNet 资源的 头。
   comm->collNetChainSupport = isCollNetChainHeadsSubset(comm, graphs[NCCL_ALGO_COLLNET_CHAIN]);
 
   if (parent && parent->config.collnetEnable && parent->nNodes == comm->nNodes) {
@@ -1806,7 +1813,7 @@ ncclResult_t ncclCollNetSetup(ncclComm_t comm, ncclComm_t parent, struct ncclTop
             ncclTransportCollNetSetup(comm, collNetGraph, channel, head, head, h, collNetSend, &connect);
         }
       }
-      // Verify CollNet setup across ranks after trying the first channel
+      // 在尝试第一个 通道 后，跨 rank 校验 CollNet 的建立结果
       if (c == 0) {
         NCCLCHECKGOTO(ncclTransportCollNetCheck(comm, collNetSetupFail), ret, fail);
       }
@@ -1831,7 +1838,7 @@ ncclResult_t ncclCollNetSetup(ncclComm_t comm, ncclComm_t parent, struct ncclTop
           for (int op = 0; op < 4; op++) {
             int support = 0;
             NCCLCHECKGOTO(collNetReduceSupport(comm, (ncclDataType_t)ty, (ncclRedOp_t)op, &support), ret, matrix_end);
-            // bit 0 = not supported, bit 1 = supported
+            // 位 0 = 不支持，位 1 = 支持
             matrix[rank][op][ty] = 1 << (support ? 1 : 0);
           }
         }
@@ -1841,7 +1848,7 @@ ncclResult_t ncclCollNetSetup(ncclComm_t comm, ncclComm_t parent, struct ncclTop
         for (int op = 0; op < 4; op++) {
           uint8_t accum = 0;
           for (int r = 0; r < comm->nRanks; r++) accum |= matrix[r][op][ty];
-          // We support (redop, type) if some rank supports it and no rank doesn't support it
+          // 只有当“某个 rank 支持、且没有 rank 不支持”时，我们才支持该 (redop, 类型) 组合
           comm->collNetSupportMatrix[op][ty] = (accum == (1 << 1));
         }
       }
@@ -1851,7 +1858,7 @@ ncclResult_t ncclCollNetSetup(ncclComm_t comm, ncclComm_t parent, struct ncclTop
     } while (0);
   }
 
-  // Verify CollNet setup across ranks after trying all channels
+  // 在尝试所有 通道 后，跨 rank 校验 CollNet 的建立结果
   NCCLCHECKGOTO(ncclTransportCollNetCheck(comm, collNetSetupFail), ret, fail);
   TRACE(NCCL_INIT, "rank %d Connected inter-node CollNet", rank);
 

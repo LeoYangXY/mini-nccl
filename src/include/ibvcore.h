@@ -1,4 +1,9 @@
 /*
+ * [第三方/Low-level] InfiniBand verbs 核心类型(源自 rdma-core/libibverbs，非 mini-nccl 自有逻辑)
+ * 仅供 ibvwrap/net/coll_net 引用 IB 原生结构，不建议改动。
+ */
+
+/*
  * Copyright (c) 2004, 2005 Topspin Communications.  All rights reserved.
  * Copyright (c) 2004, 2011-2012 Intel Corporation.  All rights reserved.
  * Copyright (c) 2005, 2006, 2007 Cisco Systems, Inc.  All rights reserved.

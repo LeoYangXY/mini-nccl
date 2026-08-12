@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/cudawrap.h — CUDA 驱动 API 包装
+ * ----------------------------------------------------------------------------
+ * 通过 dlopen 动态加载 libcuda，把 CUDA 驱动 API（cuXXX 系列）封装成统一函数指针，
+ * 使 NCCL 在无 CUDA 开发环境时仍可编译（运行时按需解析符号）。
+ */
+
 #ifndef NCCL_CUDAWRAP_H_
 #define NCCL_CUDAWRAP_H_
 
@@ -13,21 +20,21 @@
 #include "checks.h"
 #include "compiler.h"
 
-// Is cuMem API usage enabled
+// Is cuMem API usage 启用
 extern int ncclCuMemEnable();
 extern int ncclCuMemHostEnable();
 
 #if CUDART_VERSION >= 11030
 #include <cudaTypedefs.h>
 
-// Handle type used for cuMemCreate()
+// 句柄 类型 用于 cuMemCreate()
 extern CUmemAllocationHandleType ncclCuMemHandleType;
 
 #endif
 
 #define CUPFN(symbol) pfn_##symbol
 
-// Check CUDA PFN driver calls
+// 检查 CUDA PFN driver 调用
 #define CUCHECK(cmd) \
   do { \
     CUresult err = pfn_##cmd; \
@@ -56,7 +63,7 @@ extern CUmemAllocationHandleType ncclCuMemHandleType;
     } \
   } while (false)
 
-// Report failure but clear error and continue
+// 报告 失败 但 clear 错误 并且 continue
 #define CUCHECKIGNORE(cmd) \
   do { \
     CUresult err = pfn_##cmd; \
@@ -97,7 +104,7 @@ DECLARE_CUDA_PFN_EXTERN(cuLaunchKernel, 4000);
 #if CUDART_VERSION >= 11080
 DECLARE_CUDA_PFN_EXTERN(cuLaunchKernelEx, 11060);
 #endif
-// cuMem API support
+// 是否支持 cuMem(CUDA 虚拟内存管理)API
 DECLARE_CUDA_PFN_EXTERN(cuMemAddressReserve, 10020);
 DECLARE_CUDA_PFN_EXTERN(cuMemAddressFree, 10020);
 DECLARE_CUDA_PFN_EXTERN(cuMemCreate, 10020);
@@ -135,7 +142,7 @@ ncclResult_t ncclCudaLibraryInit(void);
 extern int ncclCudaDriverVersionCache;
 extern bool ncclCudaLaunchBlocking; // initialized by ncclCudaLibraryInit()
 
-// Checks whether the given stream is the legacy null stream.
+// 检查 whether the 给定的 流 is the legacy null 流.
 inline ncclResult_t ncclCudaStreamIsLegacyNull(cudaStream_t stream, bool* isLegacy) {
 #if CUDART_VERSION >= 12000
   unsigned long long nullStreamId, legacyNullStreamId;

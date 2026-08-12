@@ -1,0 +1,35 @@
+src/allocator.cc:149: // ncclSpace:
+src/allocator.cc:156: //   isFull(i) = (i%2 != ncuts%2)
+src/allocator.cc:271: // ncclShadowPool:
+src/enqueue.cc:1599: // ncclAddWorkBatchToPlan)。
+src/enqueue.cc:1887: // hostStreamPlanTask
+src/transport/coll_net.cc:787: // nBytesInOut)
+src/graph/tuning.cc:166: // baseLatencies
+src/graph/tuning.cc:173: // hwLatencies
+src/graph/tuning.cc:194: // llMaxBws
+src/graph/tuning.cc:201: // perChMaxRingLL128Bws
+src/graph/tuning.cc:208: // perChMaxTreeLL128Bws
+src/graph/tuning.cc:215: // perChMaxTreeBws
+src/graph/tuning.cc:222: // perChMaxNVLSTreeBws
+src/graph/paths.cc:831: // PXN = PCI + NVLink。
+src/device/symmetric/gin_scratch__funcs.h:20: // ncclGinOutboxSession:
+src/device/symmetric/gin_scratch__funcs.h:143: // ncclGinInboxA2ASession:
+src/graph/topo.h:66: // Skipping 2 for PATH_NVB
+src/graph/topo.h:69: // Skipping 5 for PATH_PXB
+src/graph/topo.h:70: // Skipping 6 for PATH_PXN
+src/graph/topo.h:71: // Skipping 7 for PATH_P2C
+src/graph/topo.h:72: // Skipping 8 for PATH_PHB
+src/include/device.h:217: //   headRank, (headRank+1)%nHeads, (headRank+2)%nHeads, ...
+src/include/device.h:296: //   nChannels == (channelHi - channelLo) + 1
+src/include/collectives.h:111: // refCount == 0.
+src/include/bitops.h:190: // idivFast(x, y, idivRcp(y)) == x/y
+src/include/comm.h:524: // NCCL_CHECK_MODE=DEBUG_LOCAL/DEBUG_GLOBAL
+src/include/param/param.h:145: // NCCL_NO_CACHE
+src/include/param/parser_common.h:72: //   auto opts = makeOptions(
+src/include/plugin/tuner/tuner_v6.h:79: //   - proto: selected protocol (NCCL_PROTO_*)
+src/include/nccl_device/core.h:272: // Window API：
+src/include/nccl_device/coop.h:196: // ncclCoopIsThread：
+src/include/nccl_device/utility.h:272: // idivFast(x, y, idivRcp(y)) == x/y
+src/include/nccl_device/utility.h:450: // alignof(T) >= 16
+src/include/nccl_device/impl/reduce_copy__impl.h:283: //                                                                            // instantiation
+src/include/nccl_device/impl/reduce_copy__impl.h:293: //                                                                            // instantiation

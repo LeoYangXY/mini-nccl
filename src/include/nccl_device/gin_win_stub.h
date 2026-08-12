@@ -7,6 +7,13 @@
  * (gin/gin_device_common.h etc.). Used only when building on Windows.
  *************************************************************************/
 
+/*
+ * include/nccl_device/gin_win_stub.h — [Windows-only] GIN 桩
+ * ----------------------------------------------------------------------------
+ * 仅 Windows 构建使用的 GIN 桩：提供最小类型，使 barrier/gin_barrier 头能在不引入
+ * 真实 GIN 设备头（gin/gin_device_common.h 等）时编译。Linux 构建不使用本文件。
+ */
+
 #ifndef _NCCL_DEVICE_GIN_SESSION_H_
 #define _NCCL_DEVICE_GIN_SESSION_H_
 

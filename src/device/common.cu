@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/common.cu — device kernel 公共定义与入口
+ * ----------------------------------------------------------------------------
+ * 定义各集合 kernel 共享的全局资源：ncclShmem（共享内存数据块）、ncclShmemPerWarp
+ * 等，以及 RunWork* 系列入口函数（RunWorkSend/Recv/Reduce 等），是 kernel 启动的
+ * 统一落脚点。被 all_reduce.h 等算法 kernel 包含。
+ */
+
 #include "device.h"
 #include "collectives.h"
 #include "common.h"

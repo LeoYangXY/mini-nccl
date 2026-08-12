@@ -4,6 +4,13 @@
  *
  * See LICENSE.txt for more license information
  *************************************************************************/
+/*
+ * include/nccl_device/gin/proxy/gin_proxy_device_host_common.h — [GIN 相关] GIN proxy 定义
+ * ----------------------------------------------------------------------------
+ * GIN proxy 的设备侧与主机侧共用定义（GIN_PROXY_DEFS_H）。GIN 由 Meta 引入，
+ * mini-nccl 精简版下多被 stub。
+ */
+
 #ifndef GIN_PROXY_DEFS_H
 #define GIN_PROXY_DEFS_H
 
@@ -42,22 +49,22 @@ typedef union {
     uint64_t size:57;
   } __attribute__((packed)) header;
   struct {
-    // the last bit is the flag, so we support 63 bit VAs
+    // 最后一个 b这是 the 标志, 所以 we 支持 63 位 VAs
     uint64_t flag:1;
     uint64_t srcOff:63;
   } __attribute__((packed)) srcOff;
   struct {
-    // the last bit is the flag, so we support 63 bit VAs
+    // 最后一个 b这是 the 标志, 所以 we 支持 63 位 VAs
     uint64_t flag:1;
     uint64_t srcHandle:63;
   } __attribute__((packed)) srcHandle;
   struct {
-    // the last bit is the flag, so we support 63 bit VAs
+    // 最后一个 b这是 the 标志, 所以 we 支持 63 位 VAs
     uint64_t flag:1;
     uint64_t vaSignalOff:63;
   } __attribute__((packed)) vaSignalOff;
   struct {
-    // the last bit is the flag, so we support 63 bit VAs
+    // 最后一个 b这是 the 标志, 所以 we 支持 63 位 VAs
     uint64_t flag:1;
     uint64_t vaSignalHandle:63;
   } __attribute__((packed)) vaSignalHandle;
@@ -67,7 +74,7 @@ typedef union {
     uint32_t inlineValLow;
     uint16_t inlineValLow2;
   } __attribute__((packed)) inlineLow;
-  // inline supports a max of 96 bit / 12 byte values
+  // 内联 supports a 最大值 of 96 位 / 12 字节 值
   struct {
     uint8_t flag:1;
     uint8_t resv:7;
@@ -76,23 +83,23 @@ typedef union {
     uint32_t resv2;
   } __attribute__((packed)) inlineHigh;
   struct {
-    // the last bit is the flag, so we support 63 bit VAs
+    // 最后一个 b这是 the 标志, 所以 we 支持 63 位 VAs
     uint64_t flag:1;
     uint64_t dstOff:63;
   } __attribute__((packed)) dstOff;
   struct {
-    // the last bit is the flag, so we support 63 bit VAs
+    // 最后一个 b这是 the 标志, 所以 we 支持 63 位 VAs
     uint64_t flag:1;
     uint64_t dstHandle:63;
   } __attribute__((packed)) dstHandle;
   struct {
     uint8_t flag:1;
-    // We need to keep the size of counterId and signalId in sync with the
-    // NCCL_GIN_COUNTER_POOL_SIZE / NCCL_GIN_SIGNAL_POOL_SIZE upper limits
-    // in gin_host.cc.
-    // must be non-zero if WITH_COUNTER is set
+    // 需要 保留 的大小 counterId 并且 signalId 入 同步 带有
+    // NCCL_GIN_COUNTER_POOL_SIZE / NCCL_GIN_SIGNAL_POOL_SIZE upper 限制
+    // 入 gin_host.cc.
+    // 必须为 non-zero 若 WITH_COUNTER 被设为
     uint32_t counterId:23;
-    // must be non-zero if WITH_SIGNAL_INC, WITH_SIGNAL_ADD, or WITH_SIGNAL_SET is set
+    // 必须为 non-zero 若 WITH_SIGNAL_INC, WITH_SIGNAL_ADD, 或者 WITH_SIGNAL_SET 被设为
     uint32_t signalId:24;
     uint16_t signalValLow;
   } __attribute__((packed)) completion;
@@ -130,9 +137,9 @@ typedef enum {
   ncclGinProxyGfdQwords = 16,
 } ncclGinProxyGfdQwordIdx_t;
 
-// aligned(16) is required because gin_proxy.h casts (uint4*)&gfd to emit
-// st.global.wt.v4.u32 / ld.local.v4.b32 PTX, which require 16-byte alignment.
-// packed is needed to preserve the no-padding guarantee the inner bitfield layouts depend on.
+// 已对齐(16) 需要 因为 gin_proxy.h casts (uint4*)&gfd to emit
+// st.全局的.wt.v4.u32 / ld.本地.v4.b32 PTX, 该 require 16-字节 对齐.
+// packed 需要 to preserve the 无-填充 保证 the inner bitfield layouts depend on.
 typedef struct __attribute__((packed, aligned(16))) {
   ncclGinProxyQword_t qword[ncclGinProxyGfdQwords];
 } ncclGinProxyGfd_t;
@@ -147,7 +154,7 @@ typedef struct {
   uint32_t queueSize;
   ncclGinProxyGfd_t* queues;
   uint32_t* pis;
-  // The consumer indices will reside in CPU or GPU memory depending on the availability of GDR
+  // The consumer indices will reside 入 CPU 或者 GPU 内存 取决于 the availability of GDR
   uint32_t* cis;
 
   uint64_t* counters;

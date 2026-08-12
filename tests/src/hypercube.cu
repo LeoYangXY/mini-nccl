@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/hypercube.cu — HyperCube 性能/功能测试
+ * ----------------------------------------------------------------------------
+ * 实现 hypercube_perf 基准：基于超立方体拓扑的通信模式测试，演示 NCCL 自定义通信
+ * 图的使用。取自 nccl-tests 并裁剪。
+ */
+
 #include "cuda_runtime.h"
 #include "common.h"
 

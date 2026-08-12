@@ -1,3 +1,20 @@
+/*
+ * src/include/os/windows.h — Windows 平台 OS 层适配
+ * ----------------------------------------------------------------------------
+ * 在 Windows 下补齐 NCCL 所需的系统宏与头文件：
+ *  - 设定 _WIN32_WINNT/Vista+ 以便使用 GetAdaptersAddresses 等网络 API；
+ *  - 用 WIN32_LEAN_AND_MEAN 避免 windows.h 与 winsock2.h 冲突；
+ *  - 把 POSIX 的 strcasecmp 等映射到 MSVC 的 _stricmp 实现。
+ * 与 os/linux.h 一起构成跨平台 OS 抽象层。
+ */
+
+/*
+ * src/include/os/windows.h — Windows 平台 OS 抽象层头
+ * ----------------------------------------------------------------------------
+ * 在 Windows 下补齐 POSIX 风格的网络/系统调用与宏定义，
+ * 让 NCCL 的跨平台代码在 MSVC 上也能编译（如 strcasecmp -> _stricmp）。
+ */
+
 #ifndef NCCL_WINDOWS_H_
 #define NCCL_WINDOWS_H_
 
@@ -13,7 +30,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-// Include standard C headers first
+// 包含 标准 C 头文件 第一
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

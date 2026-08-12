@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * device/common.h — NCCL device 端公共定义（kernel 共享内存布局 / block 到 channel 映射）
+ *
+ * 本文件定义 GPU kernel 运行时的核心共享内存结构 ncclShmemData，以及
+ * block→channel 的映射、COLL_UNROLL 等宏。所有集合算法 kernel（all_reduce.h
+ * 等）都依赖这里的布局来访问 channel 连接、用户输入/输出、redOp 参数等。
+ */
+
 #ifndef NCCL_DEVICE_COMMON_H_
 #define NCCL_DEVICE_COMMON_H_
 
@@ -17,7 +25,7 @@
 #define COLL_UNROLL (ncclCollUnroll())
 
 #if __CUDA_ARCH__ >= 700
-// __grid_constant__ appears to break cuda-gdb
+// __grid_constant__ 似乎 break CUDA-gdb
 #define NCCL_GRID_CONSTANT __grid_constant__
 #else
 #define NCCL_GRID_CONSTANT
@@ -125,7 +133,7 @@ __device__ inline bool barrier_red_or(bool vote, int name, int nThreads) {
   return bool(ans);
 }
 
-// Copy 16-byte aligned data. You must call with at least `(bytes+15)/16` threads.
+// 拷贝 16-字节 已对齐 数据. You must 调用 with 至少 `(字节+15)/16` 线程.
 inline __device__ void copyToShmem16(int tid, void* dst, void const* src, int bytes) {
   int offset = 16 * tid;
   if (offset < bytes) {
@@ -136,7 +144,7 @@ inline __device__ void copyToShmem16(int tid, void* dst, void const* src, int by
   }
 }
 
-// Must run with at least 64 threads
+// Must run with 至少 64 线程
 __device__ __forceinline__ void loadWorkBatchToShmem(int tid, int tn, struct ncclDevKernelArgs const* args,
                                                      int batchIx) {
   int lane = tid % WARP_SIZE;
@@ -144,10 +152,10 @@ __device__ __forceinline__ void loadWorkBatchToShmem(int tid, int tn, struct ncc
   while (true) {
     struct ncclDevWorkBatch batch = ((struct ncclDevWorkBatch*)(args + 1))[batchIx];
 
-    // fnsOfBitset[n] = index of n'th set bit in batch.offsetBitset.
-    // PTX has instruction "fns" (find n-th set) but it expands to a lot of SASS,
-    // since we know all lanes will be querying the same bitmask we can compute
-    // much faster using shared memory.
+    // fnsOfBitset[n] = 索引 of n'th 设置 位 入 batch.offsetBitset.
+    // PTX has instruction "fns" (查找 n-th 设置) 但 it expands to a lot of SASS,
+    // 自 we 知道 所有 lanes 将会 querying 相同 bitmask 我们可以 计算
+    // much 更快 使用 shared 内存.
     uint8_t* fnsOfBitset = (uint8_t*)ncclScratchForWarp(threadIdx.x / WARP_SIZE);
     __syncwarp();
     if (uint32_t(batch.offsetBitset) & (1u << lane)) {
@@ -197,34 +205,34 @@ __device__ __forceinline__ void loadWorkBatchToShmem(int tid, int tn, struct ncc
     if (tid == 0) {
       ncclShmem.workSize = workSize;
     }
-    // We deliberately replicate these div and mod calculations into the case
-    // blocks above so that they get constant divisor optimizations by the compiler.
+    // We deliberately replicate 这些 div 并且 mod calculations 入到 情形
+    // 线程块 上方 所以 那个 they 获取 constant divisor optimizations 由 编译器.
     //   packInWork = tid%(workSize/16);
     //   dstWork = tid/(workSize/16);
 
-    // We can only assume we have 64 threads, which means we can read at most 1024 bytes
-    // here which is the per batch maximum.
+    // 我们可以 仅 假设 我们已有 64 线程, 该 means 我们可以 读取 at most 1024 字节
+    // here 该 is the 每个 batch 最大.
     if (tid < nPacks) {
       int srcWork = fnsOfBitset[dstWork]; // find n'th set bit in batch.offsetBitset
       ulonglong2 tmp;
-      // The loads done in these two cases must be kept separate since we are
-      // relying on the compiler to use "ld.param" in the first one. The parameter
-      // space is not generically addressable, so any attempt to load through
-      // a pointer that *might* be parameter space backed will cause the
-      // compiler to spill the parameter struct (4K!) to each thread's local space
-      // before creating a pointer (to the spill) and decimate perf.
+      // The loads 已完成 在 ... 中se two 情形 必须为 已保留 separate 自 we are
+      // relying 在 ... 上 编译器 to 使用 "ld.param" 入 第一个 one. The 参数
+      // space is 不 generically addressable, 所以 任意 尝试 to 加载 through
+      // a 指针 那个 *might* be 参数 space backed will 导致 the
+      // 编译器 to spill the 参数 结构体 (4K!) to 每个 线程's 本地 space
+      // 之前 creating a 指针 (到 spill) 并且 decimate perf.
       //
-      // An example of what not to do would be the following:
+      // An 示例 of 什么 不 to 执行 将会 以下内容:
       //
-      // if (condition) {
-      //   // The compiler could spill parameter_variable to local space and take
-      //   // the address of that, since when src is loaded below it could also
-      //   // be global space.
-      //   src = &parameter_variable;
+      // 若 (condition) {
+      //   // The 编译器 could spill parameter_variable to 本地 space 并且 取
+      //   // the 地址 of 那个, 自 当 源 is loaded 下方 it could 也
+      //   // be 全局的 space.
+      //   源 = &parameter_variable;
       // } else {
-      //   src = &global_variable;
+      //   源 = &global_variable;
       // }
-      // memcpy(dst, src, n);
+      // memcpy(目标, 源, n);
       if (ncclShmem.args.workStorageType == ncclDevWorkStorageTypeArgs) {
         char* src = (char*)args + (batch.offsetBase + srcWork * workSize + packInWork * 16);
         tmp = *(ulonglong2*)src; // becomes ld.param.v2.u64
@@ -265,25 +273,25 @@ __device__ __forceinline__ unsigned long long int globaltimer() {
 template <ncclFunc_t Fn, typename T, typename RedOp, int Algo, int Proto>
 struct RunWorkColl {
   __device__ void run(int tid, int tn, struct ncclDevWorkColl* work) {
-    // Put NOT IMPLEMENTED behavior here.
+    // 放置 不 IMPLEMENTED behavior here.
   }
 };
 
 template <ncclFunc_t Fn, typename T, typename RedOp, int Algo, int Proto>
 struct RunWorkBatch;
 
-// Specialized for P2p in sendrecv.h
+// Specialized for P2p 入 sendrecv.h
 template <typename T, typename RedOp>
 struct RunWorkBatch<ncclFuncSendRecv, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE>;
 
 template <typename T, typename RedOp, int Proto>
 struct RunWorkBatch<ncclFuncAllGatherV, T, RedOp, NCCL_ALGO_RING, Proto>;
 
-// Specialized here for non-P2p (Coll and CollReg)
+// Specialized here for non-P2p (Coll 并且 CollReg)
 template <ncclFunc_t Fn, typename T, typename RedOp, int Algo, int Proto>
 struct RunWorkBatch {
-  // This __forceinline__ is necessary. The compiler was inserting a function call
-  // here from the LL ncclKernel.
+  // 此 __forceinline__ 必要的. The 编译器 was inserting a 函数 调用
+  // here 从 LL ncclKernel.
   __device__ __forceinline__ void run() {
     int tid = threadIdx.x;
     int tn = blockDim.x;
@@ -308,9 +316,9 @@ struct RunWorkBatch {
         if (work->nWarps != workPrev->nWarps) __syncthreads();
       }
       int subtn = work->nWarps * WARP_SIZE;
-      // Coverity reports a possible thread divergence due to not all threads participating in the collective.
-      // However, the code ensures that the participation is on a per-warp basis.
-      // coverity[device_thread_diverged:FALSE]
+      // Coverity reports a possible 线程 divergence 由于 不 所有 线程 participating 在 ... 中 集合.
+      // 然而, the 代码 ensures 那个 the participation is on a 每个-线程束 basis.
+      // coverity[device_thread_diverged:假]
       if (tid < subtn) RunWorkColl<Fn, T, RedOp, Algo, Proto>().run(tid, subtn, work);
     }
   }
@@ -357,16 +365,16 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
   int tid = threadIdx.x;
   int tn = blockDim.x;
 
-  // Copy kernel args to shmem and then only read those. Otherwise the compiler
-  // will end up putting the args into thread local stack which is very wasteful.
+  // 拷贝 内核 args to shmem 以及n 仅 读取 那些. 否则 the 编译器
+  // will 末尾 up putting the args into 线程 本地 栈 该 is very wasteful.
   if (tid < sizeof(ncclDevKernelArgs) / sizeof(uint32_t)) {
     ((uint32_t*)&ncclShmem.args)[tid] = ((uint32_t*)args)[tid];
   }
 
-  // To map blockId to channelId, we need the n'th set bit of channelMask which
-  // is the inverse of counting the number of set bits among the the first n.
-  // PTX has the fns instruction which does this but is extremely slow. We can
-  // do better when we know all threads are querying the same bitmask.
+  // To 映射 blockId to channelId, we 需要 the n'th 设置 位 of channelMask 该
+  // is the inverse of counting 的数量 设置 位 在 ... 之中 第一个 n.
+  // PTX has the fns instruction 该 执行 此 但 is extremely 缓慢. 我们可以
+  // 执行 更好 当 we 知道 所有 线程 are querying 相同 bitmask.
   if (tid < MAXCHANNELS && (args->channelMask & (1ull << tid))) {
     int n = __popcll(args->channelMask & ((1ull << tid) - 1));
     if (blockIdx.x == n) ncclShmem.channelId = tid;
@@ -379,7 +387,7 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
       ((ncclKernelCommAndChannels*)ncclShmem.args.comm)->channels[ncclShmem.channelId].workCounter;
   }
 
-  // Use first 2 warps to load comm and channel, and remaining load work batch.
+  // 使用 第一 2 线程束 to 加载 通信域 并且 通道, 并且 剩余的 加载 work batch.
   switch (tid / WARP_SIZE) {
   case 0:
     {
@@ -405,9 +413,9 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     {
       int subtid = tid - 2 * WARP_SIZE;
       int subtn = tn - 2 * WARP_SIZE;
-      // Coverity reports a possible thread divergence due to not all threads participating in the collective.
-      // However, the code ensures that the participation is on a per-warp basis.
-      // coverity[device_thread_diverged:FALSE]
+      // Coverity reports a possible 线程 divergence 由于 不 所有 线程 participating 在 ... 中 集合.
+      // 然而, the 代码 ensures 那个 the participation is on a 每个-线程束 basis.
+      // coverity[device_thread_diverged:假]
       loadWorkBatchToShmem(subtid, subtn, args, /*batchIx=*/blockIdx.x);
     }
     break;

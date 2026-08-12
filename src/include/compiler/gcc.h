@@ -5,10 +5,17 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/compiler/gcc.h — GCC 编译器内置(intrinsics)封装 [第三方/编译器]
+ * ----------------------------------------------------------------------------
+ * 提供在 GCC 下将 C++ 内存序(memory_order)转换为 GCC 原子内存序的辅助宏，
+ * 以及 GCC 专属的内建函数封装。对应 MSVC 实现见 msvc.h。
+ */
+
 #ifndef NCCL_COMPILER_GCC_H
 #define NCCL_COMPILER_GCC_H
 
-// Helper macros to convert C++ memory ordering to GCC atomic ordering
+// 辅助 宏 to convert C++ 内存 ordering to GCC 原子 ordering
 #define NCCL_CONVERT_ORDER(order) \
   ((order) == std::memory_order_relaxed ? __ATOMIC_RELAXED : \
    (order) == std::memory_order_consume ? __ATOMIC_CONSUME : \
@@ -42,22 +49,22 @@
 
 #define COMPILER_EXPECT(x, v) __builtin_expect((x), (v))
 
-// Find First Set (FFS) - returns index of first set bit (1-indexed), 0 if no bits set
+// 查找 第一 设置 (FFS) - 返回 索引 of 第一 设置 位 (1-indexed), 0 若 无 位 设置
 #define COMPILER_FFS(x) __builtin_ffs(x)
 #define COMPILER_FFSL(x) __builtin_ffsl(x)
 #define COMPILER_FFSLL(x) __builtin_ffsll(x)
 
-// Count Leading Zeros (CLZ) - undefined behavior if x == 0
+// 计数 Leading Zeros (CLZ) - undefined behavior 若 x == 0
 #define COMPILER_CLZ(x) __builtin_clz(x)
 #define COMPILER_CLZL(x) __builtin_clzl(x)
 #define COMPILER_CLZLL(x) __builtin_clzll(x)
 
-// Byte Swap
+// 字节 Swap
 #define COMPILER_BSWAP16(x) __builtin_bswap16(x)
 #define COMPILER_BSWAP32(x) __builtin_bswap32(x)
 #define COMPILER_BSWAP64(x) __builtin_bswap64(x)
 
-// Compiler hints
+// 编译器 hints
 #define COMPILER_ASSUME_ALIGNED(ptr, alignment) __builtin_assume_aligned((ptr), (alignment))
 
 #define COMPILER_ATTRIBUTE_UNUSED __attribute__((unused))

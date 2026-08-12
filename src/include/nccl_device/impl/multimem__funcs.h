@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/multimem__funcs.h — 多播内存(multimem)函数实现
+ * ----------------------------------------------------------------------------
+ * 实现 GPU 的 multimem 指令封装（多播加载/存储），供一对多广播式内存操作使用，是
+ * 部分集合算法的底层原语。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_MULTIMEM__FUNCS_H_
 #define _NCCL_DEVICE_MULTIMEM__FUNCS_H_
 
@@ -19,7 +26,7 @@
 namespace nccl {
 namespace utility {
 
-// Load helper that selects multimem vs LSA and validates support at compile time.
+// 加载辅助函数：在编译期选择用 multimem 还是 LSA，并校验是否支持。
 template <typename Pack, bool UseMultimem, typename RedOp, int Count = Pack::Count>
 struct LoadImpl {
   NCCL_DEVICE_INLINE static Pack run(const Pack* addr) {
@@ -42,7 +49,7 @@ struct LoadImpl {
   }
 };
 
-// Empty packs (0 elements) - just return empty pack
+// 空 打包(0 个元素)——直接返回空 打包
 template <typename Pack, bool UseMultimem, typename RedOp>
 struct LoadImpl<Pack, UseMultimem, RedOp, 0> {
   NCCL_DEVICE_INLINE static Pack run(const Pack* addr) {
@@ -56,7 +63,7 @@ NCCL_DEVICE_INLINE Pack load(const Pack* addr) {
 }
 #if __CUDA_ARCH__ >= 900
 
-// Double precision - single element
+// 双精度——单个元素
 template <>
 NCCL_DEVICE_INLINE EltPack<double, 1> load<EltPack<double, 1>, true, OpSum<double>>(const EltPack<double, 1>* addr) {
   EltPack<double, 1> result;
@@ -69,16 +76,16 @@ NCCL_DEVICE_INLINE EltPack<double, 1> load<EltPack<double, 1>, true, OpSum<doubl
   return result;
 }
 
-// Double precision - 2 elements (2 x 64-bit = 128 bits)
-// Note: No 128-bit multimem.ld_reduce for double, use 2 separate .f64 operations
+// 双精度——2 个元素(2 × 64 位 = 128 位)
+// 注意：双精度 没有 128 位的多播规约加载指令，改用 2 次独立的 .f64 操作
 template <>
 NCCL_DEVICE_INLINE EltPack<double, 2> load<EltPack<double, 2>, true, OpSum<double>>(const EltPack<double, 2>* addr) {
   EltPack<double, 2> result;
   double* elems = result.elts();
   const char* base_addr = reinterpret_cast<const char*>(addr);
 
-  // Load 2 separate f64 values (no vector instruction available)
-  // Use unrolled loop calling the 1-element version
+  // 加载 2 个独立的 f64 值(无向量指令可用)
+  // 用展开循环调用单元素版本
   NVCC_PRAGMA_UNROLL_AUTO
   for (int i = 0; i < 2; i++) {
     EltPack<double, 1> loaded = load<EltPack<double, 1>, true, OpSum<double>>(
@@ -88,7 +95,7 @@ NCCL_DEVICE_INLINE EltPack<double, 2> load<EltPack<double, 2>, true, OpSum<doubl
   return result;
 }
 
-// Float precision - single element
+// 单精度——单个元素
 template <>
 NCCL_DEVICE_INLINE EltPack<float, 1> load<EltPack<float, 1>, true, OpSum<float>>(const EltPack<float, 1>* addr) {
   EltPack<float, 1> result;
@@ -101,7 +108,7 @@ NCCL_DEVICE_INLINE EltPack<float, 1> load<EltPack<float, 1>, true, OpSum<float>>
   return result;
 }
 
-// Float precision - 2 elements
+// 单精度——2 个元素
 template <>
 NCCL_DEVICE_INLINE EltPack<float, 2> load<EltPack<float, 2>, true, OpSum<float>>(const EltPack<float, 2>* addr) {
   EltPack<float, 2> result;
@@ -115,7 +122,7 @@ NCCL_DEVICE_INLINE EltPack<float, 2> load<EltPack<float, 2>, true, OpSum<float>>
   return result;
 }
 
-// Float precision - 4 elements
+// 单精度——4 个元素
 template <>
 NCCL_DEVICE_INLINE EltPack<float, 4> load<EltPack<float, 4>, true, OpSum<float>>(const EltPack<float, 4>* addr) {
   EltPack<float, 4> result;
@@ -132,7 +139,7 @@ NCCL_DEVICE_INLINE EltPack<float, 4> load<EltPack<float, 4>, true, OpSum<float>>
   return result;
 }
 
-// Half precision - 2 elements (minimum: 2 halves = 32 bits)
+// 半精度——2 个元素(half 最小 2 个 = 32 位)
 template <>
 NCCL_DEVICE_INLINE EltPack<half, 2> load<EltPack<half, 2>, true, OpSum<half>>(const EltPack<half, 2>* addr) {
   EltPack<half, 2> result;
@@ -150,7 +157,7 @@ NCCL_DEVICE_INLINE EltPack<half, 2> load<EltPack<half, 2>, true, OpSum<half>>(co
   return result;
 }
 
-// Half precision - single element (trick: load as f16x2, extract one half)
+// 半精度——单个元素(技巧：按 f16x2 加载再取出其中一个 half)
 template <>
 NCCL_DEVICE_INLINE EltPack<half, 1> load<EltPack<half, 1>, true, OpSum<half>>(const EltPack<half, 1>* addr) {
 #ifndef NCCL_DEVICE_PERMIT_EXPERIMENTAL_CODE
@@ -161,22 +168,22 @@ NCCL_DEVICE_INLINE EltPack<half, 1> load<EltPack<half, 1>, true, OpSum<half>>(co
                   "https://docs.nvidia.com/cuda/parallel-thread-execution/#addresses-as-operands");
   return EltPack<half, 1>{};
 #else
-  // Align address to 4 bytes for f16x2 load
+  // 为 f16x2 加载把地址对齐到 4 字节
   const char* charAddr = reinterpret_cast<const char*>(addr);
   const size_t offset = reinterpret_cast<size_t>(addr) & 3;
   const char* alignedAddr = charAddr - offset;
-  // Load as EltPack<half, 2> and extract the correct half
+  // 按 EltPack<half, 2> 加载并取出正确的那个 half
   EltPack<half, 2> loaded =
     load<EltPack<half, 2>, true, OpSum<half>>(reinterpret_cast<const EltPack<half, 2>*>(alignedAddr));
   EltPack<half, 1> result;
   const half* loadedElts = loaded.elts();
-  // Extract the correct half based on address offset
+  // 根据地址偏移取出正确的 half
   result.elts()[0] = loadedElts[offset / sizeof(half)];
   return result;
 #endif
 }
 
-// Half precision - 8 elements (8 halves = 128 bits)
+// 半精度——8 个元素(8 个 half = 128 位)
 template <>
 NCCL_DEVICE_INLINE EltPack<half, 8> load<EltPack<half, 8>, true, OpSum<half>>(const EltPack<half, 8>* addr) {
   EltPack<half, 8> result;
@@ -196,14 +203,14 @@ NCCL_DEVICE_INLINE EltPack<half, 8> load<EltPack<half, 8>, true, OpSum<half>>(co
 }
 
 #if defined(__CUDA_BF16_TYPES_EXIST__)
-// Bfloat16 precision - 2 elements (minimum: 2 bf16s = 32 bits)
-// Uses bf16x2 multimem instruction (not f16x2 - bf16 has different format than half)
+// bfloat16——2 个元素(最小 2 个 bf16 = 32 位)
+// 用 bf16x2 多播指令(bf16 格式与 half 不同，不能用 f16x2)
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_bfloat16, 2> load<EltPack<__nv_bfloat16, 2>, true, OpSum<__nv_bfloat16>>(
   const EltPack<__nv_bfloat16, 2>* addr) {
   EltPack<__nv_bfloat16, 2> result;
   uint32_t raw;
-  // Use bf16x2 instruction - bf16 requires its own instruction format
+  // 用 bf16x2 指令——bf16 需要自己的指令格式
   asm volatile("multimem.ld_reduce.global.add.acc::f32.bf16x2 %0, [%1];"
                : "=r"(raw)
                : "l"(__cvta_generic_to_global(addr))
@@ -217,7 +224,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_bfloat16, 2> load<EltPack<__nv_bfloat16, 2>, tru
   return result;
 }
 
-// Bfloat16 precision - single element (trick: load as bf16x2, extract one bf16)
+// bfloat16——单个元素(技巧：按 bf16x2 加载再取出一个 bf16)
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_bfloat16, 1> load<EltPack<__nv_bfloat16, 1>, true, OpSum<__nv_bfloat16>>(
   const EltPack<__nv_bfloat16, 1>* addr) {
@@ -229,26 +236,26 @@ NCCL_DEVICE_INLINE EltPack<__nv_bfloat16, 1> load<EltPack<__nv_bfloat16, 1>, tru
                   "https://docs.nvidia.com/cuda/parallel-thread-execution/#addresses-as-operands");
   return EltPack<__nv_bfloat16, 1>{};
 #else
-  // Align address to 4 bytes for bf16x2 load
+  // 为 bf16x2 加载把地址对齐到 4 字节
   const char* charAddr = reinterpret_cast<const char*>(addr);
   const size_t offset = reinterpret_cast<size_t>(addr) & 3;
   const char* alignedAddr = charAddr - offset;
-  // Load as EltPack<__nv_bfloat16, 2> and extract the correct bf16
+  // 按 EltPack<__nv_bfloat16, 2> 加载并取出正确的 bf16
   EltPack<__nv_bfloat16, 2> loaded = load<EltPack<__nv_bfloat16, 2>, true, OpSum<__nv_bfloat16>>(
     reinterpret_cast<const EltPack<__nv_bfloat16, 2>*>(alignedAddr));
   EltPack<__nv_bfloat16, 1> result;
   const __nv_bfloat16* loadedElts = loaded.elts();
-  // Extract the correct bf16 based on address offset
+  // 根据地址偏移取出正确的 bf16
   result.elts()[0] = loadedElts[offset / sizeof(__nv_bfloat16)];
   return result;
 #endif
 }
 
-// Bfloat16 precision - 8 elements (8 bf16s = 128 bits)
+// bfloat16——8 个元素(8 个 bf16 = 128 位)
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_bfloat16, 8> load<EltPack<__nv_bfloat16, 8>, true, OpSum<__nv_bfloat16>>(
   const EltPack<__nv_bfloat16, 8>* addr) {
-  // Use v4.bf16x2 instruction - bf16 requires its own instruction format
+  // 用 v4.bf16x2 指令——bf16 需要自己的指令格式
   EltPack<__nv_bfloat16, 8> result;
   uint32_t raw[4];
   asm volatile("multimem.ld_reduce.global.add.acc::f32.v4.bf16x2 {%0, %1, %2, %3}, [%4];"
@@ -267,13 +274,13 @@ NCCL_DEVICE_INLINE EltPack<__nv_bfloat16, 8> load<EltPack<__nv_bfloat16, 8>, tru
 #endif
 
 #if defined(__CUDA_FP8_TYPES_EXIST__)
-// FP8 E4M3 precision - 4 elements (minimum: 4 fp8s = 32 bits)
-// Uses .acc::f16 accumulation (accumulates to half precision)
-//   - Specific architectures: sm_100a, sm_101a/sm_110a (renamed from PTX ISA 9.0), sm_120a, sm_121a
-//   - Family-specific architectures (PTX ISA 8.8+): sm_100f+ or higher, sm_101f+/sm_110f+ or higher
-//   - NOT supported on sm_103 (10.3) or other unsupported variants
-// Uses __CUDA_ARCH_FAMILY_SPECIFIC__ and __CUDA_ARCH_SPECIFIC__ when available (CUDA 12.9+)
-// Only define FP8 multimem specializations for supported architectures - otherwise fallback to generic template
+// FP8 E4M3——4 个元素(最小 4 个 fp8 = 32 位)
+// 使用 .acc::f16 累加(结果为半精度)
+//   - 特定的 architectures: sm_100a, sm_101a/sm_110a (renamed from PTX ISA 9.0), sm_120a, sm_121a
+//   - Family-特定的 architectures (PTX ISA 8.8+): sm_100f+ 或者 higher, sm_101f+/sm_110f+ 或者 higher
+//   - 不 受支持的 on sm_103 (10.3) 或者 其他 unsupported variants
+// 在可用时(CUDA 12.9+)使用 __CUDA_ARCH_FAMILY_SPECIFIC__ 与 __CUDA_ARCH_SPECIFIC__
+// 仅为受支持的架构定义 FP8 多播特化，否则回退到通用模板
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 4> load<EltPack<__nv_fp8_e4m3, 4>, true, OpSum<__nv_fp8_e4m3>>(
   const EltPack<__nv_fp8_e4m3, 4>* addr) {
@@ -283,7 +290,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 4> load<EltPack<__nv_fp8_e4m3, 4>, tru
    (__CUDA_ARCH_FAMILY_SPECIFIC__ == 1000 || __CUDA_ARCH_FAMILY_SPECIFIC__ == 1010))
   EltPack<__nv_fp8_e4m3, 4> result;
   uint32_t raw;
-  // Use e4m3x4 instruction with .acc::f16 accumulation
+  // 用 e4m3x4 指令，配合 .acc::f16 累加
   asm volatile("multimem.ld_reduce.global.add.acc::f16.e4m3x4 %0, [%1];"
                : "=r"(raw)
                : "l"(__cvta_generic_to_global(addr))
@@ -302,7 +309,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 4> load<EltPack<__nv_fp8_e4m3, 4>, tru
 #endif
 }
 
-// FP8 E4M3 precision - 2 elements (trick: load as e4m3x4, extract two fp8s)
+// FP8 E4M3——2 个元素(技巧：按 e4m3x4 加载再取出两个 fp8)
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 2> load<EltPack<__nv_fp8_e4m3, 2>, true, OpSum<__nv_fp8_e4m3>>(
   const EltPack<__nv_fp8_e4m3, 2>* addr) {
@@ -314,15 +321,15 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 2> load<EltPack<__nv_fp8_e4m3, 2>, tru
                   "https://docs.nvidia.com/cuda/parallel-thread-execution/#addresses-as-operands");
   return EltPack<__nv_fp8_e4m3, 2>{};
 #else
-  // Align address to 4 bytes for e4m3x4 load
+  // 为 e4m3x4 加载把地址对齐到 4 字节
   const char* charAddr = reinterpret_cast<const char*>(addr);
   const size_t offset = reinterpret_cast<size_t>(addr) & 3;
   const char* alignedAddr = charAddr - offset;
-  // Load as EltPack<__nv_fp8_e4m3, 4> and extract the correct two fp8s
+  // 按 EltPack<__nv_fp8_e4m3, 4> 加载并取出正确的两个 fp8
   EltPack<__nv_fp8_e4m3, 4> loaded = load<EltPack<__nv_fp8_e4m3, 4>, true, OpSum<__nv_fp8_e4m3>>(
     reinterpret_cast<const EltPack<__nv_fp8_e4m3, 4>*>(alignedAddr));
   EltPack<__nv_fp8_e4m3, 2> result;
-  // Extract the correct two fp8s based on address offset
+  // 根据地址偏移取出正确的两个 fp8
   const __nv_fp8_e4m3* loadedElts = loaded.elts();
   const int startIdx = offset / sizeof(__nv_fp8_e4m3);
   __nv_fp8_e4m3* resultElts = result.elts();
@@ -332,7 +339,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 2> load<EltPack<__nv_fp8_e4m3, 2>, tru
 #endif
 }
 
-// FP8 E4M3 precision - single element (trick: load as e4m3x4, extract one fp8)
+// FP8 E4M3——单个元素(技巧：按 e4m3x4 加载再取出一个 fp8)
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 1> load<EltPack<__nv_fp8_e4m3, 1>, true, OpSum<__nv_fp8_e4m3>>(
   const EltPack<__nv_fp8_e4m3, 1>* addr) {
@@ -344,23 +351,23 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 1> load<EltPack<__nv_fp8_e4m3, 1>, tru
                   "https://docs.nvidia.com/cuda/parallel-thread-execution/#addresses-as-operands");
   return EltPack<__nv_fp8_e4m3, 1>{};
 #else
-  // Align address to 4 bytes for e4m3x4 load
+  // 为 e4m3x4 加载把地址对齐到 4 字节
   const char* charAddr = reinterpret_cast<const char*>(addr);
   const size_t offset = reinterpret_cast<size_t>(addr) & 3;
   const char* alignedAddr = charAddr - offset;
-  // Load as EltPack<__nv_fp8_e4m3, 4> and extract the correct fp8
+  // 按 EltPack<__nv_fp8_e4m3, 4> 加载并取出正确的 fp8
   EltPack<__nv_fp8_e4m3, 4> loaded = load<EltPack<__nv_fp8_e4m3, 4>, true, OpSum<__nv_fp8_e4m3>>(
     reinterpret_cast<const EltPack<__nv_fp8_e4m3, 4>*>(alignedAddr));
   EltPack<__nv_fp8_e4m3, 1> result;
-  // Extract the correct fp8 based on address offset
+  // Extract the 正确 fp8 基于 地址 偏移
   const __nv_fp8_e4m3* loadedElts = loaded.elts();
   result.elts()[0] = loadedElts[offset / sizeof(__nv_fp8_e4m3)];
   return result;
 #endif
 }
 
-// FP8 E4M3 precision - 16 elements (16 fp8s = 128 bits)
-// Only define FP8 multimem specializations for supported architectures - otherwise fallback to generic template
+// FP8 E4M3——16 个元素(16 个 fp8 = 128 位)
+// 仅为受支持的架构定义 FP8 多播特化，否则回退到通用模板
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 16> load<EltPack<__nv_fp8_e4m3, 16>, true, OpSum<__nv_fp8_e4m3>>(
   const EltPack<__nv_fp8_e4m3, 16>* addr) {
@@ -370,7 +377,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 16> load<EltPack<__nv_fp8_e4m3, 16>, t
    (__CUDA_ARCH_FAMILY_SPECIFIC__ == 1000 || __CUDA_ARCH_FAMILY_SPECIFIC__ == 1010))
   EltPack<__nv_fp8_e4m3, 16> result;
   uint32_t raw[4];
-  // Use v4.e4m3x4 instruction (4 x e4m3x4 = 16 elements)
+  // 用 v4.e4m3x4 指令(4 × e4m3x4 = 16 个元素)
   asm volatile("multimem.ld_reduce.global.add.acc::f16.v4.e4m3x4 {%0, %1, %2, %3}, [%4];"
                : "=r"(raw[0]), "=r"(raw[1]), "=r"(raw[2]), "=r"(raw[3])
                : "l"(__cvta_generic_to_global(addr))
@@ -389,8 +396,8 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e4m3, 16> load<EltPack<__nv_fp8_e4m3, 16>, t
 #endif
 }
 
-// FP8 E5M2 precision - 4 elements (minimum: 4 fp8s = 32 bits)
-// Uses .acc::f16 accumulation (accumulates to half precision)
+// FP8 E5M2——4 个元素(最小 4 个 fp8 = 32 位)
+// 使用 .acc::f16 累加(结果为半精度)
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 4> load<EltPack<__nv_fp8_e5m2, 4>, true, OpSum<__nv_fp8_e5m2>>(
   const EltPack<__nv_fp8_e5m2, 4>* addr) {
@@ -400,7 +407,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 4> load<EltPack<__nv_fp8_e5m2, 4>, tru
    (__CUDA_ARCH_FAMILY_SPECIFIC__ == 1000 || __CUDA_ARCH_FAMILY_SPECIFIC__ == 1010))
   EltPack<__nv_fp8_e5m2, 4> result;
   uint32_t raw;
-  // Use e5m2x4 instruction with .acc::f16 accumulation
+  // 用 e5m2x4 指令，配合 .acc::f16 累加
   asm volatile("multimem.ld_reduce.global.add.acc::f16.e5m2x4 %0, [%1];"
                : "=r"(raw)
                : "l"(__cvta_generic_to_global(addr))
@@ -419,7 +426,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 4> load<EltPack<__nv_fp8_e5m2, 4>, tru
 #endif
 }
 
-// FP8 E5M2 precision - 2 elements (trick: load as e5m2x4, extract two fp8s)
+// FP8 E5M2——2 个元素(技巧：按 e5m2x4 加载再取出两个 fp8)
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 2> load<EltPack<__nv_fp8_e5m2, 2>, true, OpSum<__nv_fp8_e5m2>>(
   const EltPack<__nv_fp8_e5m2, 2>* addr) {
@@ -431,15 +438,15 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 2> load<EltPack<__nv_fp8_e5m2, 2>, tru
                   "https://docs.nvidia.com/cuda/parallel-thread-execution/#addresses-as-operands");
   return EltPack<__nv_fp8_e5m2, 2>{};
 #else
-  // Align address to 4 bytes for e5m2x4 load
+  // 为 e5m2x4 加载把地址对齐到 4 字节
   const char* charAddr = reinterpret_cast<const char*>(addr);
   const size_t offset = reinterpret_cast<size_t>(addr) & 3;
   const char* alignedAddr = charAddr - offset;
-  // Load as EltPack<__nv_fp8_e5m2, 4> and extract the correct two fp8s
+  // 按 EltPack<__nv_fp8_e5m2, 4> 加载并取出正确的两个 fp8
   EltPack<__nv_fp8_e5m2, 4> loaded = load<EltPack<__nv_fp8_e5m2, 4>, true, OpSum<__nv_fp8_e5m2>>(
     reinterpret_cast<const EltPack<__nv_fp8_e5m2, 4>*>(alignedAddr));
   EltPack<__nv_fp8_e5m2, 2> result;
-  // Extract the correct two fp8s based on address offset
+  // 根据地址偏移取出正确的两个 fp8
   const __nv_fp8_e5m2* loadedElts = loaded.elts();
   const int startIdx = offset / sizeof(__nv_fp8_e5m2);
   __nv_fp8_e5m2* resultElts = result.elts();
@@ -449,7 +456,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 2> load<EltPack<__nv_fp8_e5m2, 2>, tru
 #endif
 }
 
-// FP8 E5M2 precision - single element (trick: load as e5m2x4, extract one fp8)
+// FP8 E5M2——单个元素(技巧：按 e5m2x4 加载再取出一个 fp8)
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 1> load<EltPack<__nv_fp8_e5m2, 1>, true, OpSum<__nv_fp8_e5m2>>(
   const EltPack<__nv_fp8_e5m2, 1>* addr) {
@@ -461,22 +468,22 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 1> load<EltPack<__nv_fp8_e5m2, 1>, tru
                   "https://docs.nvidia.com/cuda/parallel-thread-execution/#addresses-as-operands");
   return EltPack<__nv_fp8_e5m2, 1>{};
 #else
-  // Align address to 4 bytes for e5m2x4 load
+  // 为 e5m2x4 加载把地址对齐到 4 字节
   const char* charAddr = reinterpret_cast<const char*>(addr);
   const size_t offset = reinterpret_cast<size_t>(addr) & 3;
   const char* alignedAddr = charAddr - offset;
-  // Load as EltPack<__nv_fp8_e5m2, 4> and extract the correct fp8
+  // 按 EltPack<__nv_fp8_e5m2, 4> 加载并取出正确的 fp8
   EltPack<__nv_fp8_e5m2, 4> loaded = load<EltPack<__nv_fp8_e5m2, 4>, true, OpSum<__nv_fp8_e5m2>>(
     reinterpret_cast<const EltPack<__nv_fp8_e5m2, 4>*>(alignedAddr));
   EltPack<__nv_fp8_e5m2, 1> result;
-  // Extract the correct fp8 based on address offset
+  // Extract the 正确 fp8 基于 地址 偏移
   const __nv_fp8_e5m2* loadedElts = loaded.elts();
   result.elts()[0] = loadedElts[offset / sizeof(__nv_fp8_e5m2)];
   return result;
 #endif
 }
 
-// FP8 E5M2 precision - 16 elements (16 fp8s = 128 bits)
+// FP8 E5M2——16 个元素(16 个 fp8 = 128 位)
 template <>
 NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 16> load<EltPack<__nv_fp8_e5m2, 16>, true, OpSum<__nv_fp8_e5m2>>(
   const EltPack<__nv_fp8_e5m2, 16>* addr) {
@@ -486,7 +493,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 16> load<EltPack<__nv_fp8_e5m2, 16>, t
    (__CUDA_ARCH_FAMILY_SPECIFIC__ == 1000 || __CUDA_ARCH_FAMILY_SPECIFIC__ == 1010))
   EltPack<__nv_fp8_e5m2, 16> result;
   uint32_t raw[4];
-  // Use v4.e5m2x4 instruction (4 x e5m2x4 = 16 elements)
+  // 用 v4.e5m2x4 指令(4 × e5m2x4 = 16 个元素)
   asm volatile("multimem.ld_reduce.global.add.acc::f16.v4.e5m2x4 {%0, %1, %2, %3}, [%4];"
                : "=r"(raw[0]), "=r"(raw[1]), "=r"(raw[2]), "=r"(raw[3])
                : "l"(__cvta_generic_to_global(addr))
@@ -506,7 +513,7 @@ NCCL_DEVICE_INLINE EltPack<__nv_fp8_e5m2, 16> load<EltPack<__nv_fp8_e5m2, 16>, t
 }
 #endif // __CUDA_FP8_TYPES_EXIST__
 
-// int32_t - single element
+// int32_t——单个元素
 template <>
 NCCL_DEVICE_INLINE EltPack<int32_t, 1> load<EltPack<int32_t, 1>, true, OpSum<int32_t>>(
   const EltPack<int32_t, 1>* addr) {
@@ -520,8 +527,8 @@ NCCL_DEVICE_INLINE EltPack<int32_t, 1> load<EltPack<int32_t, 1>, true, OpSum<int
   return result;
 }
 
-// int32_t - 4 elements (4 x 32-bit = 128 bits)
-// Note: No 128-bit multimem.ld_reduce for integers, use 4 separate .s32 operations
+// int32_t——4 个元素(4 × 32 位 = 128 位)
+// 注意：整数没有 128 位多播规约加载，改用 4 次独立的 .s32 操作
 template <>
 NCCL_DEVICE_INLINE EltPack<int32_t, 4> load<EltPack<int32_t, 4>, true, OpSum<int32_t>>(
   const EltPack<int32_t, 4>* addr) {
@@ -529,8 +536,8 @@ NCCL_DEVICE_INLINE EltPack<int32_t, 4> load<EltPack<int32_t, 4>, true, OpSum<int
   int32_t* elems = result.elts();
   const char* base_addr = reinterpret_cast<const char*>(addr);
 
-  // Load 4 separate s32 values (no vector instruction available)
-  // Use unrolled loop calling the 1-element version
+  // 加载 4 个独立的 s32 值(无向量指令可用)
+  // 用展开循环调用单元素版本
   NVCC_PRAGMA_UNROLL_AUTO
   for (int i = 0; i < 4; i++) {
     EltPack<int32_t, 1> loaded = load<EltPack<int32_t, 1>, true, OpSum<int32_t>>(
@@ -540,7 +547,7 @@ NCCL_DEVICE_INLINE EltPack<int32_t, 4> load<EltPack<int32_t, 4>, true, OpSum<int
   return result;
 }
 
-// uint32_t - single element
+// uint32_t——单个元素
 template <>
 NCCL_DEVICE_INLINE EltPack<uint32_t, 1> load<EltPack<uint32_t, 1>, true, OpSum<uint32_t>>(
   const EltPack<uint32_t, 1>* addr) {
@@ -554,8 +561,8 @@ NCCL_DEVICE_INLINE EltPack<uint32_t, 1> load<EltPack<uint32_t, 1>, true, OpSum<u
   return result;
 }
 
-// uint32_t - 4 elements (4 x 32-bit = 128 bits)
-// Note: No 128-bit multimem.ld_reduce for integers, use 4 separate .u32 operations
+// uint32_t——4 个元素(4 × 32 位 = 128 位)
+// 注意：整数没有 128 位多播规约加载，改用 4 次独立的 .u32 操作
 template <>
 NCCL_DEVICE_INLINE EltPack<uint32_t, 4> load<EltPack<uint32_t, 4>, true, OpSum<uint32_t>>(
   const EltPack<uint32_t, 4>* addr) {
@@ -563,8 +570,8 @@ NCCL_DEVICE_INLINE EltPack<uint32_t, 4> load<EltPack<uint32_t, 4>, true, OpSum<u
   uint32_t* elems = result.elts();
   const char* base_addr = reinterpret_cast<const char*>(addr);
 
-  // Load 4 separate u32 values (no vector instruction available)
-  // Use unrolled loop calling the 1-element version
+  // 加载 4 个独立的 u32 值(无向量指令可用)
+  // 用展开循环调用单元素版本
   NVCC_PRAGMA_UNROLL_AUTO
   for (int i = 0; i < 4; i++) {
     EltPack<uint32_t, 1> loaded = load<EltPack<uint32_t, 1>, true, OpSum<uint32_t>>(
@@ -574,8 +581,8 @@ NCCL_DEVICE_INLINE EltPack<uint32_t, 4> load<EltPack<uint32_t, 4>, true, OpSum<u
   return result;
 }
 
-// int64_t - single element
-// Note: Uses .u64 (add doesn't support .s64 for signed 64-bit)
+// int64_t——单个元素
+// 注意：用 .u64(加法不支持有符号 64 位的 .s64)
 template <>
 NCCL_DEVICE_INLINE EltPack<int64_t, 1> load<EltPack<int64_t, 1>, true, OpSum<int64_t>>(
   const EltPack<int64_t, 1>* addr) {
@@ -589,8 +596,8 @@ NCCL_DEVICE_INLINE EltPack<int64_t, 1> load<EltPack<int64_t, 1>, true, OpSum<int
   return result;
 }
 
-// int64_t - 2 elements (2 x 64-bit = 128 bits)
-// Note: No 128-bit multimem.ld_reduce for integers, use 2 separate .u64 operations
+// int64_t——2 个元素(2 × 64 位 = 128 位)
+// 注意: 无 128-位 multimem.ld_reduce for integers, 使用 2 separate .u64 操作
 template <>
 NCCL_DEVICE_INLINE EltPack<int64_t, 2> load<EltPack<int64_t, 2>, true, OpSum<int64_t>>(
   const EltPack<int64_t, 2>* addr) {
@@ -598,8 +605,8 @@ NCCL_DEVICE_INLINE EltPack<int64_t, 2> load<EltPack<int64_t, 2>, true, OpSum<int
   int64_t* elems = result.elts();
   const char* base_addr = reinterpret_cast<const char*>(addr);
 
-  // Load 2 separate u64 values (no vector instruction available)
-  // Use unrolled loop calling the 1-element version
+  // 加载 2 separate u64 值 (无 向量 instruction 可用)
+  // 用展开循环调用单元素版本
   NVCC_PRAGMA_UNROLL_AUTO
   for (int i = 0; i < 2; i++) {
     EltPack<int64_t, 1> loaded = load<EltPack<int64_t, 1>, true, OpSum<int64_t>>(
@@ -609,7 +616,7 @@ NCCL_DEVICE_INLINE EltPack<int64_t, 2> load<EltPack<int64_t, 2>, true, OpSum<int
   return result;
 }
 
-// uint64_t - single element
+// uint64_t——单个元素
 template <>
 NCCL_DEVICE_INLINE EltPack<uint64_t, 1> load<EltPack<uint64_t, 1>, true, OpSum<uint64_t>>(
   const EltPack<uint64_t, 1>* addr) {
@@ -623,8 +630,8 @@ NCCL_DEVICE_INLINE EltPack<uint64_t, 1> load<EltPack<uint64_t, 1>, true, OpSum<u
   return result;
 }
 
-// uint64_t - 2 elements (2 x 64-bit = 128 bits)
-// Note: No 128-bit multimem.ld_reduce for integers, use 2 separate .u64 operations
+// uint64_t——2 个元素(2 × 64 位 = 128 位)
+// 注意: 无 128-位 multimem.ld_reduce for integers, 使用 2 separate .u64 操作
 template <>
 NCCL_DEVICE_INLINE EltPack<uint64_t, 2> load<EltPack<uint64_t, 2>, true, OpSum<uint64_t>>(
   const EltPack<uint64_t, 2>* addr) {
@@ -632,8 +639,8 @@ NCCL_DEVICE_INLINE EltPack<uint64_t, 2> load<EltPack<uint64_t, 2>, true, OpSum<u
   uint64_t* elems = result.elts();
   const char* base_addr = reinterpret_cast<const char*>(addr);
 
-  // Load 2 separate u64 values (no vector instruction available)
-  // Use unrolled loop calling the 1-element version
+  // 加载 2 separate u64 值 (无 向量 instruction 可用)
+  // 用展开循环调用单元素版本
   NVCC_PRAGMA_UNROLL_AUTO
   for (int i = 0; i < 2; i++) {
     EltPack<uint64_t, 1> loaded = load<EltPack<uint64_t, 1>, true, OpSum<uint64_t>>(
@@ -645,12 +652,12 @@ NCCL_DEVICE_INLINE EltPack<uint64_t, 2> load<EltPack<uint64_t, 2>, true, OpSum<u
 
 #endif // __CUDA_ARCH__ >= 900
 
-// Multimem Store
-// Typeless: stores bytes directly based on pack byte size only
+// 多播内存存储(multimem 存储)
+// 无类型：仅根据 打包 的字节大小直接存字节
 
 #if __CUDA_ARCH__ >= 900
 
-// Typeless byte pack union - allows converting EltPack to typeless bytes
+// 无类型的字节 打包 联合体——可把 EltPack 转换为无类型字节
 template <int Bytes>
 union BytePack {
   char bytes[Bytes];
@@ -661,13 +668,13 @@ union BytePack {
   double f64[(Bytes + 7) / 8];
 };
 
-// Typeless multimem store - specialized by byte size only
+// 无类型多播存储——仅按字节大小特化
 template <int Bytes>
 NCCL_DEVICE_INLINE void multimem_st_global(uintptr_t addr, const BytePack<Bytes>& val);
 
 template <>
 NCCL_DEVICE_INLINE void multimem_st_global<0>(uintptr_t addr, const BytePack<0>& val) {
-  // nop
+  // 空操作(nop)
 }
 
 template <>
@@ -710,7 +717,7 @@ NCCL_DEVICE_INLINE void multimem_st_global<8>(uintptr_t addr, const BytePack<8>&
 
 template <>
 NCCL_DEVICE_INLINE void multimem_st_global<16>(uintptr_t addr, const BytePack<16>& val) {
-  // Use v4.f32 for 16 bytes (4 x 32-bit values) - multimem.st requires .f32 qualifier for vectors
+  // 用 v4.f32 表示 16 字节(4 个 32 位值)——多播存储要求向量带 .f32 限定符
   asm volatile("multimem.st.global.v4.f32 [%0], {%1,%2,%3,%4};" ::"l"(addr), "r"(val.u32[0]), "r"(val.u32[1]),
                "r"(val.u32[2]), "r"(val.u32[3])
                : "memory");
@@ -718,16 +725,16 @@ NCCL_DEVICE_INLINE void multimem_st_global<16>(uintptr_t addr, const BytePack<16
 
 #endif // __CUDA_ARCH__ >= 900
 
-// Multimem store - converts EltPack to typeless BytePack
+// 多播存储——把 EltPack 转换为无类型 BytePack
 template <typename Pack>
 NCCL_DEVICE_INLINE void multimemStore(void* addr, const Pack& pack) {
-  // Check architecture requirement
+  // 检查架构要求
 #if __CUDA_ARCH__ < 900
   assert(false && "multimemStore requires CUDA architecture >= 900 (sm_90 or higher)");
   return;
 #else
   const size_t multimem_addr = __cvta_generic_to_global(addr);
-  // Convert EltPack to typeless BytePack via union
+  // 通过联合体把 EltPack 转为无类型 BytePack
   union {
     Pack eltPack;
     BytePack<Pack::Bytes> bytePack;
@@ -737,9 +744,9 @@ NCCL_DEVICE_INLINE void multimemStore(void* addr, const Pack& pack) {
 #endif
 }
 
-// Store helper that selects multimem vs LSA at compile time.
-// Use fully qualified name so we always use this namespace's multimemStore even when
-// the TU defines a global multimemStore (e.g. test/perf/multimem_ops.h).
+// 存储辅助函数：在编译期选择用 multimem 还是 LSA。
+// 用完全限定名，确保即便
+// 该编译单元定义了全局 multimemStore(如 测试/perf/multimem_ops.h)，我们也总是用本命名空间的版本。
 template <typename Pack, bool UseMultimem>
 NCCL_DEVICE_INLINE void store(Pack* addr, const Pack& val) {
   if NCCL_IF_CONSTEXPR (UseMultimem) {

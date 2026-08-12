@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/misc/nvmlwrap.cc — NVML 库包装实现
+ * ----------------------------------------------------------------------------
+ * 通过 dlopen 动态加载 libnvidia-ml，把 NVML 管理 API 封装成函数指针并解析符号，
+ * 用于读取 GPU 的 PCI 拓扑、NVLink 状态等硬件信息，支撑拓扑探测。
+ */
+
 #include "nvmlwrap.h"
 #include "checks.h"
 #include "debug.h"
@@ -50,10 +57,10 @@ NCCL_NVML_FN(nvmlDeviceGetPciInfoExt, nvmlReturn_t, (nvmlDevice_t device, nvmlPc
 NCCL_NVML_FN(nvmlDeviceGetPcieLinkMaxSpeed, nvmlReturn_t, (nvmlDevice_t device, int* maxSpeed))
 NCCL_NVML_FN(nvmlDeviceGetCurrPcieLinkGeneration, nvmlReturn_t, (nvmlDevice_t device, unsigned int* currLinkGen))
 NCCL_NVML_FN(nvmlDeviceGetCurrPcieLinkWidth, nvmlReturn_t, (nvmlDevice_t device, unsigned int* currLinkWidth))
-// MNNVL support
+// MNNVL 支持
 NCCL_NVML_FN(nvmlDeviceGetGpuFabricInfoV, nvmlReturn_t, (nvmlDevice_t device, nvmlGpuFabricInfoV_t* gpuFabricInfo))
 NCCL_NVML_FN(nvmlDeviceGetPlatformInfo, nvmlReturn_t, (nvmlDevice_t device, nvmlPlatformInfo_t* platfromInfo))
-// CC support
+// CC 支持
 NCCL_NVML_FN(nvmlSystemGetConfComputeState, nvmlReturn_t, (nvmlConfComputeSystemState_t* state));
 NCCL_NVML_FN(nvmlSystemGetConfComputeSettings, nvmlReturn_t, (nvmlSystemConfComputeSettings_t* setting));
 
@@ -69,8 +76,8 @@ union nvmlCCInfoInternal {
 } // namespace
 
 ncclResult_t ncclNvmlEnsureInitialized() {
-  // Optimization to avoid repeatedly grabbing the lock when we only want to
-  // read from the global tables.
+  // 优化 to 避免 repeatedly grabbing the 锁 当 we 仅 希望
+  // 读取 从 全局的 tables.
   if (threadInitialized) return initResult;
   threadInitialized = true;
 
@@ -113,10 +120,10 @@ ncclResult_t ncclNvmlEnsureInitialized() {
       {(void**)&pfn_nvmlDeviceGetPcieLinkMaxSpeed, "nvmlDeviceGetPcieLinkMaxSpeed"},
       {(void**)&pfn_nvmlDeviceGetCurrPcieLinkGeneration, "nvmlDeviceGetCurrPcieLinkGeneration"},
       {(void**)&pfn_nvmlDeviceGetCurrPcieLinkWidth, "nvmlDeviceGetCurrPcieLinkWidth"},
-      // MNNVL support
+      // MNNVL 支持
       {(void**)&pfn_nvmlDeviceGetGpuFabricInfoV, "nvmlDeviceGetGpuFabricInfoV"},
       {(void**)&pfn_nvmlDeviceGetPlatformInfo, "nvmlDeviceGetPlatformInfo"},
-      // CC support
+      // CC 支持
       {(void**)&pfn_nvmlSystemGetConfComputeState, "nvmlSystemGetConfComputeState"},
       {(void**)&pfn_nvmlSystemGetConfComputeSettings, "nvmlSystemGetConfComputeSettings"}
     };
@@ -124,9 +131,9 @@ ncclResult_t ncclNvmlEnsureInitialized() {
       *sym.ppfn = ncclOsDlsym(libhandle, sym.name);
     }
 
-    // Coverity complains that we never dlclose this object, but that's
-    // deliberate, since we want the loaded object to remain in memory until
-    // the process terminates, so that we can use its code.
+    // Coverity complains 那个 we never dlclose 此 object, 但 那个's
+    // deliberate, 自 we 想要 the loaded object to remain 入 内存 直到
+    // the 处理 terminates, 所以 那个 我们可以 使用 its 代码.
     // coverity[leaked_storage]
   }
 #endif
@@ -134,7 +141,7 @@ ncclResult_t ncclNvmlEnsureInitialized() {
 #if NCCL_NVML_DIRECT
   bool have_v2 = true;
 #else
-  // if this compare is done in the NCCL_NVML_DIRECT=1 case then GCC warns about it never being null
+  // 若 此 compare 已完成 在 ... 中 NCCL_NVML_DIRECT=1 情形 then GCC warns about it never being null
   bool have_v2 = pfn_nvmlInit_v2 != nullptr;
 #endif
   nvmlReturn_t res1 = (have_v2 ? pfn_nvmlInit_v2 : pfn_nvmlInit)();
@@ -309,7 +316,7 @@ ncclResult_t ncclNvmlDeviceGetFieldValues(nvmlDevice_t device, int valuesCount, 
   return ncclSuccess;
 }
 
-// MNNVL support
+// MNNVL 支持
 ncclResult_t ncclNvmlDeviceGetGpuFabricInfoV(nvmlDevice_t device, nvmlGpuFabricInfoV_t* gpuFabricInfo) {
   NCCLCHECK(ncclNvmlEnsureInitialized());
   std::lock_guard<std::mutex> locked(lock);

@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/rma/rma_ce.h — RMA CE(通信引擎)任务定义
+ * ----------------------------------------------------------------------------
+ * 定义 RMA 在通信引擎侧的任务结构（如 ncclRmaCeInitTask 初始化任务），
+ * 由设备端/内核计划(kernel plan)提交给 CE 执行。
+ */
+
 #ifndef _NCCL_RMA_CE_H_
 #define _NCCL_RMA_CE_H_
 
@@ -23,22 +30,22 @@ struct ncclRmaCeInitTask {
 struct ncclRmaCeCtx {
   struct ncclComm* comm;
 
-  // Host per-rank sequence numbers for non-graph signal operations.
+  // 主机 每个-rank sequence numbers for non-图 信号 操作.
   uint64_t* signalOpSeqs;
-  // Device staging slots for non-graph signal values. Indexed by signal op
-  // within the current CE batch chunk, with capacity comm->nRanks.
+  // 设备 staging slots for non-图 信号 值. Indexed by 信号 操作
+  // 之内 当前 CE batch 块, with capacity 通信域->nRanks.
   uint64_t* signalOpSeqsDev;
-  // Host buffer to track the expected values of the non-graph signals
+  // 主机 缓冲区 to track the 期望的 值 的 non-图 信号
   uint64_t* signalsHost;
 
-  // Single symmetric window for all signal and ack memory.
-  // Layout (all uint64_t slots):
-  //   [0 .. nRanks-1]              non-graph per-rank signals
-  //   [nRanks]                     non-graph aggregate signal
-  //   [nRanks+1 .. 2*nRanks]       graph per-rank signals
-  //   [2*nRanks+1]                 graph aggregate signal
-  //   [2*nRanks+2 .. 3*nRanks+1]   graph per-rank ack flags
-  // Total: (3*nRanks + 2) * sizeof(uint64_t)
+  // 单个 symmetric window 对所有 信号 并且 ack 内存.
+  // 布局 (所有 uint64_t slots):
+  //   [0 .. nRanks-1]              non-图 每个-rank 信号
+  //   [nRanks]                     non-图 aggregate 信号
+  //   [nRanks+1 .. 2*nRanks]       图 每个-rank 信号
+  //   [2*nRanks+1]                 图 aggregate 信号
+  //   [2*nRanks+2 .. 3*nRanks+1]   图 每个-rank ack 标志
+  // 总计: (3*nRanks + 2) * sizeof(uint64_t)
   struct ncclDevrWindow* signalsWin;
   uint64_t* signalsDev;       // non-graph per-rank signals
   uint64_t* graphSignalsDev;  // graph per-rank signals
@@ -47,7 +54,7 @@ struct ncclRmaCeCtx {
   size_t graphSignalOffset;   // byte offset of graph signals
   size_t graphAckOffset;      // byte offset of graph ack flags
 
-  // Device-resident constants for graph-safe D2D signal/ack writes
+  // 设备-resident constants for 图-safe D2D 信号/ack writes
   uint64_t* signalConstDev;
   uint64_t* signalConstOneDev;
   uint64_t* signalConstZeroDev;
@@ -61,7 +68,7 @@ struct ncclRmaCeState {
   cudaEvent_t ceEvent;
 };
 
-// CE-specific function declarations
+// CE-特定的 函数 declarations
 ncclResult_t ncclRmaCeInit(struct ncclComm* comm);
 ncclResult_t ncclRmaCeFinalize(struct ncclComm* comm);
 ncclResult_t ncclRmaCePutLaunch(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream);

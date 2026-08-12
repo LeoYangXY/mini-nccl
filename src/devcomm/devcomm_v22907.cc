@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/devcomm/devcomm_v22907.cc — 设备通信兼容层(CUDA v2.29.7)
+ * ----------------------------------------------------------------------------
+ * 为 CUDA v2.29.7 提供对应的 ncclDevComm 设备结构定义与兼容代码（详见
+ * devcomm_v22902.cc 的说明）。多份不同版本的设备结构让 NCCL 跨 CUDA 版本兼容。
+ */
+
 #include "comm.h"
 #include "dev_runtime.h"
 #include "utils.h"
@@ -67,8 +74,8 @@ static_assert(offsetof(struct ncclDevComm_v22907, abortFlag) == 216);
 static_assert(sizeof(struct ncclDevComm_v22907) == 224);
 
 static ncclResult_t ncclCommPropertiesFilter_v22907(ncclComm_t comm, struct ncclCommProperties* props) {
-  // We don't provide backwards compatibility for GIN with 2.29.7.  If a communicator needs it, we indicate that
-  // the Device API is not available.
+  // We don't provide backwards compatibility for GIN with 2.29.7.  若 a 通信器 needs it, we indicate 那个
+  // 该设备 API is 不 可用.
   props->deviceApiSupport = (props->deviceApiSupport && ncclTeamLsa(comm).nRanks == comm->nRanks);
   props->ginType = NCCL_GIN_TYPE_NONE;
   props->railedGinType = NCCL_GIN_TYPE_NONE;
@@ -103,7 +110,7 @@ static ncclResult_t ncclDevCommCopyNewToOld_v22907(ncclComm_t comm, void* oldDev
 
   memset(old, '\0', sizeof(*old));
   ncclDevCommCopyLsaData(&old->rank, &newDevComm->rank);
-  // No need to copy GIN-specific fields since we don't provide backwards compatibility for GIN with 2.29.7.
+  // 无 需要 拷贝 GIN-特定的 字段 自 we don't provide backwards compatibility for GIN with 2.29.7.
   old->abortFlag = newDevComm->abortFlag;
 
   return ncclSuccess;

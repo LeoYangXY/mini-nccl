@@ -5,6 +5,20 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/param/parser_list.h — 列表型参数解析器
+ * ----------------------------------------------------------------------------
+ * 支持“以分隔符拆分多个值”的参数，例如 "a,b,c"。
+ * 通过 listOfCtx 描述分隔符，将输入字符串拆成一个容器（vector 等）。
+ */
+
+/*
+ * src/include/param/parser_list.h — 列表型参数解析器
+ * ----------------------------------------------------------------------------
+ * 支持“以分隔符拆分多个值”的参数，例如 "a,b,c"。
+ * 通过 listOfCtx 描述分隔符，将输入字符串拆成一个容器（vector 等）。
+ */
+
 #ifndef PARAM_PARSER_LIST_H_INCLUDED
 #define PARAM_PARSER_LIST_H_INCLUDED
 
@@ -53,8 +67,8 @@ std::string listOfToString(const void* ctx, const ContainerT& value) {
 } // namespace param
 } // namespace nccl
 
-// ncclParamListOf: Parser for delimiter-separated strings into a container.
-// ContainerT must support insert(end(), std::string) and iteration.
+// ncclParamListOf：将分隔符分隔的字符串解析到容器中的解析器。
+// ContainerT must 支持 insert(末尾(), std::string) 并且 迭代.
 template <typename ContainerT>
 ncclParamParser<ContainerT> ncclParamListOf(char delimiter = ',') {
   using namespace nccl::param::parser;

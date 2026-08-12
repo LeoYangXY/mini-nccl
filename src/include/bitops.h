@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/bitops.h — 位操作(bit operations)工具
+ * ----------------------------------------------------------------------------
+ * 提供位计数、位扫描、位反转等内建指令封装（跨编译器），被拓扑/通道计算、掩码
+ * 处理等模块频繁使用。
+ */
+
 #ifndef NCCL_BITOPS_H_
 #define NCCL_BITOPS_H_
 
@@ -72,7 +79,7 @@ static __host__ __device__ constexpr Z roundDown(X x, Y y) {
   return x - x % y;
 }
 
-// assumes second argument is a power of 2
+// assumes 第二 参数 is a power of 2
 template <typename X, typename Y, typename Z = decltype(X() + Y())>
 static __host__ __device__ constexpr Z alignUp(X x, Y a) {
   return (x + a - 1) & ((Z)0 - Z(a));
@@ -83,7 +90,7 @@ static __host__ __device__ T* alignUp(T* x, size_t a) {
   return reinterpret_cast<T*>((reinterpret_cast<uintptr_t>(x) + a - 1) & ((uintptr_t)0 - (uintptr_t)(a)));
 }
 
-// assumes second argument is a power of 2
+// assumes 第二 参数 is a power of 2
 template <typename X, typename Y, typename Z = decltype(X() + Y())>
 static __host__ __device__ constexpr Z alignDown(X x, Y a) {
   return x & ((Z)0 - Z(a));
@@ -135,7 +142,7 @@ static __host__ __device__ T decWrap4G(T ptr, uint32_t delta4G, uint32_t lo4G, u
   return tmp;
 }
 
-// Produce the reciprocal of x for use in idivByRcp
+// Produce the reciprocal of x for 使用 入 idivByRcp
 constexpr __host__ __device__ uint32_t idivRcp32(uint32_t x) {
   return uint32_t(uint64_t(0x100000000) / x);
 }
@@ -160,8 +167,8 @@ static __host__ __device__ uint64_t mul64hi(uint64_t a, uint64_t b) {
 #endif
 }
 
-// Produce the reciprocal of x*y given their respective reciprocals. This incurs
-// no integer division on device.
+// Produce the reciprocal of x*y 给定的 their respective reciprocals. 此 incurs
+// 无 整数 division on 设备.
 static __host__ __device__ uint32_t imulRcp32(uint32_t x, uint32_t xrcp, uint32_t y, uint32_t yrcp) {
   if (xrcp == 0) return yrcp;
   if (yrcp == 0) return xrcp;
@@ -179,7 +186,7 @@ static __host__ __device__ uint64_t imulRcp64(uint64_t x, uint64_t xrcp, uint64_
   return rcp;
 }
 
-// Fast integer division where divisor has precomputed reciprocal.
+// 快速 整数 division 何処 divisor has precomputed reciprocal.
 // idivFast(x, y, idivRcp(y)) == x/y
 static __host__ __device__ void idivmodFast32(uint32_t* quo, uint32_t* rem, uint32_t x, uint32_t y, uint32_t yrcp) {
   uint32_t q = x, r = 0;
@@ -255,7 +262,7 @@ static __host__ __device__ int countOneBits(Int x) {
 #endif
 }
 
-// Returns index of first one bit or returns -1 if mask is zero.
+// 返回 索引 of 第一 one 位 或者 返回 -1 若 mask is zero.
 template <typename Int>
 static __host__ __device__ int firstOneBit(Int mask) {
   int i;
@@ -360,7 +367,7 @@ static __host__ __device__ Int pow2Up(Int x) {
 
 template <typename Int>
 static __host__ __device__ Int pow2Down(Int x) {
-  // True, log2Down can return -1, but we don't normally pass 0 as an argument...
+  // 真, log2Down can 返回 -1, 但 we don't normally pass 0 as an 参数...
   // coverity[negative_shift]
   return Int(1) << log2Down(x);
 }
@@ -438,7 +445,7 @@ struct ncclToUnsigned<unsigned long long> {
   using type = unsigned long long;
 };
 
-// Reverse the bottom nBits bits of x. The top bits will be overwritten with 0's.
+// Reverse the 底 nBits 位 of x. The 顶 位 将会 overwritten with 0's.
 template <typename Int>
 static __host__ __device__ Int reverseBits(Int x, int nBits) {
   using UInt = typename ncclToUnsigned<Int>::type;
@@ -463,9 +470,9 @@ static __host__ __device__ Int reverseBits(Int x, int nBits) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Custom 8 bit floating point format for approximating 32 bit uints. This format
-// has nearly the full range of uint32_t except it only keeps the top 3 bits
-// beneath the leading 1 bit and thus has a max value of 0xf0000000.
+// 自定义 8 位 floating point 格式 for approximating 32 位 uints. 此 格式
+// has nearly the 满的 范围 of uint32_t except it 仅 keeps the 顶 3 位
+// beneath the leading 1 位 并且 从而 has a 最大值 值 of 0xf0000000.
 
 static __host__ __device__ uint32_t u32fpEncode(uint32_t x, int bitsPerPow2) {
   int log2x;
@@ -497,26 +504,26 @@ static __host__ __device__ uint32_t u32fp8Decode(uint8_t x) {
   return u32fpDecode(x, 3);
 }
 
-// The hash isn't just a function of the bytes but also where the bytes are split
-// into different calls to eatHash().
+// The hash isn't 仅 a 函数 的 字节 但 也 何処 the 字节 are split
+// into 不同 调用 to eatHash().
 static __host__ __device__ void eatHash(uint64_t acc[2], const void* bytes, size_t size) {
   char const* ptr = (char const*)bytes;
   acc[0] ^= size;
   while (size != 0) {
-    // Mix the accumulator bits.
+    // Mix the accumulator 位.
     acc[0] += acc[1];
     acc[1] ^= acc[0];
     acc[0] ^= acc[0] >> 31;
     acc[0] *= 0x9de62bbc8cef3ce3;
     acc[1] ^= acc[1] >> 32;
     acc[1] *= 0x485cd6311b599e79;
-    // Read in a chunk of input.
+    // 读取 入 a 块 of 输入.
     size_t chunkSize = size < sizeof(uint64_t) ? size : sizeof(uint64_t);
     uint64_t x = 0;
     memcpy(&x, ptr, chunkSize);
     ptr += chunkSize;
     size -= chunkSize;
-    // Add to accumulator.
+    // 累加到累加器。
     acc[0] += x;
   }
 }

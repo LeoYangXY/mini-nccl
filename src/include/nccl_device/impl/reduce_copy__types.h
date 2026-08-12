@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/reduce_copy__types.h — reduce + copy 类型定义
+ * ----------------------------------------------------------------------------
+ * 定义 nccl_device 框架 reduce/copy 原语所用的类型，被 reduce_copy__funcs.h 与
+ * reduce_copy__impl.h 引用。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_REDUCE_COPY__TYPES_H_
 #define _NCCL_DEVICE_REDUCE_COPY__TYPES_H_
 
@@ -17,7 +24,7 @@
 namespace nccl {
 namespace utility {
 
-// Reduction Operators
+// 规约 Operators
 
 template <typename T>
 struct OpSum {
@@ -27,41 +34,41 @@ struct OpSum {
   }
 };
 
-// Helper trait to create accumulator reduction operator from RedOp
-// Maps RedOp (e.g., OpSum<T>) to accumulator reduction operator (e.g., OpSum<AccEltType>)
+// 辅助 trait to 创建 accumulator 规约 operator from RedOp
+// Maps RedOp (e.g., OpSum<T>) to accumulator 规约 operator (e.g., OpSum<AccEltType>)
 template <typename RedOp, typename AccEltType>
 struct AccRedOp {
-  // Default: keep RedOp as-is (non-templated operators).
+  // 默认: 保留 RedOp as-is (non-templated operators).
   using Type = RedOp;
 };
 
-// Rebind RedOp<T> to RedOp<AccEltType> when possible.
+// Rebind RedOp<T> to RedOp<AccEltType> 当 possible.
 template <template <typename> typename Red, typename T, typename AccEltType>
 struct AccRedOp<Red<T>, AccEltType> {
   using Type = Red<AccEltType>;
 };
 
-// Cooperation Level Helpers for compile-time stride resolution
+// Cooperation 层级 辅助函数 for 编译-time stride resolution
 template <typename Coop>
 struct CoopStride {
-  // Default: runtime determined (use sentinel 0 to indicate runtime)
+  // 默认: runtime determined (使用 sentinel 0 to indicate runtime)
   static constexpr int value = 0;
 };
 
 #if NCCL_CHECK_CUDACC
-// Specialization for warp: always 32
+// Specialization for 线程束: always 32
 template <>
 struct CoopStride<ncclCoopWarp> {
   static constexpr int value = 32;
 };
 
-// Specialization for CTA: use 32 for warp coalescing
+// Specialization for CTA: 使用 32 for 线程束 coalescing
 template <>
 struct CoopStride<ncclCoopCta> {
   static constexpr int value = 32;
 };
 
-// Specialization for thread: use 1
+// Specialization for 线程: 使用 1
 template <>
 struct CoopStride<ncclCoopThread> {
   static constexpr int value = 1;
@@ -69,16 +76,16 @@ struct CoopStride<ncclCoopThread> {
 #endif
 
 #if defined(__CUDA_FP8_TYPES_EXIST__)
-// Specialization for FP8 types - convert to half, add, convert back
+// Specialization for FP8 类型 - convert to half, add, convert 后
 template <>
 struct OpSum<__nv_fp8_e4m3> {
   using EltType = __nv_fp8_e4m3;
   NCCL_DEVICE_INLINE __nv_fp8_e4m3 operator()(const __nv_fp8_e4m3& a, const __nv_fp8_e4m3& b) const {
 #if __CUDA_ARCH__ >= 800
-    // Use native half addition on architectures that support it
+    // 使用 原生 half addition on architectures 那个 支持 it
     return __nv_fp8_e4m3(__hadd(__half(a), __half(b)));
 #else
-    // Fallback: convert to float, add, convert back
+    // Fallback: convert to 浮点, add, convert 后
     return __nv_fp8_e4m3(float(a) + float(b));
 #endif
   }
@@ -89,10 +96,10 @@ struct OpSum<__nv_fp8_e5m2> {
   using EltType = __nv_fp8_e5m2;
   NCCL_DEVICE_INLINE __nv_fp8_e5m2 operator()(const __nv_fp8_e5m2& a, const __nv_fp8_e5m2& b) const {
 #if __CUDA_ARCH__ >= 800
-    // Use native half addition on architectures that support it
+    // 使用 原生 half addition on architectures 那个 支持 it
     return __nv_fp8_e5m2(__hadd(__half(a), __half(b)));
 #else
-    // Fallback: convert to float, add, convert back
+    // Fallback: convert to 浮点, add, convert 后
     return __nv_fp8_e5m2(float(a) + float(b));
 #endif
   }

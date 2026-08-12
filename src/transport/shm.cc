@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/transport/shm.cc — 共享内存(shm)传输实现
+ * ----------------------------------------------------------------------------
+ * 实现“共享内存传输”：同机多进程 rank 之间通过 POSIX/ cuMem 共享内存段交换数据，
+ * 免去 GPU 显存拷贝，适用于单机多进程场景。
+ */
+
 #include "comm.h"
 #include "shmutils.h"
 #include "shm.h"
@@ -69,11 +76,11 @@ static ncclResult_t shmCanConnect(int* ret, struct ncclComm* comm, struct ncclTo
   NCCLCHECK(ncclTopoCheckNet(comm->topo, info1->rank, info2->rank, &useNet));
   if (useNet) return ncclSuccess;
 
-  // Same host?
+  // 相同 主机?
   TRACE(NCCL_INIT | NCCL_SHM, "peer1 hostHash %lx peer2 hostHash %lx", info1->hostHash, info2->hostHash);
   if (info1->hostHash != info2->hostHash) return ncclSuccess;
 
-  // Common /dev/shm (between containers) ?
+  // 通用 /dev/shm (之间 containers) ?
   TRACE(NCCL_INIT | NCCL_SHM, "peer1 shmDev %lx peer2 shmDev %lx", info1->shmDev, info2->shmDev);
   if (info1->shmDev != info2->shmDev) return ncclSuccess;
 
@@ -152,7 +159,7 @@ static ncclResult_t shmRecvSetup(struct ncclComm* comm, struct ncclTopoGraph* gr
 /* Connect to this peer */
 static ncclResult_t shmSendConnect(struct ncclComm* comm, struct ncclConnect* connectInfo, int nranks, int rank,
                                    struct ncclConnector* send) {
-  // Setup device pointers
+  // 设置 设备 指针
   struct shmConnectInfo* info = (struct shmConnectInfo*)connectInfo;
   struct shmSendResources* resources = (struct shmSendResources*)send->transportResources;
   char* buff;
@@ -169,7 +176,7 @@ static ncclResult_t shmSendConnect(struct ncclComm* comm, struct ncclConnect* co
   send->conn.head = &resources->devHostMem->head;
   send->conn.stepSize = comm->buffSizes[NCCL_PROTO_SIMPLE] / NCCL_STEPS;
 
-  // We must assign the proxyConn's proxyProgress property for proper checking at enqueue-time
+  // 必须设置 proxyConn 的 proxyProgress 属性，才能在入队时正确校验
   send->proxyConn.proxyProgress = shmTransport.send.proxyProgress;
 
   return ncclSuccess;
@@ -177,7 +184,7 @@ static ncclResult_t shmSendConnect(struct ncclComm* comm, struct ncclConnect* co
 
 static ncclResult_t shmRecvConnect(struct ncclComm* comm, struct ncclConnect* connectInfo, int nranks, int rank,
                                    struct ncclConnector* recv) {
-  // Setup device pointers
+  // 设置 设备 指针
   struct shmRecvResources* resources = (struct shmRecvResources*)recv->transportResources;
   struct shmConnectInfo* info = (struct shmConnectInfo*)connectInfo;
   char* buff;
@@ -194,7 +201,7 @@ static ncclResult_t shmRecvConnect(struct ncclComm* comm, struct ncclConnect* co
   recv->conn.tail = &resources->devHostMem->tail;
   recv->conn.stepSize = comm->buffSizes[NCCL_PROTO_SIMPLE] / NCCL_STEPS;
 
-  // We must assign the proxyConn's proxyProgress property for proper checking at enqueue-time
+  // 必须设置 proxyConn 的 proxyProgress 属性，才能在入队时正确校验
   recv->proxyConn.proxyProgress = shmTransport.recv.proxyProgress;
 
   return ncclSuccess;
@@ -310,13 +317,13 @@ ncclResult_t ncclShmAllocateShareableBuffer(size_t size, bool legacy, ncclShmIpc
   }
 #if CUDART_VERSION >= 12020
   if (ncclCuMemEnable() && ncclCuMemHostEnable() && !legacy) {
-    // cuMem API support
+    // 是否支持 cuMem(CUDA 虚拟内存管理)API
     CUmemAllocationHandleType type = SHM_HANDLE_TYPE;
     CUmemGenericAllocationHandle handle;
 
     NCCLCHECK(ncclCuMemHostAlloc(hptr, &handle, size));
     if (type == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
-      // Return the native cuMem handle for later Export/Import via UDS
+      // 返回原生 cuMem 句柄，供后续通过 UDS(Unix 域套接字)导出/导入使用
       memcpy(&desc->shmci.data, &handle, sizeof(handle));
     } else {
       CUCHECK(cuMemExportToShareableHandle(&desc->shmci.handle, handle, type, 0));
@@ -363,7 +370,7 @@ ncclResult_t ncclShmImportShareableBuffer(struct ncclComm* comm, int proxyRank, 
   }
 #if CUDART_VERSION >= 12020
   if (ncclCuMemEnable() && ncclCuMemHostEnable() && !desc->legacy) {
-    // cuMem API support
+    // 是否支持 cuMem(CUDA 虚拟内存管理)API
     CUdeviceptr hostptr = 0;
     CUmemAllocationHandleType type = SHM_HANDLE_TYPE;
     CUmemGenericAllocationHandle handle;
@@ -375,11 +382,11 @@ ncclResult_t ncclShmImportShareableBuffer(struct ncclComm* comm, int proxyRank, 
     size_t size = desc->shmci.size;
     CUmemAllocationProp prop = {};
 
-    // Import and map the remote memory descriptor to the local GPU
+    // 导入远端内存描述符，并把它映射到本地 GPU 的地址空间
     if (type == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
-      // UDS fd support
+      // UDS fd 支持
       int fd = -1;
-      // Send cuMem handle to remote for conversion to an fd
+      // 把 cuMem 句柄发送给远端，由其转换为文件描述符(fd)
       NCCLCHECK(ncclProxyClientGetFdBlocking(comm, proxyRank, &desc->shmci.data, &fd));
       CUCHECK(cuMemImportFromShareableHandle(&handle, (void*)(uintptr_t)fd, type));
       (void)close(fd);
@@ -387,13 +394,13 @@ ncclResult_t ncclShmImportShareableBuffer(struct ncclComm* comm, int proxyRank, 
       CUCHECK(cuMemImportFromShareableHandle(&handle, &desc->shmci.handle, type));
     }
 
-    // Get cpu numa id
+    // 获取 CPU numa id
     CUDACHECK(cudaGetDevice(&cudaDev));
     CUCHECK(cuDeviceGet(&currentDev, cudaDev));
     CUCHECK(cuDeviceGetAttribute(&cpuNumaNodeId, CU_DEVICE_ATTRIBUTE_HOST_NUMA_ID, currentDev));
     if (cpuNumaNodeId < 0) cpuNumaNodeId = 0;
 
-    // Get granularity
+    // 获取 granularity
     prop.location.type = CU_MEM_LOCATION_TYPE_HOST_NUMA;
     prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
     prop.requestedHandleTypes = type;
@@ -402,17 +409,17 @@ ncclResult_t ncclShmImportShareableBuffer(struct ncclComm* comm, int proxyRank, 
 
     ALIGN_SIZE(size, granularity);
 
-    // Reserve and map address
+    // Reserve 并且 映射 地址
     CUCHECK(cuMemAddressReserve(&hostptr, size, /* alignment */ 0, /* addr */ 0, /* flags */ 0));
     CUCHECK(cuMemMap(hostptr, size, /* offset */ 0, handle, /* flags */ 0));
 
-    // Allow access by the local GPU
+    // 授权本地 GPU 访问该内存
     accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     accessDesc.location.id = cudaDev;
     accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     CUCHECK(cuMemSetAccess(hostptr, size, &accessDesc, 1));
 
-    // Allow access by the local numa
+    // 允许 access 由 本地 numa
     accessDesc.location.type = CU_MEM_LOCATION_TYPE_HOST_NUMA;
     accessDesc.location.id = cpuNumaNodeId;
     accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;

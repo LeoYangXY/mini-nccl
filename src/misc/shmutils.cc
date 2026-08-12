@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/misc/shmutils.cc — 共享内存工具实现
+ * ----------------------------------------------------------------------------
+ * 实现 POSIX/cuMem 共享内存段的创建/映射/销毁（ncclShmOpen/Sync/Close），被 bootstrap
+ * 与 proxy 用于进程间交换控制数据。
+ */
+
 #include "shmutils.h"
 #include "comm.h"
 #include "checks.h"

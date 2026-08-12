@@ -6,6 +6,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/network/unpack/unpack_defs.h — 网络 unpack 原语的公共定义
+ * ----------------------------------------------------------------------------
+ * 定义 GPU 上“解包(unpack)”网络接收数据的公共常量与类型：把网络层收到的打包
+ * 数据还原为普通张量布局。本文件是 unpack.h 的基础定义。源自 Google/NVIDIA 协作。
+ */
+
 #ifndef NET_DEVICE_UNPACK_DEFS_H
 #define NET_DEVICE_UNPACK_DEFS_H
 

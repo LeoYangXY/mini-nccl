@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/socket.h — socket 网络套接字接口封装
+ * ----------------------------------------------------------------------------
+ * 定义 NCCL 自带的 TCP socket 抽象（连接、收发、超时、地址解析），用于 bootstrap
+ * 引导通信与 Net 传输的底层通道，不依赖第三方网络库。
+ */
+
 #ifndef NCCL_SOCKET_H_
 #define NCCL_SOCKET_H_
 
@@ -112,22 +119,22 @@ ncclResult_t ncclFindInterfaceMatchSubnet(char* ifName, union ncclSocketAddress*
 ncclResult_t ncclFindInterfaces(char* ifNames, union ncclSocketAddress* ifAddrs, int ifNameMaxSize, int maxIfs,
                                 int* nIfs);
 
-// Magic used for NCCL-internal TCP handshakes (bootstrap uses comm magic separately). Honors NCCL_SOCKET_MAGIC env.
+// Magic 用于 NCCL-内部 TCP handshakes (bootstrap 使用 通信域 magic separately). Honors NCCL_SOCKET_MAGIC env.
 uint64_t ncclSocketDefaultMagic(void);
 
-// Initialize a socket
+// 初始化 a 套接字
 ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddress* addr = NULL,
                             uint64_t magic = ncclSocketDefaultMagic(), enum ncclSocketType type = ncclSocketTypeUnknown,
                             volatile uint32_t* abortFlag = NULL, int asyncFlag = 0, int customRetry = 0);
-// Create a listening socket. sock->addr can be pre-filled with IP & port info. sock->fd is set after a successful call
+// 创建 a listening 套接字. sock->addr 可以 前-filled with IP & 端口 信息. sock->fd 被设为 之后 a successful 调用
 ncclResult_t ncclSocketListen(struct ncclSocket* sock);
 ncclResult_t ncclSocketGetAddr(struct ncclSocket* sock, union ncclSocketAddress* addr);
-// Connect to sock->addr. sock->socketDescriptor is set after a successful call.
+// Connect to sock->addr. sock->socketDescriptor 被设为 之后 a successful 调用.
 ncclResult_t ncclSocketConnect(struct ncclSocket* sock);
-// Return socket connection state.
+// 返回 套接字 连接 状态.
 ncclResult_t ncclSocketReady(struct ncclSocket* sock, int* running);
-// Accept an incoming connection from listenSock->socketDescriptor and keep the file descriptor in
-// sock->socketDescriptor, with the remote side IP/port in sock->addr.
+// Accept an incoming 连接 from listenSock->socketDescriptor 并且 保留 the 文件 descriptor 入
+// sock->socketDescriptor, 带有 远端 side IP/端口 入 sock->addr.
 ncclResult_t ncclSocketAccept(struct ncclSocket* sock, struct ncclSocket* ulistenSock, bool retry = true);
 ncclResult_t ncclSocketGetFd(struct ncclSocket* sock, ncclSocketDescriptor* socketDescriptor);
 ncclResult_t ncclSocketSetFd(ncclSocketDescriptor socketDescriptor, struct ncclSocket* sock);

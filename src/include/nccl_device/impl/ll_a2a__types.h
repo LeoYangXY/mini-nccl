@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/ll_a2a__types.h — LL all-to-all 类型定义
+ * ----------------------------------------------------------------------------
+ * 定义 nccl_device 框架 LL(低延迟) all-to-all 的设备侧类型（ncclLLA2AHandle 等），
+ * 被 ll_a2a__funcs.h 引用。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_LL_A2A__TYPES_H_
 #define _NCCL_DEVICE_LL_A2A__TYPES_H_
 #include "../ll_a2a.h"

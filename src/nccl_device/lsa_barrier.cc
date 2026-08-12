@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/nccl_device/lsa_barrier.cc — 设备端 LSA barrier 实现
+ * ----------------------------------------------------------------------------
+ * 实现 LSA(Latency-Sensitive Allocator?) barrier 的设备端接口：ncclLsaBarrier*
+ * 系列创建/同步 barrier，供需要跨线程块同步的 kernel 使用。
+ */
+
 #include "core.h"
 #include "nccl_device/impl/lsa_barrier__funcs.h"
 

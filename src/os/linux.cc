@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/os/linux.cc — OS 抽象层的 Linux 实现
+ * ----------------------------------------------------------------------------
+ * 实现 include/os.h 声明的跨平台接口在 Linux 上的具体版本：线程、互斥锁、条件
+ * 变量、时间、文件等操作，屏蔽底层系统调用差异。
+ */
+
 #include "os.h"
 
 #include "checks.h"
@@ -78,7 +85,7 @@ void ncclOsDlclose(ncclOsLibraryHandle handle) {
   if (handle) dlclose(handle);
 }
 
-// Process Management
+// 处理 Management
 uint64_t ncclOsGetPid() {
   return (uint64_t)getpid();
 }
@@ -115,21 +122,21 @@ char* ncclOsRealpath(const char* path, char* resolved_path) {
   return realpath(path, resolved_path);
 }
 
-// The default Linux stack size (8MB) is safe.
+// 默认值 Linux 栈 大小 (8MB) is safe.
 #define SAFE_STACK_SIZE (8192 * 1024)
 
 static ncclResult_t setCpuStackSize() {
-  // Query the stack size used for newly launched threads.
+  // Query the 栈 大小 用于 newly launched 线程.
   pthread_attr_t attr;
   size_t stackSize;
   PTHREADCHECK(pthread_attr_init(&attr), "pthread_attr_init");
   PTHREADCHECK(pthread_attr_getstacksize(&attr, &stackSize), "pthread_attr_getstacksize");
 
   if (stackSize < SAFE_STACK_SIZE) {
-    // GNU libc normally uses RLIMIT_STACK as the default pthread stack size, unless it's set to "unlimited" --
-    // in that case a fallback value of 2MB (!) is used.
+    // GNU libc normally 使用 RLIMIT_STACK as 默认值 pthread 栈 大小, 除非 it's 设为 "unlimited" --
+    // 入 那个 情形 a fallback 值 of 2MB (!) 用于.
 
-    // Query the actual resource limit so that we can distinguish between the settings of 2MB and unlimited.
+    // Query the actual resource 限制 所以 那个 我们可以 distinguish 在 ... 之间 settings of 2MB 并且 unlimited.
     struct rlimit stackLimit;
     char buf[30];
     SYSCHECK(getrlimit(RLIMIT_STACK, &stackLimit), "getrlimit");
@@ -138,7 +145,7 @@ static ncclResult_t setCpuStackSize() {
     INFO(NCCL_INIT | NCCL_ENV, "Stack size limit (%s) is unsafe; will use %dKB for newly launched threads", buf,
          SAFE_STACK_SIZE / 1024);
 
-    // Change the default pthread stack size (via a nonportable API as the feature is not available in std::thread)
+    // Change 默认值 pthread 栈 大小 (via a nonportable API as the 特性 is 不 可用 入 std::线程)
     PTHREADCHECK(pthread_attr_setstacksize(&attr, SAFE_STACK_SIZE), "pthread_attr_setstacksize");
     PTHREADCHECK(pthread_setattr_default_np(&attr), "pthread_setattr_default_np");
   }
@@ -227,7 +234,7 @@ ncclResult_t ncclOsSocketSetFlags(struct ncclSocket* sock) {
   }
   SYSCHECKGOTO(setsockopt(sock->socketDescriptor, IPPROTO_TCP, TCP_NODELAY, (char*)&one, sizeof(int)),
                "setsockopt TCP NODELAY", ret, fail);
-  // setsockopt should not fail even if the sizes are too large, do not change the default if unset by the user (=-1)
+  // setsockopt should 不 失败 即使 the sizes are too 大, 执行 不 change 默认值 若 unset by 用户 (=-1)
   rcvBuf = ncclParamSocketMaxRecvBuff();
   sndBuf = ncclParamSocketMaxSendBuff();
   if (sndBuf > 0) {
@@ -245,7 +252,7 @@ fail:
 }
 
 void ncclOsSocketResetAccept(struct ncclSocket* sock) {
-  // Close the accepted peer and return to listening for another connection (see socketFinalizeAccept logging).
+  // Close the accepted 对等端 并且 返回 to listening for 另一个 连接 (参见 socketFinalizeAccept logging).
   (void)close(sock->socketDescriptor);
   sock->socketDescriptor = NCCL_INVALID_SOCKET;
   sock->state = ncclSocketStateBadHandshake;
@@ -256,7 +263,7 @@ ncclResult_t ncclOsSocketResetFd(struct ncclSocket* sock) {
   ncclResult_t ret = ncclSuccess;
   int socketDescriptor = NCCL_INVALID_SOCKET;
   SYSCHECKGOTO(socketDescriptor = socket(sock->addr.sa.sa_family, SOCK_STREAM, 0), "socket", ret, cleanup);
-  // if sock->socketDescriptor is valid, reuse its file descriptor number
+  // 若是如此ck->socketDescriptor is 合法的, reuse its 文件 descriptor number
   if (ncclOsSocketIsValid(sock)) {
     SYSCHECKGOTO(dup2(socketDescriptor, sock->socketDescriptor), "dup2", ret, cleanup);
     SYSCHECKGOTO(close(socketDescriptor), "close", ret, cleanup);
@@ -267,7 +274,7 @@ ncclResult_t ncclOsSocketResetFd(struct ncclSocket* sock) {
 exit:
   return ret;
 cleanup:
-  // cleanup socketDescriptor, leave sock->socketDescriptor untouched
+  // 清理 socketDescriptor，但保持 sock->socketDescriptor 不变
   if (socketDescriptor != NCCL_INVALID_SOCKET) {
     (void)close(socketDescriptor);
   }
@@ -413,13 +420,13 @@ ncclResult_t ncclOsFindInterfaces(const char* prefixList, char* names, union ncc
       if (IN6_IS_ADDR_LOOPBACK(&sa->sin6_addr)) continue;
     }
 
-    // check against user specified interfaces
+    // 检查 against 用户 specified interfaces
     if (!(matchIfList(interface->ifa_name, -1, userIfs, nUserIfs, searchExact) ^ searchNot)) {
       continue;
     }
 
-    // Check that this interface has not already been saved
-    // getifaddrs() normal order appears to be; IPv4, IPv6 Global, IPv6 Link
+    // 检查 那个 此 接口 has 不 已经 been saved
+    // getifaddrs() 正常 order 似乎 be; IPv4, IPv6 全局的, IPv6 链路
     bool duplicate = false;
     for (int i = 0; i < *found; i++) {
       if (strcmp(interface->ifa_name, names + i * maxIfNameSize) == 0) {
@@ -429,9 +436,9 @@ ncclResult_t ncclOsFindInterfaces(const char* prefixList, char* names, union ncc
     }
 
     if (!duplicate) {
-      // Store the interface name
+      // 存储 接口 name
       strncpy(names + (*found) * maxIfNameSize, interface->ifa_name, maxIfNameSize);
-      // Store the IP address
+      // 存储 IP 地址
       int salen = (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
       memset(addrs + *found, '\0', sizeof(*addrs));
       memcpy(addrs + *found, interface->ifa_addr, salen);
@@ -467,7 +474,7 @@ static bool matchSubnet(struct ifaddrs local_if, union ncclSocketAddress* remote
     bool same = true;
     int len = 16;  // IPv6 address is 16 unsigned char
     for (int c = 0; c < len; c++) {
-      // Network byte order is big-endian
+      // 网络 字节 order is 大-endian
       char c1 = local_in6.s6_addr[c] & mask_in6.s6_addr[c];
       char c2 = remote_in6.s6_addr[c] & mask_in6.s6_addr[c];
       if (c1 ^ c2) {
@@ -475,9 +482,9 @@ static bool matchSubnet(struct ifaddrs local_if, union ncclSocketAddress* remote
         break;
       }
     }
-    // At last, we need to compare scope id
-    // Two Link-type addresses can have the same subnet address even though they are not in the same scope
-    // For Global type, this field is 0, so a comparison wouldn't matter
+    // At 最后, 需要 compare scope id
+    // Two 链路-类型 地址 can have 相同 subnet 地址 尽管 they are 不 入 相同 scope
+    // For 全局的 类型, 该字段 is 0, 所以 a comparison wouldn't matter
     same &= (local_addr->sin6_scope_id == remote_addr.sin6_scope_id);
     return same;
   } else {
@@ -502,16 +509,16 @@ ncclResult_t ncclFindInterfaceMatchSubnet(char* ifName, union ncclSocketAddress*
     int family = interface->ifa_addr->sa_family;
     if (family != AF_INET && family != AF_INET6) continue;
 
-    // check against user specified interfaces
+    // 检查 against 用户 specified interfaces
     if (!matchSubnet(*interface, remoteAddr)) {
       continue;
     }
 
-    // Store the local IP address
+    // 存储 本地 IP 地址
     int salen = (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
     memcpy(localAddr, interface->ifa_addr, salen);
 
-    // Store the interface name
+    // 存储 接口 name
     strncpy(ifName, interface->ifa_name, ifNameMaxSize);
 
     TRACE(NCCL_INIT | NCCL_NET, "NET : Found interface %s:%s in the same subnet as remote address %s",
@@ -677,7 +684,7 @@ ncclResult_t ncclOsGetBcmLinks(const char* busId, int* nlinks, char** peers) {
   *nlinks = 0;
   *peers = NULL;
 
-  // Path to Broadcom switch virtual links in sysfs
+  // 路径 to Broadcom switch 虚 链路 入 sysfs
   char dirPath[] = "/sys/kernel/pci_switch_link/virtual_switch_links/0000:00:00.0";
   memcpylower(dirPath + sizeof("/sys/kernel/pci_switch_link/virtual_switch_links/") - 1, busId, BUSID_SIZE - 1);
 
@@ -685,15 +692,15 @@ ncclResult_t ncclOsGetBcmLinks(const char* busId, int* nlinks, char** peers) {
   if (dir) {
     struct dirent* file;
     while ((file = readdir(dir)) != NULL) {
-      // Check if the entry is a valid PCI bus ID format
+      // 检查 若 entry is a 合法的 PCI 总线 ID 格式
       if (strlen(file->d_name) != BUSID_SIZE - 1) continue;
 
-      // Validate that this is a real PCI device
+      // 校验 那个 这是 a real PCI 设备
       char* path;
       if (ncclOsGetPciPath(file->d_name, &path) != ncclSuccess) continue;
       free(path);
 
-      // Add to peers list
+      // Add to 对等端 列表
       NCCLCHECK(ncclRealloc(peers, (*nlinks) * BUSID_SIZE, ((*nlinks) + 1) * BUSID_SIZE));
       memcpy((*peers) + BUSID_SIZE * (*nlinks)++, file->d_name, BUSID_SIZE);
     }
@@ -723,7 +730,7 @@ ncclResult_t ncclOsGetNumaNodeAffinity(unsigned int numaId, char* affinityStr, s
   return ncclSuccess;
 }
 
-// Shared memory implementation for Linux
+// Shared 内存 实现 for Linux
 #include "comm.h"
 #include <sys/stat.h>
 #include <fcntl.h>

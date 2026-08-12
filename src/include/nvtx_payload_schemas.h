@@ -5,8 +5,15 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-/// Definitions of NVTX payload types and schemas used for the NVTX
-/// instrumentation in init.cc and collectives.cc.
+/*
+ * [第三方] NVTX payload schema 定义（NVIDIA NVTX 工具，非 mini-nccl 自有逻辑）
+ * ----------------------------------------------------------------------------
+ * 定义 NVTX 注入所用 payload 类型与 schema，供 init.cc / collectives.cc 的 NVTX
+ * 打点使用。第三方声明，不建议改动。
+ */
+
+/// Definitions of NVTX payload 类型 并且 schemas 用于 the NVTX
+/// instrumentation 入 初始化.cc 并且 集合通信.cc.
 
 #ifndef NVTX_PAYLOAD_SCHEMAS_H_
 #define NVTX_PAYLOAD_SCHEMAS_H_
@@ -25,7 +32,7 @@
   _NVTX_PAYLOAD_TYPEDEF_STRUCT(struct_id, _NVTX_PAYLOAD_PASS_THROUGH entries) \
   prefix _NVTX_PAYLOAD_SCHEMA_INIT_ENTRIES(struct_id, _NVTX_PAYLOAD_PASS_THROUGH entries)
 
-// C strings used as NVTX payload entry names.
+// C strings 用作 NVTX payload entry names.
 static constexpr char const* nccl_nvtxCommStr = "NCCL communicator ID";
 static constexpr char const* nccl_nvtxCudaDevStr = "CUDA device";
 static constexpr char const* nccl_nvtxRankStr = "Rank";
@@ -43,8 +50,8 @@ NCCL_NVTX_DEFINE_STRUCT_WITH_SCHEMA_ENTRIES(
   NCCL_NVTX_PAYLOAD_ENTRIES((uint64_t, newcomm, TYPE_UINT64, nccl_nvtxCommStr),
                             (int, nranks, TYPE_INT, nccl_nvtxNranksStr), (int, myrank, TYPE_INT, nccl_nvtxRankStr),
                             (int, cudaDev, TYPE_INT, nccl_nvtxCudaDevStr)))
-// The typedef and payload schema for ncclCommInitRank is also used for,
-// ncclCommInitRankConfig, ncclCommInitRankScalable, ncclCommDestroy, ncclCommAbort, and ncclCommRevoke.
+// The typedef 并且 payload schema for ncclCommInitRank is 也 用于,
+// ncclCommInitRankConfig, ncclCommInitRankScalable, ncclCommDestroy, ncclCommAbort, 并且 ncclCommRevoke.
 typedef NcclNvtxParamsCommInitRank NcclNvtxParamsCommInitRankConfig;
 typedef NcclNvtxParamsCommInitRank NcclNvtxParamsCommInitRankScalable;
 typedef NcclNvtxParamsCommInitRank NcclNvtxParamsCommAbort;
@@ -116,7 +123,7 @@ NCCL_NVTX_DEFINE_STRUCT_WITH_SCHEMA_ENTRIES(NcclNvtxParamsScatter, static conste
                                                                       (size_t, bytes, TYPE_SIZE, nccl_nvtxMsgSizeStr),
                                                                       (int, root, TYPE_INT, "Root")))
 
-// Used in NCCL APIs `ncclSend` and `ncclRecv`.
+// 已使用 入 NCCL APIs `ncclSend` 并且 `ncclRecv`.
 NCCL_NVTX_DEFINE_STRUCT_WITH_SCHEMA_ENTRIES(NcclNvtxParamsSendRecv, static constexpr,
                                             NCCL_NVTX_PAYLOAD_ENTRIES((uint64_t, comm, TYPE_UINT64, nccl_nvtxCommStr),
                                                                       (size_t, bytes, TYPE_SIZE, nccl_nvtxMsgSizeStr),

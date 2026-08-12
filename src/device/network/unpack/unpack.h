@@ -6,6 +6,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/network/unpack/unpack.h — 网络 unpack 原语实现
+ * ----------------------------------------------------------------------------
+ * 实现 GPU 端的“解包”原语：把网络传输(Net)收到的打包数据，在 device kernel 内
+ * 直接还原为目标张量布局（并可在解包时完成 reduce）。是网络接收路径的最后一步。
+ * 源自 Google/NVIDIA 协作。
+ */
+
 #ifndef NET_DEVICE_UNPACK_H
 #define NET_DEVICE_UNPACK_H
 
@@ -16,7 +24,7 @@
 #include "device.h"
 #include "common.h"
 
-// #define ALIGNED_LOAD
+// #定义 ALIGNED_LOAD
 
 inline __device__ void load64gpu(const uint64_t* ptr, uint64_t& v) {
 #if __CUDA_ARCH__ >= 700
@@ -30,24 +38,24 @@ inline __device__ void load64gpu(const uint64_t* ptr, uint64_t& v) {
 #define META_LOAD_SIZE 16
 #define DATA_LOAD_SIZE 16
 
-// Map internal association of handle with group and peer index (called once at init time)
+// 映射 内部 association of 句柄 with 组 并且 对等端 索引 (被调用 一旦 at 初始化 time)
 inline __device__ void ncclNetDeviceUnpackSetup(void* ohandle, const int group, const int index) {
   struct unpackNetDeviceHandle* handle = (struct unpackNetDeviceHandle*)ohandle;
-  // coverity[index_parm:FALSE]
+  // coverity[index_parm:假]
   ncclShmem.groups[group].devicePlugin.unpack.g_meta[index] = handle->meta;
   ncclShmem.devicePlugin.unpack.bounce_buf = handle->bounce_buf;
-  // coverity[index_parm:FALSE]
+  // coverity[index_parm:假]
   ncclShmem.groups[group].devicePlugin.unpack.head[index] = handle->head;
 }
 
 inline __device__ void ncclNetDeviceIncrementHead(const int group, const int index) {
-  // coverity[index_parm:FALSE]
+  // coverity[index_parm:假]
   ncclShmem.groups[group].devicePlugin.unpack.head[index]++;
 }
 
 inline __device__ void ncclNetDeviceSaveHead(void* ohandle, const int group, const int index) {
   struct unpackNetDeviceHandle* handle = (struct unpackNetDeviceHandle*)ohandle;
-  // coverity[index_parm:FALSE]
+  // coverity[index_parm:假]
   handle->head = ncclShmem.groups[group].devicePlugin.unpack.head[index];
 }
 
@@ -168,9 +176,9 @@ inline __device__ int ppw(const int nbytes, int nw) {
   return v;
 }
 
-// This function is called by all threads
-// Pack data from the internal iovec to the supplied flat buffer using all the
-// threads
+// 该函数 被称为 by 所有 线程
+// 打包 数据 从 内部 iovec 到 supplied flat 缓冲区 使用 所有 the
+// 线程
 template <int Recv>
 inline __device__ void ncclNetDeviceUnpack(const int tid, const int tidInBlock, const int nworkers, const int group,
                                            int mask, int Src, int workSize);
@@ -178,7 +186,7 @@ inline __device__ void ncclNetDeviceUnpack(const int tid, const int tidInBlock, 
 template <>
 inline __device__ void ncclNetDeviceUnpack</*Recv=*/0>(const int tid, const int tidInBlock, const int nworkers,
                                                        const int group, int mask, int Src, int workSize) {
-  // send unpack empty
+  // 发送 解包 空的
 }
 
 inline __device__ void ncclNetDeviceUnpackInner(const int tid, const int tidInBlock, const int nworkers,
@@ -192,8 +200,8 @@ inline __device__ void ncclNetDeviceUnpack</*Recv=*/1>(const int tid, const int 
     int ix = __ffs(mask) - 1; // Get the first set bit of the mask (this should correlate to a peer index)
     mask &= mask - 1; // Drop the first set bit of the mask
 
-    // Pack data from the internal iovec to the supplied flat srcs buffer using all the threads
-    // + Src is necessary in the case of accessing the user buffer directly
+    // 打包 数据 从 内部 iovec 到 supplied flat srcs 缓冲区 使用 所有 the 线程
+    // + 源 必要的 在 ... 中 情形 of accessing 用户 缓冲区 directly
     ncclNetDeviceUnpackInner(tid, tidInBlock, nworkers,
                              group /* in case they need to use split warps shared memory partitioning*/, ix,
                              ncclShmem.groups[group].srcs[ix + Src], workSize,
@@ -204,7 +212,7 @@ inline __device__ void ncclNetDeviceUnpack</*Recv=*/1>(const int tid, const int 
 inline __device__ void ncclNetDeviceUnpackInner(const int tid, const int tidInBlock, const int nworkers,
                                                 const int group, const int index, void* src, const int nbytes,
                                                 const uint64_t step) {
-  // from src/collectives/device/common_kernel.h
+  // from 源/集合通信/设备/common_kernel.h
   const int w = tid / WARP_SIZE;        // Warp number
   const int nw = nworkers / WARP_SIZE;  // Number of warps
   const int t = tid % WARP_SIZE;        // Thread (inside the warp)
@@ -220,7 +228,7 @@ inline __device__ void ncclNetDeviceUnpackInner(const int tid, const int tidInBl
   loadMeta* s_meta;
   uint64_t meta_cnt;
 
-  // hack head use per-warp
+  // hack 头 使用 每个-线程束
   head = step;
   g_meta_struct = ncclShmem.groups[group].devicePlugin.unpack.g_meta[index];
   bounce_buf = ncclShmem.devicePlugin.unpack.bounce_buf;
@@ -231,25 +239,25 @@ inline __device__ void ncclNetDeviceUnpackInner(const int tid, const int tidInBl
 
   g_meta = g_meta_struct->mem[head];
 
-  // Currently, even/odd groups perform send/recv separately. We don't really need space for send side.
-  // Total size is N page per warp * 16 B per page * 20 WARPS max = 320 * N bytes, N == WARP_SHM_PAGE_CNT
+  // Currently, 甚至/奇数 组 perform 发送/接收 separately. We don't really 需要 space for 发送 side.
+  // 总计 大小 is N 页 每个 线程束 * 16 B 每个 页 * 20 线程束 最大值 = 320 * N 字节, N == WARP_SHM_PAGE_CNT
   static_assert(ncclShmemScratchWarpSize() >= WARP_SHM_SIZE, "Each warp must have enough scratch space");
-  // (loadMeta*) (ncclShmem.devicePlugin.unpack.meta + shm_off);
+  // (loadMeta*) (ncclShmem.devicePlugin.解包.meta + shm_off);
   s_meta = (loadMeta*)ncclScratchForWarp(tidInBlock / WARP_SIZE);
 
   load64gpu(g_meta_struct->cnt + head, meta_cnt);
 
   int PPW = ppw(nbytes, nw);
 
-  // Coverity reports a potential overflow but in reality PPW is tiny so there's no need to store it in an uint64_t.
+  // Coverity reports a potential overflow 但 入 reality PPW is 微小 所以 there's 无 需要 存储 it 入 an uint64_t.
   // coverity[overflow_before_widen]
   for (uint64_t meta_s = w * PPW; meta_s < meta_cnt; meta_s += nw * PPW) {
     uint64_t iter_meta_cnt = meta_cnt - meta_s;
     iter_meta_cnt = iter_meta_cnt < PPW ? iter_meta_cnt : PPW;
 
-    // TODO: this load size needs to work if not aligned, but since the two are both 16...
+    // 待办: 此 加载 大小 需要 work 否则 已对齐, 但 自 the two are 两者 16...
     if (t < PPW * PAGE_META_SIZE / META_LOAD_SIZE && t < iter_meta_cnt) {
-      // avoid last iter load garbage data
+      // 避免 最后 iter 加载 garbage 数据
       load128((const uint64_t*)(g_meta + (meta_s + t)), reg.u64[0], reg.u64[1]);
 
       storeShmem128(shmemCvtPtr((uint64_t*)(s_meta + (w * PPW + t))), reg.u64[0], reg.u64[1]);
@@ -260,13 +268,13 @@ inline __device__ void ncclNetDeviceUnpackInner(const int tid, const int tidInBl
     for (int x = 0; x < iter_meta_cnt; x++) {
       int meta_idx = x + w * PPW;
 
-      // load page offs
+      // 加载 页 offs
       loadShmem128(shmemCvtPtr((uint64_t*)(s_meta + meta_idx)), meta.r64[0], meta.r64[1]);
 
       if (meta.len >= DATA_LOAD_SIZE) {
-        // fast path, but need to adapt to alignment issue
+        // 快速 路径, 但 需要 adapt to 对齐 问题
 
-        // bulk copy data
+        // bulk 拷贝 数据
         uint8_t align_off = (meta.src_off | meta.dst_off) % DATA_LOAD_SIZE;
         align_off = align_off & -align_off;  // keep the lowest bit
         if (align_off == 0) {
@@ -283,13 +291,13 @@ inline __device__ void ncclNetDeviceUnpackInner(const int tid, const int tidInBl
           bulkLoad<2>(t, meta.len, (char*)bounce_buf + meta.src_off, (char*)src + meta.dst_off, (BytePack<2>*)&reg, w,
                       g_meta, s_meta, meta.src_off, meta.dst_off);
         } else {
-          // if (align_off & 0x1)
+          // 若 (align_off & 0x1)
           bulkLoad<1>(t, meta.len, (char*)bounce_buf + meta.src_off, (char*)src + meta.dst_off, (BytePack<1>*)&reg, w,
                       g_meta, s_meta, meta.src_off, meta.dst_off);
         }
       }
 
-      // must be less than 16 bytes
+      // 必须为 less than 16 字节
       if (t < meta.len % DATA_LOAD_SIZE) {
         volatile char* cpy_src = (char*)bounce_buf + meta.src_off + (meta.len / DATA_LOAD_SIZE) * DATA_LOAD_SIZE + t;
         volatile char* cpy_dst = (char*)src + meta.dst_off + (meta.len / DATA_LOAD_SIZE) * DATA_LOAD_SIZE + t;

@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/ptr.h — 设备指针辅助
+ * ----------------------------------------------------------------------------
+ * 定义 nccl_device 框架下设备侧的指针/地址类型（ncclDevicePtr 等），统一表示
+ * 主机/设备可访问的内存地址，供其他设备 API 引用。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_PTR_H_
 #define _NCCL_DEVICE_PTR_H_
 #include "core.h"

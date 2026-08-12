@@ -6,6 +6,12 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/plugin/nccl_tuner.h — 调优器(tuner)插件接口聚合头 [NVIDIA 插件接口/第三方]
+ * ----------------------------------------------------------------------------
+ * 汇总 tuner 插件的各版本接口(tuner_v2~v6)，由外部调优器实现算法/拓扑选择。
+ */
+
 #ifndef NCCL_TUNER_H_
 #define NCCL_TUNER_H_
 

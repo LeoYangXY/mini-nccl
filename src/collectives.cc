@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/collectives.cc — 集合操作对外入口与注册
+ * ----------------------------------------------------------------------------
+ * 实现 ncclAllReduce 等集合操作的公共入口：先做参数校验(argcheck)，再把调用打包成
+ * ncclInfo，交由 enqueue 层调度。同时提供 ncclFuncToString 等辅助，以及 NVTX 打点。
+ * mini-nccl 实际仅重点支持 AllReduce。
+ */
+
 #include "argcheck.h" // Need some checks here since we access comm
 #include "collectives.h"
 #include "enqueue.h"
@@ -130,7 +138,7 @@ NCCL_API(ncclResult_t, ncclAllGather, const void* sendbuff, void* recvbuff, size
          ncclComm_t comm, cudaStream_t stream);
 ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcount, ncclDataType_t datatype,
                            ncclComm_t comm, cudaStream_t stream) {
-  // Just pass the size of one message and not the total bytes sent/received.
+  // 仅 pass 的大小 one 消息 并且 不 总计 字节 sent/received.
   NVTX3_FUNC_WITH_PARAMS(AllGather, NcclNvtxParamsAllGather,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, sendcount * ncclTypeSize(datatype)));
 

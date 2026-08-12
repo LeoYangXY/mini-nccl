@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/symmetric/gin_scratch__types.h — [GIN 相关] gin scratch 类型定义
+ * ----------------------------------------------------------------------------
+ * 定义 GIN scratch 区域(用于 all-to-all 等)的类型结构。GIN 由 Meta 引入，mini-nccl
+ * 精简版下多被 stub。
+ */
+
 #ifndef _NCCL_DEVICE_GIN__SCRATCH_A2A__TYPES_H_
 #define _NCCL_DEVICE_GIN__SCRATCH_A2A__TYPES_H_
 #if 1 // When this file is not in "nccl_device/impl/"
@@ -25,7 +32,7 @@ struct ncclGinOutboxHandle {
 struct alignas(128) ncclGinOutboxState {
   static constexpr size_t RequestBytes = sizeof(ncclGinRequest_t) * (1 << ncclGinScratchMaxBufs_log2);
   struct Unpadded {
-    // Memory to ensure the same requests aren't controlled with different contexts.
+    // 内存 to 确保 相同 请求 aren't controlled with 不同 上下文.
     uint32_t ginContextId_plus_1:9;
     uint32_t nBufs_log2:5;
     uint32_t reserved:18;
@@ -45,18 +52,18 @@ struct ncclGinInboxA2AHandle {
 #if __cplusplus
 struct alignas(128) ncclGinInboxA2AState {
   static constexpr int RoundBits = 16;
-  // static constexpr int RoundBits = ncclGinScratchMaxBufsPerPeer_log2 + 1;
+  // 静态 constexpr 整型 RoundBits = ncclGinScratchMaxBufsPerPeer_log2 + 1;
   static_assert(ncclGinScratchMaxBufsPerPeer_log2 + 1 <= RoundBits, "Required");
   struct Unpadded {
-    // Memory to ensure the same buffers aren't controlled with different contexts.
+    // 内存 to 确保 相同 缓冲区 aren't controlled with 不同 上下文.
     uint32_t ginContextId_plus_1:9;
-    // Num of bufs we are divided into. +1 so the zero default is invalid (-1).
+    // Num of bufs we are divided into. +1 所以 the zero 默认 is 非法的 (-1).
     uint32_t nBufs_log2_plus_1:5;
-    // Every time num bufs changes we move to next phase.
+    // 每一个 time num bufs changes we 移动到 下一个 阶段.
     uint32_t phase:2;
-    // Number of completed alltoalls for this phase.
+    // 数量： 已完成 alltoalls for 此 阶段.
     uint32_t monoRound:RoundBits;
-    // Step counter that does not reset.
+    // 步骤 counter 那个 执行 不 reset.
     uint32_t monoStep;
   } unpadded;
 };
@@ -206,7 +213,7 @@ struct ncclGinInboxA2ASession_internal {
 #endif
 
 struct ncclGinSyncHandle {
-  // signals to sync with remote peers
+  // 信号 to 同步 with 远端 对等端
   ncclGinSignal_t railSignals;
 };
 

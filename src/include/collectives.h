@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/collectives.h — 集合通信(collective)接口的声明
+ * ----------------------------------------------------------------------------
+ * 声明 ncclAllReduce/ncclBroadcast/ncclReduce 等集合操作的对外入口，以及内部的
+ * ncclInfo（把一次用户调用打包成的统一描述）。collectives.cc 实现入口，enqueue.cc
+ * 消费 ncclInfo 完成调度。mini-nccl 实际仅保留 AllReduce。
+ */
+
 #ifndef NCCL_COLLECTIVES_H_
 #define NCCL_COLLECTIVES_H_
 
@@ -15,7 +23,7 @@
 
 #define NCCL_MAX_NET_SIZE (1024 * 1024 * 1024L) // Rather than send INT_MAX which is 2G-1, send a power of two.
 
-// CHUNKSIZE must be a multiple of SLICESIZE
+// CHUNKSIZE 必须为 a 多个 of SLICESIZE
 #define ALLREDUCE_SLICESTEPS (NCCL_STEPS / 4)
 #define ALLREDUCE_CHUNKSTEPS (NCCL_STEPS / 2)
 #define ALLGATHER_SLICESTEPS (NCCL_STEPS / 4)
@@ -95,11 +103,11 @@ protected:
   void* srecvMhandle;
 
 public:
-  // this ring class is used by proxy thread to retrieve the send and recv buffer, size as well as corresponding
-  // mem handle based on the current step of the proxy args. The derived ring algo class is AR, AG, and BC which
-  // would be allocated during enqueue stage and copied to proxy side through shared memory. For each copy, we will
-  // increase the refCount by incRefCount() since the same ring algo object can be referenced multiple times for send
-  // and recv progress. After all steps are done, we decrease the refCount and only delete the ring object when
+  // 此 环 类 用于 by 代理 线程 to retrieve the 发送 并且 接收 缓冲区, 大小 以及 corresponding
+  // mem 句柄 基于 当前 步骤 的 代理 args. The derived 环 algo 类 is AR, AG, 并且 BC 该
+  // 将会 已分配 期间 enqueue stage 并且 copied to 代理 side through shared 内存. For 每个 拷贝, 我们会
+  // increase the refCount by incRefCount() 自 相同 环 algo object 可以 referenced 多个 times for 发送
+  // 并且 接收 progress. 毕竟 步骤 are 已完成, we decrease the refCount 并且 仅 delete the 环 object 当
   // refCount == 0.
   virtual void getNextSendAddr(int curStep, uint8_t** sendbuffOut, size_t* sizeOut, void** mhandleOut) = 0;
   virtual void getNextRecvAddr(int curStep, uint8_t** recvbuffOut, size_t* sizeOut, void** mhandleOut) = 0;
@@ -407,7 +415,7 @@ public:
 #include <cuda/atomic>
 #endif
 
-// Need a power of two to ensure it divides by parallelFactor (which is also a power of two)
+// 需要 a power of two to 确保 it divides by parallelFactor (该 is 也 a power of two)
 #define NCCL_PAT_NWORKERS 512
 
 static constexpr int PatUsed = 0x1, PatSkipped = 0x2;
@@ -512,10 +520,10 @@ class PatRSAlgorithm {
     return nbits;
   }
 
-  // Return 1 when only upper bits are set. For example, if nrpow2==16 we'll return 1 for 8, 12, 14, 15.
-  // A number being in the form of 1111000 implies that the complementary is 0000111 meaning it's a power of 2 minus 1.
+  // 返回 1 当 仅 upper 位 are 设置. 例如, 若 nrpow2==16 we'll 返回 1 for 8, 12, 14, 15.
+  // A number being 在 ... 中 form of 1111000 implies 那个 the complementary is 0000111 meaning it's a power of 2 minus 1.
   __device__ __host__ int newPeer(int i, int pow2) {
-    // printf("New peer %d/%d -> %d\n", i, pow2, nBitsSet((i ^ (pow2-1)) + 1) == 1 ? 1 : 0);
+    // printf("New 对等端 %d/%d -> %d\n", i, pow2, nBitsSet((i ^ (pow2-1)) + 1) == 1 ? 1 : 0);
     return nBitsSet((i ^ (pow2 - 1)) + 1) == 1 ? 1 : 0;
   }
 
@@ -717,7 +725,7 @@ class PatAGAlgorithm {
   int scale;
   int phase;
 
-  // AS computation
+  // AS 计算
   int asDim;
   int v;
   int bitCount[32];
@@ -864,7 +872,7 @@ public:
         ps->stepOffset = (ps->sendDim == 0) ? 0 : foffset / postFreq;
       }
       if (s < nranks && ps->sendDim == 0 && skip) {
-        // Don't forget to receive at least once even if we don't send afterwards
+        // Don't forget to 接收 至少 一旦 即使 we don't 发送 afterwards
         ps->sendDim = -1;
         ps->sendOffset = -1;
         ps->postSend = 0;

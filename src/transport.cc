@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/transport.cc — 传输层(transport)注册与选择
+ * ----------------------------------------------------------------------------
+ * 维护 ncclTransports[] 全局数组（登记 P2P/NVLS/Net/CollNet 等各传输实现），并提供
+ * 传输选择逻辑：根据 comm 配置与拓扑，为给定 channel 选出可用的 transport。是“算法
+ * 图”与“具体建链(transport/*.cc)”之间的分发枢纽。
+ */
+
 #include "comm.h"
 #include "info.h"
 #include "bootstrap.h"
@@ -77,11 +85,11 @@ NCCL_PARAM(ReportConnectProgress, "REPORT_CONNECT_PROGRESS", 0);
 
 #include "os.h"
 
-// Tests communicator for CUDA P2P connectivity (local ranks only).
-// *isAllDirectP2p returns 1 if all local ranks have CUDA P2P connectivity with each other
-// and are no further than NCCL_P2P_LEVEL apart.
-// *directMode returns 1 if *any* two local ranks are managed by the same process.
-// *isAllCudaP2p returns 1 if all local ranks have CUDA P2P connectivity with each other, irrespective of the distance.
+// 检测通信域内的 CUDA P2P 连通性(仅针对本地 rank)。
+// *isAllDirectP2p 返回 1 表示：所有本地 rank 之间都具备 CUDA P2P 连通性，
+// 且彼此距离不超过 NCCL_P2P_LEVEL 限定的范围。
+// *directMode 返回 1 表示：存在任意两个本地 rank 由同一个进程管理。
+// *isAllCudaP2p 返回 1 表示：所有本地 rank 之间都具备 CUDA P2P 连通性(不考虑距离限制)。
 ncclResult_t ncclTransportCheckP2pType(struct ncclComm* comm, bool* isAllDirectP2p, bool* directMode,
                                        bool* isAllCudaP2p) {
   bool ncclP2pFlag = true;
@@ -120,14 +128,29 @@ ncclResult_t ncclTransportCheckP2pType(struct ncclComm* comm, bool* isAllDirectP
   return ncclSuccess;
 }
 
+/*
+ * ncclTransportP2pSetup —— 传输层建链总入口
+ * ----------------------------------------------------------------------------
+ * 在 AllReduce 全链路中的位置：bootstrap 建好引导环、graph 算好拓扑之后，
+ * 由本函数真正为每一对需要通信的 (rank, channel) 建立底层连接。
+ *
+ * 建链是一个“三段式握手”过程：
+ *   1) setup   : 本地准备资源(分配缓冲区、生成 IPC 句柄等)，产出 ncclConnect 信息
+ *   2) exchange: 通过 bootstrap 把 ncclConnect 信息发给对端、并收下对端的
+ *   3) connect : 用对端信息完成本地连接对象的最终装配
+ * 必须分三段，是因为双方都要拿到对方的信息才能完成映射，无法一步到位。
+ *
+ * 为了避免一次性和所有 rank 握手造成的资源峰值(以及 socket 数爆炸)，
+ * 这里采用**分轮次(round)**处理：每轮最多处理 maxPeers 个对端。
+ */
 ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, int connIndex) {
-  // Stream used during transport setup; need for P2P pre-connect + CUDA Graph
+  // 建链过程中使用的 CUDA 流：P2P 预连接与 CUDA 图 场景都需要它
   ncclResult_t ret = ncclSuccess;
-  struct ncclConnect** data; // Store intermediate send/recvData structs for connect
-  struct ncclConnect** recvData = NULL; // Points to entries inside data for given recv connection within a channel
-  struct ncclConnect** sendData = NULL; // Points to entries inside data for given send connection within a channel
-  int done = 0;
-  int maxPeers = ncclParamConnectRoundMaxPeers();
+  struct ncclConnect** data; // 暂存握手用的 send/recv 连接信息结构体
+  struct ncclConnect** recvData = NULL; // 指向 data 内部：某 channel 上接收连接对应的条目
+  struct ncclConnect** sendData = NULL; // 指向 data 内部：某 channel 上发送连接对应的条目
+  int done = 0;                                  // 已完成建链的对端数量
+  int maxPeers = ncclParamConnectRoundMaxPeers(); // 每轮并发处理的最大对端数(控制资源峰值)
 
   struct timeval timeStart, timeLast;
   gettimeofday(&timeStart, NULL);
@@ -145,20 +168,27 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
   NCCLCHECKGOTO(ncclStrongStreamAcquire(ncclCudaGraphNone(comm->config.graphUsageMode), &comm->sharedRes->deviceStream,
                                         /*concurrent=*/false, &deviceStream),
                 ret, fail);
-  // First time initialization
+  // 首轮初始化：按“距离 i”依次与各对端配对握手
   for (int i = 1; i < comm->nRanks; i++) {
+    // bootstrapTag 用于区分不同轮次、不同拓扑图的握手消息，避免消息串扰。
+    // 低 8 位放 图 id，高位放距离 i，组合成唯一标签。
     int bootstrapTag = (i << 8) + (graph ? graph->id + 1 : 0);
+    // 关键设计：接收方向取 rank-i，发送方向取 rank+i。
+    // 这样在同一轮里，每个 rank 恰好有一个发送目标和一个接收来源，
+    // 且全局形成一个完美配对(我发给谁，谁就正好在等我)，不会出现多打一的死锁。
     int recvPeer = (comm->rank - i + comm->nRanks) % comm->nRanks;
     int sendPeer = (comm->rank + i) % comm->nRanks;
-    uint64_t recvMask = comm->connectRecv[recvPeer];
-    uint64_t sendMask = comm->connectSend[sendPeer];
+    uint64_t recvMask = comm->connectRecv[recvPeer];  // 位图：与该对端在哪些 channel 上需要建收连接
+    uint64_t sendMask = comm->connectSend[sendPeer];  // 位图：与该对端在哪些 channel 上需要建发连接
 
-    // Data[i] contains all ncclConnect information for all send and receive connections with a given send and recv
-    // peer
-    // This data is packed in the array based on the number of sendChannels and recvChannels connected with these peers
-    // The first N entries contain recvData, connection information for recv connections
-    // The next M entries contain sendData, connection information for send connections
-    // It's not guaranteed that each entry of data has the same number of total or send/recv specific connections
+    /* data[p] 的内存布局说明：
+     *   它保存了与某一对 (发送对端, 接收对端) 之间**所有** channel 的连接信息，
+     *   按照实际连接的 recvChannels / sendChannels 数量紧凑打包：
+     *     前 N 项 = recvData，存放各接收连接的信息
+     *     后 M 项 = sendData，存放各发送连接的信息
+     *   注意：不保证每个 data[p] 拥有相同数量的连接(不同对端可能用不同数量的 channel)，
+     *   因此必须靠 recvChannels/sendChannels 计数来定位，不能按固定步长索引。
+     */
     int p = i - (done + 1);
     if (recvMask || sendMask) {
       if (data[p] == NULL) NCCLCHECKGOTO(ncclCalloc(data + p, 2 * MAXCHANNELS), ret, fail);
@@ -222,7 +252,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
     TIME_STOP(2);
 
     if (i - done == maxPeers || i == comm->nRanks - 1) {
-      // Loop until all channels with all ranks have been connected
+      // 循环直到与所有 rank 的所有 通道 都完成连接为止
       bool allChannelsConnected;
       allChannelsConnected = false;
       while (!allChannelsConnected) {
@@ -240,7 +270,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
             TIME_START(3);
             if (sendMask & (1ULL << c)) {
               struct ncclConnector* conn = comm->channels[c].peers[sendPeer]->send + connIndex;
-              // This connector hasn't completed connection yet
+              // 此 connector hasn't 已完成 连接 yet
               if (conn->connected == 0) {
                 NCCLCHECKGOTO(conn->transportComm->connect(comm, sendData[p] + sendDataOffset, 1, comm->rank, conn),
                               ret, fail);
@@ -259,11 +289,11 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
             }
             TIME_STOP(3);
 
-            // Start with recv channels
+            // 先处理接收方向的 通道
             TIME_START(4);
             if (recvMask & (1ULL << c)) {
               struct ncclConnector* conn = comm->channels[c].peers[recvPeer]->recv + connIndex;
-              // This connector hasn't completed connection yet
+              // 此 connector hasn't 已完成 连接 yet
               if (conn->connected == 0) {
                 NCCLCHECKGOTO(conn->transportComm->connect(comm, recvData[p] + recvDataOffset, 1, comm->rank, conn),
                               ret, fail);
@@ -368,8 +398,8 @@ fail:
 
 extern struct ncclTransport collNetTransport;
 
-// All ranks must participate in collNetSetup call
-// We do not NCCLCHECK this call because we would fall back to P2P network in case CollNet setup fails
+// 所有 ranks must participate 入 collNetSetup 调用
+// 这里刻意不用 NCCLCHECK 包裹：CollNet 初始化失败属于可接受情况，会自动回退到 P2P 网络
 bool ncclTransportCollNetSetup(struct ncclComm* comm, struct ncclTopoGraph* collNetGraph, struct ncclChannel* channel,
                                int masterRank, int masterPeer, int collNetGraphChannelId, int type,
                                ncclConnect* connect) {
@@ -379,7 +409,7 @@ bool ncclTransportCollNetSetup(struct ncclComm* comm, struct ncclTopoGraph* coll
   int nMasters = comm->nNodes;
   int isMaster = (rank == masterRank) ? 1 : 0;
 
-  // check if we can connect to collnet, whose root is the nranks-th rank
+  // 检查能否连接到 collnet，其根节点是第 nranks 个 rank(额外预留的那个)
   struct ncclPeerInfo *myInfo = comm->peerInfo + rank, *peerInfo = comm->peerInfo + nranks;
   peerInfo->rank = nranks;
 
@@ -388,13 +418,13 @@ bool ncclTransportCollNetSetup(struct ncclComm* comm, struct ncclTopoGraph* coll
           comm->node, nMasters, masterPeer);
   }
 
-  // select
+  // 选择
   struct ncclChannelPeer* root = channel->peers[nranks];
-  // connector index: 0 for recv, 1 for send
+  // 连接器下标约定：0 表示接收，1 表示发送
   struct ncclConnector* conn = (type == collNetRecv) ? root->recv + type : root->send + type;
   struct ncclTransportComm* transportComm = (type == collNetRecv) ? &(collNetTransport.recv) : &(collNetTransport.send);
   conn->transportComm = transportComm;
-  // setup
+  // 设置
   struct ncclConnect myConnect = {0};
   struct {
     int isMaster;
@@ -405,16 +435,16 @@ bool ncclTransportCollNetSetup(struct ncclComm* comm, struct ncclTopoGraph* coll
     NCCLCHECK(transportComm->setup(comm, collNetGraph, myInfo, peerInfo, &myConnect, conn, collNetGraphChannelId,
                                    type));
   }
-  // prepare connect handles
+  // prepare connect 句柄
   NCCLCHECK(ncclCalloc(&masterConnects, nMasters));
   if (type == collNetRecv) {
-    // recv side: AllGather
-    // all ranks must participate
+    // 接收 side: 全收集
+    // 所有 ranks must participate
     NCCLCHECKGOTO(ncclCalloc(&allConnects, nranks), ret, cleanup);
     allConnects[rank].isMaster = isMaster;
     memcpy(&(allConnects[rank].connect), &myConnect, sizeof(struct ncclConnect));
     NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, allConnects, sizeof(*allConnects)), ret, cleanup);
-    // consolidate
+    // 合并
     int c = 0;
     for (int r = 0; r < nranks; r++) {
       if (allConnects[r].isMaster) {
@@ -423,10 +453,10 @@ bool ncclTransportCollNetSetup(struct ncclComm* comm, struct ncclTopoGraph* coll
       }
     }
   } else {
-    // send side : copy in connect info received from peer recv master
+    // 发送 side : 拷贝 入 connect 信息 received from 对等端 接收 master
     if (isMaster) memcpy(masterConnects + comm->node, connect, sizeof(struct ncclConnect));
   }
-  // connect
+  // 连接
   if (isMaster) {
     NCCLCHECKGOTO(transportComm->connect(comm, masterConnects, nMasters, comm->node, conn), ret, cleanup);
     struct ncclDevChannelPeer* devRoot;
@@ -449,7 +479,7 @@ cleanup:
 }
 
 ncclResult_t ncclTransportCollNetCheck(struct ncclComm* comm, int collNetSetupFail) {
-  // AllGather collNet setup results
+  // 全收集 collNet 设置 results
   int allGatherFailures[NCCL_MAX_LOCAL_RANKS] = {0};
   allGatherFailures[comm->localRank] = collNetSetupFail;
   NCCLCHECK(bootstrapIntraNodeAllGather(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks,
@@ -468,7 +498,7 @@ ncclResult_t ncclTransportCollNetCheck(struct ncclComm* comm, int collNetSetupFa
 }
 
 ncclResult_t ncclTransportCollNetFree(struct ncclComm* comm) {
-  // Free collNet resources
+  // 释放 collNet resources
   for (int r = 0; r < comm->nChannels; r++) {
     struct ncclChannel* channel = comm->channels + r;
     struct ncclChannelPeer* peer = channel->peers[comm->nRanks];

@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/scheduler.h — 调度器(scheduler)接口声明
+ * ----------------------------------------------------------------------------
+ * 声明 NCCL 的 scheduler：把多个 collective 操作按依赖与资源情况编排成执行序列，
+ * 生成 kernel 启动计划。具体计划生成在 src/scheduler/ 下各 *_sched.cc。
+ */
+
 #ifndef NCCL_SCHEDULER_H_
 #define NCCL_SCHEDULER_H_
 

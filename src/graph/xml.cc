@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/graph/xml.cc — 拓扑/图的 XML 解析与导出
+ * ----------------------------------------------------------------------------
+ * 实现 NCCL 拓扑与算法图的 XML 读写：把 ncclTopoSystem 导出为 XML（NCCL_TOPO_DUMP_FILE），
+ * 或从 NCCL_TOPO_FILE / NCCL_GRAPH_FILE 载入用户自定义的拓扑/图。是“软件自定义
+ * 拓扑”与“自定义 graph”的序列化支撑。
+ */
+
 #include <ctype.h>
 #include <float.h>
 #include "core.h"
@@ -19,7 +27,7 @@
 #endif
 #endif
 
-// Arbitrarily large number for constructing virtual topology string
+// 构造虚拟拓扑字符串时使用的“任意大的数”
 #define NCCL_MAX_XML_DEPTH 1024
 
 /*******************/
@@ -111,7 +119,7 @@ ncclResult_t xmlGetToken(FILE* file, char* name, char* value, char* last) {
   return ncclSuccess;
 }
 
-// Shift the 3-chars string by one char and append c at the end
+// 把 3 字符的字符串整体左移一位，并在末尾追加字符 c
 #define SHIFT_APPEND(s, c) \
   do { \
     s[0] = s[1]; \
@@ -119,15 +127,15 @@ ncclResult_t xmlGetToken(FILE* file, char* name, char* value, char* last) {
     s[2] = c; \
   } while (0)
 ncclResult_t xmlSkipComment(FILE* file, char* start, char next) {
-  // Start from something neutral with \0 at the end.
+  // 从一个中性的、以 \0 结尾的字符串开始。
   char end[4] = "...";
 
-  // Inject all trailing chars from previous reads. We don't need
-  // to check for --> here because there cannot be a > in the name.
+  // 注入上一次读取的所有后续字符。此处无需
+  // 检查 -->，因为名称中不可能出现 > 字符。
   for (int i = 0; i < strlen(start); i++) SHIFT_APPEND(end, start[i]);
   SHIFT_APPEND(end, next);
 
-  // Stop when we find "-->"
+  // 遇到 "-->" 时停止
   while (strcmp(end, "-->") != 0) {
     int c;
     if (fread(&c, 1, 1, file) != 1) {
@@ -149,19 +157,19 @@ ncclResult_t xmlGetNode(FILE* file, struct ncclXmlNode* node) {
     WARN("XML Parse error : expecting '<', got '%c'", c);
     return ncclInternalError;
   }
-  // Read XML element name
+  // 读取 XML 元素名
   NCCLCHECK(xmlGetToken(file, node->name, NULL, &c));
 
-  // Check for comments
+  // 检查是否为注释
   if (strncmp(node->name, "!--", 3) == 0) {
     NCCLCHECK(xmlSkipComment(file, node->name + 3, c));
     return xmlGetNode(file, node);
   }
 
-  // Check for closing tag
+  // 检查是否为闭合标签
   if (node->name[0] == '\0' && c == '/') {
     node->type = NODE_TYPE_CLOSE;
-    // Re-read the name, we got '/' in the first call
+    // 重新读取名称，因为第一次调用时读到了 '/'
     NCCLCHECK(xmlGetToken(file, node->name, NULL, &c));
     if (c != '>') {
       WARN("XML Parse error : unexpected trailing %c in closing tag %s", c, node->name);
@@ -172,13 +180,13 @@ ncclResult_t xmlGetNode(FILE* file, struct ncclXmlNode* node) {
 
   node->type = NODE_TYPE_OPEN;
 
-  // Get Attributes
+  // 获取属性
   int a = 0;
   while (c == ' ') {
     NCCLCHECK(xmlGetToken(file, node->attrs[a].key, node->attrs[a].value, &c));
     if (a == MAX_ATTR_COUNT) {
       INFO(NCCL_GRAPH, "XML Parse : Ignoring extra attributes (max %d)", MAX_ATTR_COUNT);
-      // Actually we need to still consume the extra attributes so we have an extra one.
+      // 实际上我们仍需消费掉多余属性，因此多读一个。
     } else a++;
   }
   node->nAttrs = a;
@@ -210,7 +218,7 @@ ncclResult_t xmlLoadSub(FILE* file, struct ncclXml* xml, struct ncclXmlNode* hea
         WARN("XML Parse : unterminated %s", head->name);
         return ncclInternalError;
       } else {
-        // All done
+        // 全部完成
         return ncclSuccess;
       }
     }
@@ -252,13 +260,13 @@ ncclResult_t xmlLoadSub(FILE* file, struct ncclXml* xml, struct ncclXmlNode* hea
 /* XML Writer */
 /**************/
 
-// exp == 1 -- serialize; exp == 0 -- deserialize
+// exp == 1 表示序列化；exp == 0 表示反序列化
 ncclResult_t ncclTopoConvertXml(struct ncclXml* xml, uintptr_t base, int exp) {
   for (int n = 0; n < xml->maxIndex; n++) {
     struct ncclXmlNode* node = &xml->nodes[n];
 
-    // For "parent", we shift the base by 1 so that we can distinguish actual
-    // NULL pointers from pointers pointing to the first node.
+    // 对 "父"，我们把基址偏移 1，以便区分
+    // 真正的 NULL 指针与指向第一个节点的指针。
     if (node->parent) {
       node->parent =
         (struct ncclXmlNode*)(exp ? ((uintptr_t)node->parent - base + 1) : (base - 1 + (uintptr_t)node->parent));
@@ -478,7 +486,7 @@ ncclResult_t ncclTopoGetXmlFromCpu(struct ncclXmlNode* cpuNode, struct ncclXml* 
       WARN("GetXmlFromCpu : could not find CPU numa ID.");
       return ncclInternalError;
     }
-    // Set affinity using OS-specific implementation
+    // 用操作系统相关的实现来设置亲和性
     unsigned int nodeNumber = (unsigned int)strtoul(numaId, NULL, 0);
     char affinityStr[MAX_STR_LEN];
     NCCLCHECK(ncclOsGetNumaNodeAffinity(nodeNumber, affinityStr, sizeof(affinityStr)));
@@ -487,7 +495,7 @@ ncclResult_t ncclTopoGetXmlFromCpu(struct ncclXmlNode* cpuNode, struct ncclXml* 
 
   NCCLCHECK(xmlGetAttrIndex(cpuNode, "arch", &index));
   if (index == -1) {
-    // Fill CPU type / vendor / model
+    // 填充 CPU 的型号/厂商/模型信息
 #if defined(__PPC__)
     NCCLCHECK(xmlSetAttr(cpuNode, "arch", "ppc64"));
 #elif defined(__aarch64__)
@@ -505,7 +513,7 @@ ncclResult_t ncclTopoGetXmlFromCpu(struct ncclXmlNode* cpuNode, struct ncclXml* 
   if (index == -1) {
     union {
       struct {
-        // CPUID 0 String register order
+        // CPUID 0 指令返回的字符串寄存器顺序
         uint32_t ebx;
         uint32_t edx;
         uint32_t ecx;
@@ -570,9 +578,9 @@ ncclResult_t ncclTopoGetPciNode(struct ncclXml* xml, const char* busId, struct n
   return ncclSuccess;
 }
 
-// Check whether a string is in BDF format or not.
-// BDF (Bus-Device-Function) is "BBBB:BB:DD.F" where B, D and F are hex digits.
-// There can be trailing chars.
+// 检查字符串是否为 BDF 格式。
+// BDF(总线-设备-功能)格式为 "BBBB:BB:DD.F"，其中 B、D、F 为十六进制数字。
+// 后面可能还有尾随字符。
 int isHex(char c) {
   return ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
 }
@@ -592,7 +600,7 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
   struct ncclXmlNode* parent = NULL;
   char* peers = NULL;
 
-  // Fill info, then parent
+  // 先填充信息，再处理父节点
   const char* busId;
   NCCLCHECK(xmlGetAttr(pciNode, "busid", &busId));
   nvmlDevice_t device;
@@ -697,7 +705,7 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
 #endif
     }
   }
-  // Set link width from NVML (shared), sysfs fallback (Linux), or defaults
+  // 从 NVML(共享)获取链路宽度，Linux 下回退到 sysfs，再不行用默认值
   NCCLCHECKGOTO(xmlGetAttrIndex(pciNode, "link_width", &index), ret, exit);
   if (index == -1) {
     if (nvmlDeviceFound) {
@@ -729,7 +737,7 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
 
   NCCLCHECKGOTO(xmlGetAttr(pciNode, "vendor", &vendor), ret, exit);
   if (vendor != NULL && strcmp(vendor, "0x1000") == 0) {
-    // BCM switch, look for P2P connections
+    // 博通(BCM)交换机，查找 P2P 连接
     int nlinks;
     NCCLCHECKGOTO(ncclOsGetBcmLinks(busId, &nlinks, &peers), ret, exit);
     for (int l = 0; l < nlinks; l++) {
@@ -749,12 +757,12 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
   if (parent == NULL) {
 #ifdef NCCL_OS_LINUX
     if (path) {
-      // Save that for later in case next step is a CPU
+      // 暂存该信息，以备下一步是 CPU 时使用
       char numaIdStr[MAX_STR_LEN];
       NCCLCHECKGOTO(ncclOsTopoGetStrFromSys(path, "numa_node", numaIdStr, MAX_STR_LEN), ret, exit);
 
-      // Go up one level in the PCI tree. Rewind two "/" and follow the upper PCI
-      // switch, or stop if we reach a CPU root complex.
+      // 在 PCI 树中上溯一层。回退两个 "/" 并沿上级 PCI
+      // 交换机继续，若抵达 CPU 根复合体则停止。
       int slashCount = 0;
       int parentOffset;
       for (parentOffset = strlen(path) - 1; parentOffset > 0; parentOffset--) {
@@ -763,9 +771,9 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
           path[parentOffset] = '\0';
           int start = parentOffset - 1;
           while (start > 0 && path[start] != '/') start--;
-          // Check whether the parent path looks like "BBBB:BB:DD.F" or not.
+          // 检查父路径是否形如 "BBBB:BB:DD.F"。
           if (checkBDFFormat(path + start + 1) == 0) {
-            // This a CPU root complex. Create a CPU tag and stop there.
+            // 这是一个 CPU 根复合体。创建 CPU 标签并在此停止。
             struct ncclXmlNode* topNode;
             NCCLCHECKGOTO(xmlFindTag(xml, "system", &topNode), ret, exit);
             NCCLCHECKGOTO(xmlGetSubKv(topNode, "cpu", &parent, "numaid", numaIdStr), ret, exit);
@@ -775,7 +783,7 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
               NCCLCHECKGOTO(xmlSetAttr(parent, "numaid", numaIdStr), ret, exit);
             }
           } else if (slashCount == 2) {
-            // Continue on the upper PCI switch
+            // 沿上级 PCI 交换机继续
             for (int i = strlen(path) - 1; i > 0; i--) {
               if (path[i] == '/') {
                 NCCLCHECKGOTO(xmlFindTagKv(xml, "pci", &parent, "busid", path + i + 1), ret, exit);
@@ -799,20 +807,20 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
       char numaIdStr[MAX_STR_LEN] = "0";
       INFO(NCCL_INIT, "ncclTopoGetXmlFromSys: Using NUMA node %s (Windows default)", numaIdStr);
 
-      // Get PCI device parent using Windows Setup API
+      // 用 Windows 设置 API 获取 PCI 设备的父节点
       ncclResult_t result = ncclOsGetPciDeviceParent(device, &parentBusId);
 
       if (result == ncclSuccess && parentBusId != NULL) {
-        // Check if parent is a valid PCI device (has BDF format) or CPU root complex
+        // 检查父节点是否为合法的 PCI 设备(符合 BDF 格式)或 CPU 根复合体
         if (checkBDFFormat(parentBusId) == 1) {
-          // Continue on the upper PCI switch
+          // 沿上级 PCI 交换机继续
           NCCLCHECKGOTO(xmlFindTagKv(xml, "pci", &parent, "busid", parentBusId), ret, exit);
           if (parent == NULL) {
             NCCLCHECKGOTO(xmlAddNode(xml, NULL, "pci", &parent), ret, exit);
             NCCLCHECKGOTO(xmlSetAttr(parent, "busid", parentBusId), ret, exit);
           }
         } else {
-          // This is a CPU root complex. Create a CPU tag and stop there.
+          // 这是 a CPU 根 complex. 创建 a CPU tag 并且 停止 there.
           struct ncclXmlNode* topNode;
           NCCLCHECKGOTO(xmlFindTag(xml, "system", &topNode), ret, exit);
           NCCLCHECKGOTO(xmlGetSubKv(topNode, "cpu", &parent, "numaid", numaIdStr), ret, exit);
@@ -823,7 +831,7 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
           }
         }
       } else {
-        // Failed to get parent - default to CPU root complex
+        // 获取父节点失败——默认当作 CPU 根复合体
         INFO(NCCL_GRAPH, "ncclTopoGetXmlFromSys: could not get PCI parent for %s, defaulting to CPU root complex",
              busId);
         struct ncclXmlNode* topNode;
@@ -840,7 +848,7 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
     }
 #endif
     else {
-      // No information on /sys, attach GPU to unknown CPU
+      // /sys 中无信息，把 GPU 挂到“未知 CPU”上
       NCCLCHECKGOTO(xmlFindTagKv(xml, "cpu", &parent, "numaid", "-1"), ret, exit);
       if (parent == NULL) {
         struct ncclXmlNode* topNode;
@@ -852,9 +860,9 @@ ncclResult_t ncclTopoGetXmlFromSys(struct ncclXmlNode* pciNode, struct ncclXml* 
       }
     }
     pciNode->parent = parent;
-    // Keep PCI sub devices ordered by PCI Bus ID (Issue #820)
-    // Coverity complains about dereferenced parent being NULL
-    // but this can never happen.
+    // 保持 PCI 子设备按 PCI 总线 ID 排序(问题 #820)
+    // Coverity complains about dereferenced 父 being NULL
+    // 但 此 can never happen.
     // coverity[var_deref_op]
     int subIndex = parent->nSubs;
     const char* newBusId;
@@ -930,7 +938,7 @@ ncclResult_t ncclTopoGetXmlFromGpu(struct ncclXmlNode* pciNode, nvmlDevice_t nvm
   struct ncclXmlNode* nvlNode = NULL;
   NCCLCHECK(xmlGetSub(gpuNode, "nvlink", &nvlNode));
   if (nvlNode == NULL) {
-    // NVML NVLink detection
+    // NVML NVLink 检测
     int maxNvLinks = (sm < 60) ? 0 : (sm < 70) ? 4 : (sm < 80) ? 6 : (sm < 90) ? 12 : 18;
 
     if (maxNvLinks > 0 && nvmlDev == NULL) {
@@ -939,21 +947,21 @@ ncclResult_t ncclTopoGetXmlFromGpu(struct ncclXmlNode* pciNode, nvmlDevice_t nvm
     }
 
     for (int l = 0; l < maxNvLinks; ++l) {
-      // Check whether we can use this NVLink for P2P
+      // 检查这条 NVLink 是否可用于 P2P
       unsigned canP2P;
       if ((ncclNvmlDeviceGetNvLinkCapability(nvmlDev, l, NVML_NVLINK_CAP_P2P_SUPPORTED, &canP2P) != ncclSuccess) ||
           !canP2P) {
         continue;
       }
 
-      // Make sure the Nvlink is up. The previous call should have trained the link.
+      // 确保 NVLink 已建立。上一次调用应当已训练好链路。
       nvmlEnableState_t isActive = NVML_FEATURE_DISABLED;
 #if CUDART_VERSION >= 11080
       if (sm >= 90) {
         nvmlFieldValue_t fv;
         fv.fieldId = NVML_FI_DEV_NVLINK_GET_STATE;
         fv.scopeId = l;
-        // fv.value will contain NV_FEATURE_ENABLED or NV_FEATURE_DISABLED
+        // fv.值 将包含 NV_FEATURE_ENABLED 或 NV_FEATURE_DISABLED
         if ((ncclNvmlDeviceGetFieldValues(nvmlDev, 1, &fv) == ncclSuccess) && (fv.nvmlReturn == NVML_SUCCESS))
           isActive = (nvmlEnableState_t)fv.value.uiVal;
       } else /* FALLTHRU to GetNvLinkState if before SM90 */
@@ -963,14 +971,14 @@ ncclResult_t ncclTopoGetXmlFromGpu(struct ncclXmlNode* pciNode, nvmlDevice_t nvm
       }
       if (isActive != NVML_FEATURE_ENABLED) continue;
 
-      // Try to figure out what's on the other side of the NVLink
+      // 尝试判断 NVLink 另一端连接的是什么
       nvmlPciInfo_t remoteProc = {};
       if (ncclNvmlDeviceGetNvLinkRemotePciInfo(nvmlDev, l, &remoteProc) != ncclSuccess) continue;
 
-      // Make a lower case copy of the bus ID for calling ncclDeviceType
-      // PCI system path is in lower case.
-      // NVML may return empty or non-printable busId for non-visible
-      // remote devices (e.g. NVSwitch on Windows). Use sentinel instead.
+      // 为调用 ncclDeviceType 制作 总线 ID 的小写副本
+      // PCI 系统路径都是小写的。
+      // NVML 可能为不可见的远端设备(例如 Windows 上的 NVSwitch)返回空或不可打印的 busId，
+      // 此时改用哨兵值。
       char* p = remoteProc.busId;
       char lowerId[NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];
       if (p[0] == '\0') {
@@ -1031,7 +1039,7 @@ ncclResult_t ncclTopoGetXmlFromGpu(struct ncclXmlNode* pciNode, nvmlDevice_t nvm
     }
   }
 #endif
-  // Fill target classes
+  // 填充目标类别
   for (int s = 0; s < gpuNode->nSubs; s++) {
     struct ncclXmlNode* sub = gpuNode->subs[s];
     if (strcmp(sub->name, "nvlink") != 0) continue;
@@ -1041,7 +1049,7 @@ ncclResult_t ncclTopoGetXmlFromGpu(struct ncclXmlNode* pciNode, nvmlDevice_t nvm
       const char* busId;
       NCCLCHECK(xmlGetAttr(sub, "target", &busId));
       if (strcmp(busId, "fffffff:ffff:ff") == 0) {
-        // Remote NVLink device is not visible inside this VM. Assume NVSwitch.
+        // 远端 NVLink 设备在 VM 内不可见。假定为 NVSwitch。
         INFO(NCCL_GRAPH, "NVLink target %s not visible, assuming NVSwitch", busId);
         NCCLCHECK(xmlSetAttr(sub, "tclass", PCI_NVSWITCH_CLASS));
       } else {
@@ -1073,8 +1081,8 @@ ncclResult_t ncclTopoFillGpu(struct ncclXml* xml, const char* busId, struct nccl
   return ncclSuccess;
 }
 
-// Returns the subsystem name of a path, i.e. the end of the path
-// where sysPath/subsystem points to.
+// 返回路径的子系统名，即路径末尾
+// sysPath/subsystem 所指向的那一段。
 ncclResult_t ncclTopoGetSubsystem(const char* sysPath, char* subSys) {
 #if NCCL_OS_LINUX
   char subSysPath[PATH_MAX];
@@ -1109,7 +1117,7 @@ ncclResult_t ncclTopoFillNet(struct ncclXml* xml, const char* tagName, const cha
     if (pciSysPath) {
       char subSystem[PATH_MAX];
       NCCLCHECK(ncclTopoGetSubsystem(pciSysPath, subSystem));
-      // This is not a PCI device (virtual, usb, ...).
+      // 这不是 PCI 设备(虚拟设备、USB 等)。
       if (strcmp(subSystem, "pci") != 0 && !forceParent) {
         INFO(NCCL_NET | NCCL_GRAPH,
              "Topology detection: network path (name = %s) %s is not a PCI device (%s). Attaching to first CPU",
@@ -1127,13 +1135,13 @@ ncclResult_t ncclTopoFillNet(struct ncclXml* xml, const char* tagName, const cha
       NCCLCHECK(xmlSetAttrIfUnset(parent, "class", "0x02"));
       NCCLCHECK(ncclTopoGetXmlFromSys(parent, xml));
     } else {
-      // Virtual NIC, no PCI device, attach to first CPU
+      // 虚拟网卡，没有 PCI 设备，挂到第一个 CPU 上
       NCCLCHECK(xmlFindTag(xml, "cpu", &parent));
     }
   }
 
   if (parent == NULL) {
-    // No CPU node exists yet, create a default one
+    // 尚不存在 CPU 节点，创建一个默认节点
     struct ncclXmlNode* topNode;
     NCCLCHECK(xmlFindTag(xml, "system", &topNode));
     if (topNode) {
@@ -1153,8 +1161,8 @@ ncclResult_t ncclTopoFillNet(struct ncclXml* xml, const char* tagName, const cha
     NCCLCHECK(xmlAddNode(xml, parent, "nic", &nicNode));
   }
 
-  // We know that this net does not exist yet (we searched for it at the
-  // beginning of this function), so we can add it.
+  // 我们知道这块网卡还不存在(我们在本函数开头已搜索过)，
+  // 因此可以直接添加。
   NCCLCHECK(xmlAddNode(xml, nicNode, tagName, netNode));
   NCCLCHECK(xmlSetAttr(*netNode, "name", netName));
   return ncclSuccess;
@@ -1167,7 +1175,7 @@ ncclResult_t ncclTopoTrimXmlRec(struct ncclXmlNode* node, int* keep) {
     NCCLCHECK(xmlUnsetAttr(node, "keep"));
     *keep = 1;
   } else {
-    // Copy nSubs and subs as they could change as we trim recursively.
+    // 拷贝 nSubs 与 subs，因为在递归裁剪时它们可能变化。
     struct ncclXmlNode** subs = NULL;
     NCCLCHECK(ncclCalloc(&subs, MAX_SUBS));
     int nSubs = node->nSubs;
@@ -1184,7 +1192,7 @@ ncclResult_t ncclTopoTrimXmlRec(struct ncclXmlNode* node, int* keep) {
     }
     free(subs);
     NCCLCHECK(subsRes);
-    // Remove node if it has no children and no keep attribute
+    // 若节点既没有子节点也没有 保留 属性，则移除它
     if (*keep == 0 && // Trim PCI switches, CPUs with no used GPU/NIC under them, or pruned NICs
         (strcmp(node->name, "pci") == 0 || strcmp(node->name, "cpu") == 0 || strcmp(node->name, "nic") == 0 ||
          strcmp(node->name, "net") == 0)) {

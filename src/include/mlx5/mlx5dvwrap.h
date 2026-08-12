@@ -5,6 +5,12 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/mlx5/mlx5dvwrap.h — MLX5 Direct Verbs 函数包装 [第三方/Mellanox]
+ * ----------------------------------------------------------------------------
+ * 对 MLX5 direct verbs 函数做一层包装声明，便于在支持 MLX5DV 构建时调用。
+ */
+
 #ifndef NCCL_MLX5DVWRAP_H_
 #define NCCL_MLX5DVWRAP_H_
 

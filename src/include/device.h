@@ -5,6 +5,16 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/device.h — device(设备/GPU)端公共定义
+ * ----------------------------------------------------------------------------
+ * 本文件定义所有 GPU kernel 共享的“设备端”基础：共享内存布局 ncclShmem、
+ * channel/ring/tree 的 device 视图、kernel 启动常量与宏、warp/thread 映射方式。
+ * 所有 device kernel（all_reduce.h 等）与 device/ 下的原语都包含它。
+ * 注意：这里的 ncclShmem 等结构需与 host 端 struct 布局严格一致（通过
+ * __align__ 与固定偏移保证），是 device/host 协同的关键契约。
+ */
+
 #ifndef NCCL_DEVICE_H_
 #define NCCL_DEVICE_H_
 
@@ -104,7 +114,7 @@ union ncclLLFifoLine {
 #define NCCL_LL_CLEAN_MASK 0x7ffffff8
 #define NCCL_LL_FLAG(a) ((uint32_t)(a))
 #endif
-// Make sure the clean mask will last for at least NCCL_NSTEPS
+// 确保该 clean mask 将持续 至少 NCCL_NSTEPS
 static_assert(NCCL_LL_CLEAN_MASK % NCCL_STEPS == 0, "Invalid NCCL_LL_CLEAN_MASK value");
 
 #define NCCL_LL128_LINESIZE 128
@@ -122,7 +132,7 @@ static_assert(NCCL_LL_CLEAN_MASK % NCCL_STEPS == 0, "Invalid NCCL_LL_CLEAN_MASK 
 #define NCCL_DIRECT_NIC 0x04
 #define NCCL_NVLS_MIN_POLL 0x80
 
-// Number of named barriers supported by CUDA
+// 数量： named barriers 由 ... 支持 CUDA
 #define NCCL_MAX_GROUPS 16
 
 #define NCCL_REGULAR_BUFFER 0x00
@@ -131,7 +141,7 @@ static_assert(NCCL_LL_CLEAN_MASK % NCCL_STEPS == 0, "Invalid NCCL_LL_CLEAN_MASK 
 #define NCCL_NET_REG_BUFFER 0x04
 
 struct ncclConnInfo {
-  // Regular comm mechanism
+  // Regular 通信域 mechanism
   char* buffs[NCCL_NUM_PROTOCOLS]; // Local for recv, remote for send
   void* mhandles[NCCL_NUM_PROTOCOLS];
   uint64_t* tail;     // Local for recv, remote for send
@@ -158,7 +168,7 @@ struct ncclProxyConnector {
   int sameProcess;
   struct ncclProxyConnection* connection;
   ncclResult_t (*proxyProgress)(struct ncclProxyState* proxyState, struct ncclProxyArgs*); // Copied from transport if
-                                                                                           // necessary
+                                                                                           // 必要的
   ncclResult_t (*proxyGinProgress)(struct ncclProxyState* proxyState);
 };
 
@@ -173,22 +183,22 @@ struct ncclConnector {
 };
 
 struct ncclRing {
-  // Shortcuts for userRanks[1] and userRanks[n-1]
+  // Shortcuts for userRanks[1] 并且 userRanks[n-1]
   int prev;
   int next;
 
-  // Maps an internal nccl index to user-specified rank order. This is necessary
-  // since we need to know how the user expects data to be ordered across
-  // devices. Ordered from current device.
+  // Maps an 内部 nccl 索引 to 用户-specified rank order. 此 必要的
+  // 自 需要 知道 如何 用户 expects 数据 to be ordered across
+  // 设备. Ordered from 当前的 设备.
   int* userRanks;
-  // Maps a user rank to an internal ring index.
+  // Maps a 用户 rank to an 内部 环 索引.
   int* rankToIndex;  // inverse lookup of userRanks, setup in setupChannel
   int index; // This rank's index in the ring
 };
 
-// The root of each tree only has one node down (+1 intra-node).
+// The 根 of 每个 树 仅 has one 节点 down (+1 节点内-节点).
 #define NCCL_MAX_TREE_ARITY_TOP 2
-// Nodes inside the binary tree can have to two nodes down (+1 intra-node).
+// 节点 inside the binary 树 can 必须 two 节点 down (+1 节点内-节点).
 #define NCCL_MAX_TREE_ARITY 3
 struct ncclTree {
   int depth;
@@ -203,7 +213,7 @@ struct ncclDirect {
   int nHeads;   // Number of parallel N<->1<->net operations we'll do in parallel; size of up/down
   int headRank; // Index in 0..nHeads-1 I am the head rank of. -1 if I'm not a head rank (no local NIC)
   int shift;    // Shuffling of send/recv for scatter/gather operations, basically localRank%nHeads
-  // The heads[...] are guaranteed to be in rotated order start with self:
+  // The heads[...] are 已保证 to be 入 rotated order 起始 with 自身:
   //   headRank, (headRank+1)%nHeads, (headRank+2)%nHeads, ...
   int heads[NCCL_MAX_DIRECT_ARITY + 1];
   int up[NCCL_MAX_DIRECT_ARITY];
@@ -241,13 +251,13 @@ struct alignas(16) ncclDevWorkP2p {
   void *sendAddr, *recvAddr;
   size_t sendBytes, recvBytes;
   int sendRank, recvRank;
-  // From the part index, nP2pChannels, and channelBase the device code can
-  // calculate which part of the transfer a channel is responsible for.
+  // 从 part 索引, nP2pChannels, 并且 channelBase 该设备 代码 can
+  // 计算 该 part 的 transfer a 通道 is responsible for.
   uint8_t nP2pChannels; // Always equal to comm->p2pnChannels
   uint8_t channelBase; // Channel owning first part.
-  // Zero channels indicates no work in that direction.
+  // Zero 通道 indicates 无 work 入 那个 direction.
   uint8_t nSendChannels, nRecvChannels;
-  // Chunk size stored in 8 bits via u32fp8Encode/Decode.
+  // 块 大小 stored 入 8 位 via u32fp8Encode/解码.
   uint8_t sendChunkSize_u32fp8, recvChunkSize_u32fp8;
 
   uint8_t sendProtoLL:1, recvProtoLL:1;
@@ -256,7 +266,7 @@ struct alignas(16) ncclDevWorkP2p {
   uint8_t profilerEnabled:1;
 };
 
-// Compute the subset of the data transfer corresponding to the given part index.
+// 计算 subset 的 数据 transfer 对应于 the 给定的 part 索引.
 inline __host__ __device__ void ncclP2pPartBounds(int nParts, int part, size_t bytes, size_t* partBeg,
                                                   size_t* partEnd) {
   size_t partBytes = alignUp(divUp(bytes, nParts), 4 << 10);
@@ -269,11 +279,11 @@ inline __host__ __device__ void ncclP2pPartBounds(int nParts, int part, size_t b
 #endif
 }
 
-// implemented in channel.h
+// implemented 入 通道.h
 inline __host__ uint8_t ncclP2pChannelBaseForRound(struct ncclComm* comm, int p2pRound);
 
-// ncclP2pChannelToPart and ncclP2pChannelForPart are inverses. The device code
-// uses ncclP2pChannelToPart to determine which part "this" channel is responsible for.
+// ncclP2pChannelToPart 并且 ncclP2pChannelForPart are inverses. 该设备 代码
+// 使用 ncclP2pChannelToPart to determine 该 part "此" 通道 is responsible for.
 inline __host__ int ncclP2pChannelForPart(int nP2pChannels, int base, int part) {
   return (base + part) & (nP2pChannels - 1);
 }
@@ -282,7 +292,7 @@ inline __device__ int ncclP2pChannelToPart(int nP2pChannels, int base, int chann
 }
 
 struct alignas(16) ncclDevWorkColl {
-  // Running on channels [channelLo..channelHi], hi is inclusive.
+  // Running on 通道 [channelLo..channelHi], hi is inclusive.
   //   nChannels == (channelHi - channelLo) + 1
   uint32_t channelLo:8, channelHi:8;
   uint32_t nWarps:8;
@@ -298,14 +308,14 @@ struct alignas(16) ncclDevWorkColl {
   uintptr_t* sendbuffRmtAddrs;
   uintptr_t* recvbuffRmtAddrs;
   union {
-    // Continuous-byte-distribution scheduling. The lo and hi channels are of
-    // different size than the channels in the middle.
+    // Continuous-字节-distribution scheduling. The lo 并且 hi 通道 are of
+    // 不同 大小 than the 通道 在 ... 中 中间.
     struct {
       size_t countLo, countMid, countHi;
-      // Chunk counts where units are ncclProtoGrainSize(protocol) bytes
+      // 块 counts 何処 units are ncclProtoGrainSize(protocol) 字节
       uint64_t chunkGrainsLo:21, chunkGrainsMid:21, chunkGrainsHi:21;
     } cbd;
-    // Collnet scheduling. All channels divide work evenly.
+    // Collnet scheduling. 所有 通道 divide work evenly.
     struct {
       size_t count; // Total size, not divided per channel.
       uint32_t chunkCount;
@@ -339,8 +349,8 @@ __host__ __device__ inline void ncclCollCbdPart(struct ncclDevWorkColl* work, ui
                                                 Int* chunkCount) {
   int eltPerGrain = ncclProtoGrainSize(proto) / eltSize;
   int nMidChannels = work->channelHi - work->channelLo - 1;
-  // We can assum that nMidChannels<0 implies countMid==0, which let's us assume
-  // that countMid*nMidChannels == 0.
+  // 我们可以 assum 那个 nMidChannels<0 implies countMid==0, 该 让我们 us 假设
+  // 那个 countMid*nMidChannels == 0.
   if (count != nullptr) {
     *count = work->cbd.countLo + work->cbd.countMid * nMidChannels + work->cbd.countHi;
   }
@@ -392,26 +402,26 @@ __host__ __device__ constexpr int ncclMaxDevWorkBatchBytes(int cudaArch = NCCL_C
 struct alignas(16) ncclDevWorkBatch {
   union {
     struct {
-      // nextExtends: should next one be merged into this one.
-      // nextJump=0: end of this channel's batch list
-      // nextJump>0: batches[thisIndex+nextJump] is next batch in this list
+      // nextExtends: should 下一个 one be merged into 此 one.
+      // nextJump=0: 末尾 of 此 通道's batch 列表
+      // nextJump>0: batches[thisIndex+nextJump] is 下一个 batch 入 此 列表
       uint32_t nextJump:14, nextExtends:1;
       uint32_t workType:2, funcId:15;
     };
-    // Unioning bitfields with underlying type hints compiler to emit the best
-    // SASS LD/ST accesses.
+    // Unioning bitfields with underlying 类型 hints 编译器 to emit the 最佳
+    // SASS 的 LD/ST 访问。
     uint32_t flags;
   };
-  // Rolling offset in fifo where this batch's work structs begin
+  // Rolling 偏移 入 fifo 何処 此 batch's work structs 开始
   uint32_t offsetBase;
-  // Set of relative offsets from offsetBase for this channel's subset of the batch:
-  // For each bit index i in offsetMask, find work at fifo offset: offsetBase + i*sizeof(WorkStructType)
+  // 设置 of relative 偏移 from offsetBase for 此 通道's subset 的 batch:
+  // For 每个 位 索引 i 入 offsetMask, 查找 work at fifo 偏移: offsetBase + i*sizeof(WorkStructType)
   uint64_t offsetBitset;
 };
 
 struct ncclDevChannelPeer {
-  // Stripped version of ncclChannelPeer where we only keep the ncclConnInfo
-  // instead of the full ncclConnector.
+  // Stripped 版本 of ncclChannelPeer w这里 仅 保留 the ncclConnInfo
+  // 而非 the 满的 ncclConnector.
   struct ncclConnInfo send[NCCL_MAX_CONNS];
   struct ncclConnInfo recv[NCCL_MAX_CONNS];
 };
@@ -447,14 +457,14 @@ struct ncclKernelComm {
 
   int* collNetDenseToUserRank;
 
-  // Flag to ask NCCL kernels to abort
+  // 标志 to ask NCCL 内核 to 中止
   volatile uint32_t* abortFlag;
 
-  // Channels, device side
+  // 通道, 设备 side
   struct ncclDevChannel* channels /*[MAXCHANNELS]*/;
   int* rankToLocalRank;
 
-  // Profiler counters
+  // 剖析器 counters
   struct ncclDevProfiler* workStarted /*[MAXCHANNELS]*/;
   struct ncclDevProfiler* workCompleted /*[MAXCHANNELS]*/;
 };
@@ -476,12 +486,12 @@ struct alignas(16) ncclDevKernelArgs {
   enum ncclDevWorkStorageType workStorageType;
   uint32_t workMask;
   void* workBuf;
-  // A channel's first batch is at `blockIdx.x`. Use `nextJump` to follow rest of list.
-  // struct ncclDevWorkBatch batches[];
+  // A 通道's 第一 batch is at `blockIdx.x`. 使用 `nextJump` to follow rest of 列表.
+  // 结构体 ncclDevWorkBatch batches[];
 };
 
 __host__ __device__ constexpr int ncclMaxKernelArgsSize(/*int cudaDriver, */ int cudaArch = NCCL_CUDA_ARCH) {
-  // return (cudaArch < 700 || cudaDriver < 12010) ? 4<<10 : (32<<10)-4;
+  // 返回 (cudaArch < 700 || cudaDriver < 12010) ? 4<<10 : (32<<10)-4;
   return 4 << 10;
 }
 
@@ -519,21 +529,21 @@ constexpr int ncclDevMaxChannelsForArgsBytes(size_t argsBytes) {
                                     (argsBytes - sizeof(struct ncclDevKernelArgs)) / sizeof(struct ncclDevWorkBatch));
 }
 
-// Calculate the unroll factor given:
-// * bytePerPack: number of bytes accessed per instruction
-// * insns: max permissible unroll value
-// * bytes: desired number of in-flight bytes per iteration ( = unroll*bytePerPack)
+// 计算 unroll factor 给定的:
+// * bytePerPack: 数量： 字节 accessed 每个 instruction
+// * insns: 最大值 permissible unroll 值
+// * 字节: desired 数量： 入-flight 字节 每个 迭代 ( = unroll*bytePerPack)
 __host__ __device__ constexpr int ncclCalcUnroll(int bytePerPack, int insns, int bytes) {
   return min_constexpr(insns, (bytes + bytePerPack - 1) / bytePerPack);
 }
 
-// Note that all unroll value logic should depend on a given cudaArch argument
-// and not __CUDA_ARCH__ since these need to be host-side executable where the
-// arch value is strictly runtime only. By defaulting to NCCL_CUDA_ARCH, device
-// side code can elide passing the arch for brevity.
+// 注意 所有 unroll 值 logic should depend on a 给定的 cudaArch 参数
+// 并且 不 __CUDA_ARCH__ 自 这些 需要 be 主机-side executable 何処 the
+// arch 值 is strictly runtime 仅. 默认情况下ing to NCCL_CUDA_ARCH, 设备
+// side 代码 can elide passing the arch for brevity.
 
 __host__ __device__ constexpr int ncclCollUnroll(int cudaArch = NCCL_CUDA_ARCH) {
-  // Our collective unroll should move to the same bytes&insns model as NVLS.
+  // Our 集合 unroll should 移动到 相同 字节&insns model as NVLS.
   return cudaArch >= 800 ? (cudaArch / 100 == 12 ? 6 : 8) : 4;
 }
 
@@ -548,13 +558,13 @@ __host__ __device__ constexpr int ncclNvlsUnroll(int bytePerPack, int cudaArch =
   return ncclCalcUnroll(bytePerPack, ncclNvlsUnrollInsns(cudaArch), ncclNvlsUnrollBytes(cudaArch));
 }
 
-// The amount of dynamic shmem per warp
+// The amount of dynamic shmem 每个 线程束
 __host__ __device__ constexpr int ncclShmemScratchWarpSize(int cudaArch = NCCL_CUDA_ARCH) {
   return (max_constexpr<int>(
             /*LL    */ 0,
             /*LL128 */ (NCCL_LL128_SHMEM_ELEMS_PER_THREAD * WARP_SIZE) * sizeof(uint64_t),
             /*SIMPLE*/ (ncclCollUnroll(cudaArch) * WARP_SIZE + 1) * 16,
-            // NVLS needs an extra 16B to read unaligned data.
+            // NVLS needs an 额外的 16B to 读取 unaligned 数据.
             /*NVLS  */ WARP_SIZE * (cudaArch >= 900 ? ncclNvlsUnrollBytes(cudaArch) : 0) + 16) +
           15) &
          -16; // pad to 16 bytes
@@ -564,26 +574,26 @@ __host__ __device__ constexpr int ncclTmaShmemScratchWarpSize(void) {
   return 10 << 10;
 }
 
-// The amount of dynamic shmem per block
+// The amount of dynamic shmem 每个 块
 __host__ __device__ constexpr int ncclShmemDynamicSize(int cudaArch = NCCL_CUDA_ARCH) {
   return cudaArch < 700 ? 0 : ncclShmemScratchWarpSize(cudaArch) * (NCCL_MAX_NTHREADS / WARP_SIZE);
 }
 
-// Host-side table of kernel function pointers.
+// 主机-side table of 内核 函数 指针.
 extern int const ncclDevKernelCount;
 extern void* ncclDevKernelList[/*ncclDevKernelCount*/];
 extern int ncclDevKernelRequirements[/*ncclDevKernelCount*/];
 
-// Table of most specialized kernel function to run given func index.
+// Table of most specialized 内核 函数 to run 给定的 func 索引.
 extern int const ncclDevFuncRowToId[];
 extern void* const ncclDevKernelForFunc[/*funcIndex*/];
 extern bool const ncclDevKernelForFuncIsSpecialized[/*funcIndex*/];
 
-// Launch a one-rank reduction on stream.
+// Launch a one-rank 规约 on 流.
 ncclResult_t ncclLaunchOneRank(void* dst, void const* src, size_t nElts, struct ncclDevRedOpFull redOp,
                                ncclDataType_t type, cudaStream_t stream);
 
-// `ncclNvlsSupported()` needs to be in sync with "func_valid" in "src/device/generate.py"
+// `ncclNvlsSupported()` 需要 be 入 同步 with "func_valid" 入 "源/设备/generate.py"
 inline bool ncclNvlsSupported(int devRedOp, int type) {
   switch (type) {
   case ncclInt32:
@@ -601,7 +611,7 @@ inline bool ncclNvlsSupported(int devRedOp, int type) {
   }
 }
 
-// `ncclDevFuncIndex()` needs to be in sync with "all_functions()" in "src/device/generate.py"
+// `ncclDevFuncIndex()` 需要 be 入 同步 with "all_functions()" 入 "源/设备/generate.py"
 inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto) {
   constexpr int NumTypes = ncclNumTypes;
   int row;

@@ -120,13 +120,13 @@ static ncclResult_t expectedProxyResponseEnqueue(struct ncclProxyState* state, v
   NCCLCHECK(ncclCalloc(&ex, 1));
   ex->opId = opId;
 
-  // Pre-alloc response buffer
+  // 前-alloc 响应 缓冲区
   ex->respBuff = malloc(respSize);
   ex->respSize = respSize;
   ex->res = ncclInternalError;
   ex->done = false;
 
-  // Enqueue
+  // 入队
   struct ncclExpectedProxyResponse* list = state->expectedResponses;
   if (list == NULL) {
     state->expectedResponses = ex;
@@ -228,19 +228,19 @@ static ncclResult_t asyncProxyOpDequeue(struct ncclProxyLocalPeer* peer, ncclPro
 static ncclResult_t allocateArgs(struct ncclProxyProgressState* state, struct ncclProxyArgs** argsptr) {
   struct ncclProxyArgs* elem;
   if (state->pool == NULL) {
-    // Allocate a new pool of elements. Make sure we allocate the memory close
-    // to the network thread
+    // 分配一批新的元素池。注意要把内存分配在离网络线程较近的 NUMA 节点上
+    // (以减少跨节点访存延迟)
     struct ncclProxyPool* newPool;
     NCCLCHECK(ncclCalloc(&newPool, 1));
 
     struct ncclProxyArgs* newElems = newPool->elems;
-    // Chain newly allocated elements
+    // Chain newly 已分配 元素
     for (int i = 0; i < PROXYARGS_ALLOCATE_SIZE; i++) {
       if (i + 1 < PROXYARGS_ALLOCATE_SIZE) newElems[i].next = newElems + i + 1;
     }
-    // Add them all to the pool list
+    // 把它们全部加入空闲池链表
     state->pool = newElems;
-    // Save the pool memory block for later resource release
+    // 保存该内存块指针，便于后续统一释放资源
     newPool->next = state->pools;
     state->pools = newPool;
   }
@@ -251,7 +251,7 @@ static ncclResult_t allocateArgs(struct ncclProxyProgressState* state, struct nc
   return ncclSuccess;
 }
 
-// #define DEBUG_PROXY 1
+// #定义 DEBUG_PROXY 1
 #ifdef DEBUG_PROXY
 #define DEBUG_PROXY_PRINT printf
 #else
@@ -392,7 +392,7 @@ static ncclResult_t ncclProxyOpToArgs(struct ncclProxyOp* op, struct ncclProxyAr
     WARN("Proxy append out of bounds");
     return ncclInternalError;
   }
-  // memset(sub, 0, sizeof(struct ncclProxySubArgs));
+  // memset(sub, 0, sizeof(结构体 ncclProxySubArgs));
   sub->connection = op->connection;
   sub->channelId = op->channelId;
   sub->nsteps = op->nsteps;
@@ -431,7 +431,7 @@ static ncclResult_t ncclProxyOpToArgs(struct ncclProxyOp* op, struct ncclProxyAr
     }
     goto exit;
   }
-  // memset(&args->progress, 0, sizeof(struct ncclProxyArgs)-offsetof(struct ncclProxyArgs, progress));
+  // memset(&args->progress, 0, sizeof(结构体 ncclProxyArgs)-offsetof(结构体 ncclProxyArgs, progress));
   args->done = 0;
   args->opCount = op->opCount;
   args->sliceSteps = op->sliceSteps;
@@ -475,15 +475,15 @@ static ncclResult_t ProxyAppend(struct ncclProxyProgressState* state, struct ncc
       *(args->proxyAppendPtr) = args;
     }
   } else {
-    // Nothing running for that peer. Add to the list
+    // 该对端当前没有正在执行的操作，直接加入链表
     NCCLCHECK(allocateArgs(state, &args));
     NCCLCHECK(ncclProxyOpToArgs(op, args, 0));
     if (state->active == NULL) {
-      // Create the list
+      // 创建链表
       DEBUG_PROXY_PRINT("Insert  %5ld (%d/%5ld) as first element\n", OP_INDEX(args), shared, args->opCount);
       state->active = args;
     } else {
-      // Append element at the end of the list
+      // 把元素追加到链表末尾
       struct ncclProxyArgs* last = state->active;
       while (last->next) last = last->next;
       last->next = args;
@@ -521,8 +521,8 @@ static ncclResult_t ncclLocalOpAppend(struct ncclComm* comm, struct ncclProxyCon
     op = pool->ops + opIndex;
     proxyOps->freeOp = op->next;
   } else {
-    // Read the freeOps value and wait for a value different than -1. Once not -1, read the value with acquire and
-    // reset -1
+    // 读取 freeOps 的值并等待其不等于 -1。一旦不为 -1，就用 获取 语义读取该值，
+    // 重置为 -1
     int freeOp = -1;
     while (freeOp == -1) {
       freeOp = COMPILER_ATOMIC_EXCHANGE(&pool->freeOps[tpLocalRank], -1, std::memory_order_acquire);
@@ -544,9 +544,9 @@ static ncclResult_t ncclLocalOpAppend(struct ncclComm* comm, struct ncclProxyCon
     proxyOps->nextOpsEnd = opIndex;
   }
   if (++proxyOps->count == MAX_OPS_PER_PEER) {
-    // Post what we have so far to free some ops in the pool
-    // Do not post last operations as we could have more coming with the same opCount, and posting
-    // them in different batches would break proxyArgs aggregation with subs.
+    // 先把已有的操作提交出去，以便腾出池中的空闲槽位
+    // 但不要提交最后一批操作：后续可能还有相同 opCount 的操作到来，若分批提交
+    // 会破坏 proxyArgs 与其子操作(subs)的聚合，导致无法合并成一次高效传输。
     uint64_t lastOpCount = pool->ops[proxyOps->nextOpsEnd].opCount;
     int lastOp = -1;
     int toSend = 0;
@@ -563,7 +563,7 @@ static ncclResult_t ncclLocalOpAppend(struct ncclComm* comm, struct ncclProxyCon
            lastOpCount);
       return ncclInternalError;
     }
-    // Cut chain at lastOp
+    // 在 lastOp 处截断链
     int nextOps = proxyOps->nextOps;
     proxyOps->nextOps = pool->ops[lastOp].next;
     pool->ops[lastOp].next = -1;
@@ -588,7 +588,7 @@ static ncclResult_t SaveProxyProfiler(struct ncclComm* comm, struct ncclProxyOp*
   } else {
     op->sendbuff = (uint8_t*)comm->profiler.workStarted;
     op->recvbuff = (uint8_t*)comm->profiler.workCompleted;
-    // Ensure that in graph capturing the proxy workCounter is incremented to keep up with kernel workCounter
+    // 确保在 CUDA 图 捕获模式下，代理 的 workCounter 同步递增，与 内核 的 workCounter 保持一致
     if (comm->planner.persistent) incWorkCounter(comm, op);
     NCCLCHECK(ncclLocalOpAppend(comm, proxyConn, op));
   }
@@ -617,11 +617,11 @@ static ncclResult_t SaveProxy(struct ncclComm* comm, struct ncclChannel* channel
   return ncclSuccess;
 }
 
-// justInquire != nullptr means don't actually do anything, just assertain need of
-// ncclProxySaveOp for this op.
-// enqueue 阶段调用：把一次 proxy 操作（如“把某块数据从本 rank 发到对端”或“接收
-// 对端数据”）登记进 comm 的 proxy 队列。justInquire=true 时只问“要不要做”，不改状态。
-// 这是 AllReduce 的搬运任务从 enqueue 流向 proxy 线程的入口。
+// justInquire 非空表示“只查询不执行”：不做任何实际操作，仅判断该 操作 是否需要
+// 调用 ncclProxySaveOp。
+// enqueue 阶段调用：把一次 代理 操作（如“把某块数据从本 rank 发到对端”或“接收
+// 对端数据”）登记进 通信域 的 代理 队列。justInquire=真 时只问“要不要做”，不改状态。
+// 这是 全规约 的搬运任务从 enqueue 流向 代理 线程的入口。
 ncclResult_t ncclProxySaveOp(struct ncclComm* comm, struct ncclProxyOp* op, bool* justInquire) {
   struct ncclChannel* channel = &comm->channels[op->channelId];
   bool needProxy = false;
@@ -653,7 +653,7 @@ ncclResult_t ncclProxySaveOp(struct ncclComm* comm, struct ncclProxyOp* op, bool
   case ncclPatternTreeUpDown:
     {
       if (op->pattern != ncclPatternTreeDown) {
-        // Tree up
+        // 树 up
         struct ncclTree* tree = &channel->tree;
         for (int i = 0; i < NCCL_MAX_TREE_ARITY; i++) {
           NCCLCHECK(SaveProxy(comm, channel, proxyRecv, tree->down[i], op, 0, justInquire));
@@ -661,7 +661,7 @@ ncclResult_t ncclProxySaveOp(struct ncclComm* comm, struct ncclProxyOp* op, bool
         NCCLCHECK(SaveProxy(comm, channel, proxySend, tree->up, op, 0, justInquire));
       }
       if (op->pattern != ncclPatternTreeUp) {
-        // Tree down
+        // 树 down
         struct ncclTree* tree = &channel->tree;
         for (int i = 0; i < NCCL_MAX_TREE_ARITY; i++) {
           NCCLCHECK(SaveProxy(comm, channel, proxySend, tree->down[i], op, 0, justInquire));
@@ -700,7 +700,7 @@ ncclResult_t ncclProxySaveOp(struct ncclComm* comm, struct ncclProxyOp* op, bool
     break;
   case ncclPatternPatUp:
     {
-      // Run full algorithm to count the number of steps for each peer.
+      // 完整跑一遍算法，统计每个对端各需要多少步(步骤)
       ncclResult_t result = ncclSuccess;
       const ssize_t size = op->nbytes / comm->nRanks;
       const int rank = comm->rank, nranks = comm->nRanks;
@@ -736,7 +736,7 @@ ncclResult_t ncclProxySaveOp(struct ncclComm* comm, struct ncclProxyOp* op, bool
     break;
   case ncclPatternPatDown:
     {
-      // Run full algorithm to count the number of steps for each peer.
+      // 完整跑一遍算法，统计每个对端各需要多少步(步骤)
       ncclResult_t result = ncclSuccess;
       const ssize_t size = op->nbytes / comm->nRanks;
       const int rank = comm->rank, nranks = comm->nRanks;
@@ -795,7 +795,7 @@ static ncclResult_t removeOp(struct ncclProxyProgressState* state, struct ncclPr
   DEBUG_PROXY_PRINT("Remove %ld -> %ld -> %ld\n", OP_INDEX(*prevOpPtr), OP_INDEX(freeOp), OP_INDEX(next));
   *opPtr = next;
   if (freeOp->nextPeer) {
-    // replace op by nextPeer
+    // replace 操作 by nextPeer
     struct ncclProxyArgs* nextPeer = freeOp->nextPeer;
     if (*prevOpPtr) {
       (*prevOpPtr)->next = nextPeer;
@@ -821,16 +821,30 @@ static ncclResult_t removeOp(struct ncclProxyProgressState* state, struct ncclPr
   return ncclSuccess;
 }
 
+/*
+ * progressOps —— 遍历当前活跃的 proxy 操作链表，逐个“推进一小步”
+ * ----------------------------------------------------------------------------
+ * 这是 proxy 进度引擎的心脏。它采用**非阻塞轮询**模型：
+ *   对链表中每个 op 调用一次 op->progress()，该回调只做“当前能立刻做完的部分”
+ *   (比如检查网络请求是否完成、发起下一个 slice 的传输)，然后立即返回，
+ *   绝不阻塞等待。这样单个线程就能同时驱动成百上千个并发传输。
+ *
+ * 参数 idle 是输出：只有当**所有** op 本轮都没干成事时才保持为 1，
+ *   调用方据此判断是否可以让出 CPU(避免空转烧满一个核)。
+ */
 static ncclResult_t progressOps(struct ncclProxyState* proxyState, struct ncclProxyProgressState* state,
                                 struct ncclProxyArgs* opStart, int* idle) {
-  struct ncclProxyArgs* prevOp = NULL;
+  struct ncclProxyArgs* prevOp = NULL;   // 记录前驱节点，便于从单链表中摘除当前节点
   struct ncclProxyArgs* op = opStart;
   ncclResult_t status = ncclSuccess;
   while (op) {
     if (op->state == ncclProxyOpNone) return ncclInternalError;
     TIME_START(0);
     TIME_START(1);
+    // 调用该 操作 对应传输层(网络/p2p/shm 等)注册的进度回调，推进一步状态机
     ncclResult_t ret = op->progress(proxyState, op);
+    // 下面两组计时是互斥的：根据本次是否真的推进了工作，
+    // 分别把耗时记到“空转计时器(1)”或“有效工作计时器(0)”上，另一个则取消。
     if (op->idle) {
       TIME_STOP(1);
       TIME_CANCEL(0);
@@ -838,14 +852,18 @@ static ncclResult_t progressOps(struct ncclProxyState* proxyState, struct ncclPr
       TIME_CANCEL(1);
       TIME_STOP(0);
     }
+    // 用按位与累积：任意一个 操作 有进展，整体就不算 空闲
     *idle &= op->idle;
     if (op->state == ncclProxyOpNone || ret != ncclSuccess) {
-      // track first error that occured
+      // 操作 已彻底完成(状态归零)或出错 -> 从活跃链表中移除
+      // 记录第一个发生的错误：后续即使还有错误也不覆盖，保证返回最初的根因
       if (ret != ncclSuccess && status == ncclSuccess) status = ret;
       TIME_START(2);
+      // removeOp 内部会把 操作 指向下一个节点，因此这里不需要再手动前进
       NCCLCHECK(removeOp(state, &op, &prevOp));
       TIME_STOP(2);
     } else {
+      // 操作 尚未完成，保留在链表中，下一轮继续推进
       prevOp = op;
       op = op->next;
     }
@@ -863,14 +881,19 @@ static ncclResult_t ncclProxyGetPostedOps(struct ncclProxyState* proxyState, int
   if (state->nextOps != -1) goto process_nextops;
 
   void* eHandle;
-  // If we have ops to progress, no need to block waiting for something to arrive or even wait for the lock
-  // to be available. Exit, continue progress, and come back later.
+  // 关键的“不阻塞”策略：如果手头已经有活跃的 操作 要推进，就绝不为了取新任务而阻塞。
+  // 既不等待新任务到达，甚至连锁都只用 try_lock 尝试一下——拿不到就直接返回，
+  // 先去推进已有的传输，下一轮再来取。这样保证已在途的数据传输不会被取任务耽误。
   {
-    std::unique_lock<std::mutex> lock(pool->mutex, std::defer_lock);
+    std::unique_lock<std::mutex> lock(pool->mutex, std::defer_lock);  // defer_lock：先不加锁
+    // 有活可干 且 (没有新任务 或 抢锁失败) -> 立刻返回去干活
     if (state->active != NULL && (pool->nextOps == -1 || !lock.try_lock())) return ncclSuccess;
 
     if (state->active == NULL) {
+      // 完全没活干了，这时才值得阻塞等待，避免空转浪费 CPU
       lock.lock();
+      // 再次检查 nextOps：加锁前的判断可能已经过期(典型的双重检查模式)，
+      // 同时检查 停止 标志，确保销毁流程能够唤醒并退出，不会永久睡死。
       if (pool->nextOps == -1 && !state->stop) {
         ncclProfilerStartProxyCtrlEvent(proxyState->profilerContext, &eHandle);
         ncclProfilerRecordProxyCtrlEventState(eHandle, 0, ncclProfilerProxyCtrlSleep);
@@ -907,7 +930,7 @@ process_nextops:
     (*added)++;
     int lastOpIndex = opIndex;
     opIndex = peerOp->next;
-    // Return op to peer pool
+    // 把该操作归还给对端的空闲池
     if (freeOp[peer] == -1) {
       freeOpEnd[peer] = lastOpIndex;
     } else {
@@ -920,13 +943,13 @@ process_nextops:
   for (int i = 0; i < proxyState->tpLocalnRanks; i++) {
     if (freeOp[i] == -1) continue;
     int oldFree = -1, newFree = freeOp[i];
-    // prepend the ops freeOp[i]-freeOpEnd[i] in front of the pool->freeOps[i] op
+    // 把 freeOp[i] 到 freeOpEnd[i] 这一段操作，整体插到 池->freeOps[i] 链表的头部
     oldFree = COMPILER_ATOMIC_LOAD(&pool->freeOps[i], std::memory_order_acquire);
     do {
-      // Coverity gets confused by the complex code structure here.  The previous "for" loop ensures that
-      // freeOpEnd[i] is initialized so long as freeOp[i] is initialized (is not -1).  In the current loop we filter
-      // out uninitialized freeOp[i], hence ensuring that freeOpEnd[i] is also initialized.
-      // coverity[uninit_use:FALSE]
+      // 此处代码结构较复杂，Coverity 静态检查会产生误判。上面的 for 循环已保证：
+      // 只要 freeOp[i] 被初始化过(不等于 -1)，freeOpEnd[i] 就一定也被初始化了。当前循环又过滤掉了
+      // 未初始化的 freeOp[i]，因此 freeOpEnd[i] 必然是有效的。
+      // coverity[uninit_use:假]
       pool->ops[freeOpEnd[i]].next = oldFree;
     } while (!COMPILER_ATOMIC_COMPARE_EXCHANGE(&pool->freeOps[i], &oldFree, newFree,
                                                /*success=*/std::memory_order_release,
@@ -944,7 +967,7 @@ void ncclDumpProxyState(int signal) {
   dumpProxyState(ncclLastProxyState);
 }
 
-// Set to SIGUSR1 or SIGUSR2 to help debug proxy state during hangs
+// 可设为 SIGUSR1 或 SIGUSR2：程序挂死时发送该信号可打印 代理 内部状态，便于排查
 NCCL_PARAM(ProxyDumpSignal, "PROXY_DUMP_SIGNAL", -1);
 NCCL_PARAM(ProgressAppendOpFreq, "PROGRESS_APPENDOP_FREQ", 8);
 
@@ -958,7 +981,7 @@ void proxyCpusetOnceFunc() {
       INFO(NCCL_ENV, "failed to decode NCCL_PROXY_CPUSET=%s. Ignoring", setEnv);
       goto fail;
     }
-    // debug info
+    // 调试 信息
     char msg[1024] = {0};
     ncclAffinity currSet;
     ncclOsGetAffinity(&currSet);
@@ -968,18 +991,18 @@ void proxyCpusetOnceFunc() {
     INFO(NCCL_ENV, "NCCL_PROXY_CPUSET = %s: %s", setEnv, msg);
     return;
   }
-  // if we arrive here we have either no env or we have failed to decode it
+  // 执行到这里说明：要么没有设置该环境变量，要么解析失败
 fail:
   ncclOsCpuZero(proxyCpuset);
   return;
 }
 
-// proxy 的“进度推进”线程主体：循环从共享 opsPool 取待办 op，逐个推进
+// 代理 的“进度推进”线程主体：循环从共享 opsPool 取待办 操作，逐个推进
 // （调用具体传输层的 *ProxyProgress，如 p2pSendProxyProgress）把数据真正搬完，
-// 并更新完成进度，直到线程被要求退出。它是 GPU kernel 之外真正干“搬运”的 CPU 线程。
+// 并更新完成进度，直到线程被要求退出。它是 GPU 内核 之外真正干“搬运”的 CPU 线程。
 void* ncclProxyProgress(void* proxyState_) {
   struct ncclProxyState* proxyState = (struct ncclProxyState*)proxyState_;
-  // This thread is created by proxyService, therefore setting the affinity is not needed.
+  // 本线程由 proxyService 线程创建，会自动继承其 CPU 亲和性设置，因此这里无需重复设置。
   INFO(NCCL_INIT, "[Proxy Progress] Device %d CPU core %d", proxyState->cudaDev, ncclOsGetCpu());
   if (!CUDASUCCESS(cudaSetDevice(proxyState->cudaDev))) {
     WARN("[Proxy Progress] Failed to set CUDA device %d", proxyState->cudaDev);
@@ -995,20 +1018,26 @@ void* ncclProxyProgress(void* proxyState_) {
   nvtxNameOsThreadA(ncclOsGetTid(), threadName);
 
   int lastIdle = 0;
-  /* Too frequent call of ncclProxyGetPostedOps() will result in perf regression for small message
-   * communication. proxyOpAppendCounter is a counter that helps us decide if we need to append proxy ops.
-   * After each progress, proxyOpAppendCounter will increase by 1 and compare with environment variable
-   * ncclParamProgressAppendOpFreq(). If they are equal, we will append proxy ops. This will decrease the
-   * frequency of calling ncclProxyGetPostedOps() and reduce the perf impact. */
+  /* 频率控制：过于频繁地调用 ncclProxyGetPostedOps() 会导致小消息通信的性能下降
+   * (因为每次调用都要争抢互斥锁，锁竞争的开销相对小消息的传输时间占比过高)。
+   * proxyOpAppendCounter 就是用来控制取任务频率的计数器：每完成一轮 progress 就加 1，
+   * 只有当它累加到环境变量 ncclParamProgressAppendOpFreq() 指定的值时，才真正去取一次新任务。
+   * 这样就降低了 ncclProxyGetPostedOps() 的调用频率，减小了对性能的影响。
+   * 注意：当线程空闲(idle)或完全没有活跃任务时会无视该计数器立即取任务，
+   * 因此不会造成新任务长时间得不到处理。 */
   int proxyOpAppendCounter = 0;
   do {
+    // 每轮先假定空闲，由 progressOps 内部按实际情况清零
     int idle = 1;
+    // 第一步：推进所有已在途的传输任务
     ncclResult_t ret = progressOps(proxyState, state, state->active, &idle);
     if (ret != ncclSuccess) {
       COMPILER_ATOMIC_STORE(&proxyState->asyncResult, ret, std::memory_order_release);
       INFO_LOC(NCCL_ALL, "-> %d [Progress Thread]", ret);
       break;
     }
+    // 仅在“忙<->闲”状态发生翻转的瞬间记录一次 剖析器 事件。
+    // 只记录边沿而非每轮都记，是为了把性能分析的开销降到最低。
     if ((lastIdle == 0 && idle == 1) || (lastIdle == 1 && idle == 0)) {
       void* eHandle;
       ncclProfilerStartProxyCtrlEvent(proxyState->profilerContext, &eHandle);
@@ -1016,6 +1045,10 @@ void* ncclProxyProgress(void* proxyState_) {
       if (lastIdle == 1 && idle == 0) ncclProfilerRecordProxyCtrlEventState(eHandle, 0, ncclProfilerProxyCtrlActive);
       ncclProfilerStopProxyCtrlEvent(eHandle);
     }
+    // 第二步：在以下三种时机之一去取新任务——
+    //   1) 空闲：本轮啥也没干成，闲着也是闲着，去看看有没有新任务
+    //   2) !状态->活跃的：手上一个任务都没有，必须去取，否则线程无事可做
+    //   3) 计数器达到阈值：即使一直很忙，也要周期性地取一次，防止新任务饿死
     if (idle || !state->active || (++proxyOpAppendCounter == ncclParamProgressAppendOpFreq())) {
       int added = 0;
       proxyOpAppendCounter = 0;
@@ -1041,7 +1074,7 @@ ncclResult_t ncclProxyStart(struct ncclComm* comm) {
   struct ncclProxyOps* proxyOps = comm->proxyState->proxyOps;
   if (proxyOps == NULL) return ncclSuccess;
   TIME_START(1);
-  // Use peerArraySize which tracks actual allocated size.
+  // 使用 peerArraySize 该 tracks actual 已分配 大小.
   int peerArraySize = comm->proxyState->peerArraySize;
   for (int r = 0; r < peerArraySize; r++) {
     struct ncclProxyOps* ops = proxyOps + r;
@@ -1067,7 +1100,7 @@ static ncclResult_t ncclProxyProgressCreate(struct ncclProxyState* proxyState) {
 ncclResult_t ncclProxyProgressDestroy(struct ncclProxyState* proxyState) {
   struct ncclProxyProgressState* state = &proxyState->progressState;
 
-  // Request the proxy to stop and then wake it
+  // 请求 代理 停止，然后唤醒它(使其从条件变量的等待中退出)
   if (state->opsPool) {
     {
       std::lock_guard<std::mutex> lock(state->opsPool->mutex);
@@ -1081,7 +1114,7 @@ ncclResult_t ncclProxyProgressDestroy(struct ncclProxyState* proxyState) {
     state->thread.join();
   }
 
-  // Free off any memory allocated for the proxy arg pools
+  // 释放为 代理 参数池分配的所有内存
   while (state->pools != NULL) {
     struct ncclProxyPool* next = state->pools->next;
     free(state->pools);
@@ -1185,7 +1218,7 @@ ncclResult_t ncclProxyConnect(struct ncclComm* comm, int transport, int send, in
                             (comm->peerInfo[proxyRank].pidHash == comm->peerInfo[comm->rank].pidHash)) ?
                              1 :
                              0;
-  // Keep one connection per top-parent rank
+  // 保留 one 连接 每个 顶-父 rank
   proxyConn->connection = NULL;
   proxyConn->tpRank = tpProxyRank;
   proxyConn->rank = proxyRank;
@@ -1223,12 +1256,12 @@ ncclResult_t ncclProxyConnect(struct ncclComm* comm, int transport, int send, in
   req.sameProcess = proxyConn->sameProcess;
 
   struct ncclProxyInitResp resp = {0};
-  // This usually sends proxyConn->connection to identify which connection this is.
-  // However, this is part of the response and therefore is ignored
+  // 通常这里会发送 proxyConn->连接 以标识具体是哪条连接。
+  // 但由于该字段属于响应内容的一部分，此处将其忽略
   NCCLCHECK(ncclProxyCallBlocking(comm, proxyConn, ncclProxyMsgInit, &req, sizeof(req), &resp, sizeof(resp)));
   proxyConn->connection = resp.connection;
 
-  // If we need proxy progress, map progress ops
+  // 如果需要 代理 推进进度，则映射进度操作(progress ops)
   struct ncclTransportComm* tcomm = send ? &ncclTransports[transport]->send : &ncclTransports[transport]->recv;
   if (tcomm->proxyProgress) {
 #if defined(NCCL_OS_LINUX)
@@ -1250,7 +1283,7 @@ ncclResult_t ncclProxyConnect(struct ncclComm* comm, int transport, int send, in
   return ncclSuccess;
 }
 
-// UDS support
+// UDS 支持
 ncclResult_t ncclProxyCallBlockingUDS(struct ncclComm* comm, struct ncclProxyConnector* proxyConn, int type,
                                       void* reqBuff, int reqSize, void* respBuff, int respSize, int* reqFd,
                                       int* respFd) {
@@ -1267,13 +1300,13 @@ ncclResult_t ncclProxyCallBlockingUDS(struct ncclComm* comm, struct ncclProxyCon
   INFO(NCCL_PROXY, "ProxyCall UDS comm %p rank %d tpRank %d(%lx) reqSize %d respSize %d respFd %p opId %p", comm, rank,
        proxyConn->tpRank, pidHash, reqSize, respSize, respFd, opId);
 
-  // cuMem: Create a UDS socket to receive the response
+  // cuMem 模式：创建 UDS(Unix 域套接字)以接收响应
   NCCLCHECK(ncclIpcSocketInit(&ipcSock, rank, (uint64_t)opId, comm->abortFlag));
 
   if (reqFd) {
     reqFdtmp = *reqFd;
   } else {
-    // give a dummy fd for the other side of UDS socket
+    // 为 UDS 套接字的另一端提供一个占位用的 fd
     NCCLCHECK(ncclIpcSocketGetFd(&ipcSock, &reqFdtmp));
   }
 
@@ -1302,12 +1335,12 @@ error:
   return res;
 }
 
-// cuMem API support
-// The request/response is sent out-of-band using ncclIpcSocket for this specific command
+// 是否支持 cuMem(CUDA 虚拟内存管理)API
+// 该特定命令的请求/响应通过 ncclIpcSocket 以带外(出-of-band)方式传输
 ncclResult_t ncclProxyClientGetFdBlocking(struct ncclComm* comm, int proxyRank, void* handle, int* convertedFd) {
   ncclResult_t ret = ncclSuccess;
 
-  // Request the allocation of a UDS fd for the handle
+  // 请求为该句柄分配一个 UDS 文件描述符
   if (comm->gproxyConn[proxyRank].initialized == false) {
     NCCLCHECKGOTO(ncclProxyConnect(comm, TRANSPORT_P2P, 1, proxyRank, &comm->gproxyConn[proxyRank]), ret, error);
   }
@@ -1315,7 +1348,7 @@ ncclResult_t ncclProxyClientGetFdBlocking(struct ncclComm* comm, int proxyRank, 
                                          sizeof(CUmemGenericAllocationHandle), NULL, 0, NULL, convertedFd),
                 ret, error);
 
-  // We have now received the converted fd over UDS
+  // 至此已通过 UDS 收到转换后的 fd
   INFO(NCCL_PROXY, "UDS: ClientGetFd handle 0x%lx tpRank %d returned fd %d sameProcess %d", *(uint64_t*)handle,
        comm->topParentRanks[proxyRank], *convertedFd, comm->gproxyConn[proxyRank].sameProcess);
 
@@ -1334,7 +1367,7 @@ ncclResult_t ncclProxyClientBatchQueryFdBlocking(struct ncclComm* comm, struct n
     NCCLCHECKGOTO(ncclProxyCallBlockingUDS(comm, proxyConn, ncclProxyMsgQueryFd, NULL, 0, (void*)&rmtFds[segment],
                                            sizeof(int), &localFds[segment], NULL),
                   ret, fail);
-    // We have now received the converted fd for a segment over UDS
+    // 至此已通过 UDS 收到某个段(段)转换后的 fd
     INFO(NCCL_PROXY, "UDS: ClientQueryFdBatch localFd %d tpRank %d remote fd %d sameProcess %d segment %d",
          localFds[segment], proxyConn->tpRank, rmtFds[segment], proxyConn->sameProcess, segment);
   }
@@ -1351,7 +1384,7 @@ ncclResult_t ncclProxyClientQueryFdBlocking(struct ncclComm* comm, struct ncclPr
                                          &localFd, NULL),
                 ret, fail);
 exit:
-  // We have now received the converted fd over UDS
+  // 至此已通过 UDS 收到转换后的 fd
   INFO(NCCL_PROXY, "UDS: ClientQueryFd localFd %d tpRank %d remote fd %d sameProcess %d", localFd, proxyConn->tpRank,
        *rmtFd, proxyConn->sameProcess);
   return ret;
@@ -1378,10 +1411,10 @@ ncclResult_t ncclProxyCallAsync(struct ncclComm* comm, struct ncclProxyConnector
   NCCLCHECKGOTO(ncclSocketSend(sock, &respSize, sizeof(int)), ret, error);
   if (reqSize) NCCLCHECKGOTO(ncclSocketSend(sock, reqBuff, reqSize), ret, error);
 
-  // Send opId to proxy
+  // 把 opId 发送给 代理
   NCCLCHECKGOTO(ncclSocketSend(sock, &opId, sizeof(opId)), ret, error);
 
-  // Add proxyOp to expected response queue
+  // 把该 proxyOp 加入“待响应队列”
   NCCLCHECK(expectedProxyResponseEnqueue(sharedProxyState, opId, respSize));
 
   return ncclSuccess;
@@ -1392,18 +1425,18 @@ error:
 ncclResult_t ncclPollProxyResponse(struct ncclComm* comm, struct ncclProxyConnector* proxyConn, void* respBuff,
                                    void* opId) {
   struct ncclProxyState* sharedProxyState = comm->proxyState;
-  // Receive the connection pointer from the Proxy
+  // 从 代理 接收连接指针
   if (COMPILER_ATOMIC_LOAD(comm->abortFlag, std::memory_order_acquire)) {
     WARN("Comm %p is in abort state", comm);
     return ncclInternalError;
   }
   if (sharedProxyState->peerSocks == NULL) return ncclInternalError;
 
-  // Check response queue
+  // 检查 响应 队列
   int found = 0;
   ncclResult_t res = expectedProxyResponseDequeue(sharedProxyState, opId, respBuff, &found);
   if (found == 0) {
-    // Attempt to read in a new response header from the proxy thread
+    // 尝试从 代理 线程读取一个新的响应头
     struct ncclSocket* sock = sharedProxyState->peerSocks + proxyConn->tpLocalRank;
     ncclProxyRpcResponseHeader resp = {0};
     int offset = 0;
@@ -1414,17 +1447,17 @@ ncclResult_t ncclPollProxyResponse(struct ncclComm* comm, struct ncclProxyConnec
 
     if (offset == 0) {
       return ncclInProgress;
-      // If we've returned a partial response, block to receive the rest of it
+      // 如果只收到了部分响应，则阻塞等待接收剩余部分
     } else if (offset < sizeof(resp)) {
       while (offset < sizeof(resp)) NCCLCHECK(ncclSocketProgress(NCCL_SOCKET_RECV, sock, &resp, sizeof(resp), &offset));
     }
 
     INFO(NCCL_PROXY, "ncclPollProxyResponse Received new opId=%p", resp.opId);
 
-    // If there's a respSize to recv
+    // 如果还有 respSize 字节的响应体需要接收
     if (resp.respSize > 0) {
       if (resp.opId != opId) {
-        // Unexpected response, need to buffer the socket data
+        // 收到非预期的响应，需要先把 套接字 数据缓存起来
         respBuff = malloc(resp.respSize);
       }
       assert(respBuff != NULL);
@@ -1437,7 +1470,7 @@ ncclResult_t ncclPollProxyResponse(struct ncclComm* comm, struct ncclProxyConnec
       return resp.res;
     } else {
       INFO(NCCL_PROXY, "Queuing opId=%p respBuff=%p respSize=%d", resp.opId, respBuff, resp.respSize);
-      // Store the result and mark response as completed
+      // 保存结果并把该响应标记为已完成
       NCCLCHECK(expectedProxyResponseStore(sharedProxyState, resp.opId, respBuff, resp.respSize, resp.res));
       return ncclInProgress;
     }
@@ -1450,7 +1483,7 @@ ncclResult_t ncclPollProxyResponse(struct ncclComm* comm, struct ncclProxyConnec
 
 ncclResult_t ncclProxyCallBlocking(struct ncclComm* comm, struct ncclProxyConnector* proxyConn, int type, void* reqBuff,
                                    int reqSize, void* respBuff, int respSize) {
-  // Alloc some memory to act as a handle
+  // 分配一小块内存充当句柄使用
   ncclResult_t res = ncclSuccess;
   void* opId = malloc(1);
 
@@ -1482,7 +1515,7 @@ static ncclResult_t proxyProgressInit(struct ncclProxyState* proxyState) {
 #endif
     NCCLCHECK(ncclShmOpen(shmPath, sizeof(shmPath), size, (void**)&pool, NULL, proxyState->tpLocalnRanks,
                           &state->handle));
-    // Init pool
+    // 初始化 池
     pool->nextOps = -1;
 
     for (int r = 0; r < proxyState->tpLocalnRanks; r++) {
@@ -1506,7 +1539,7 @@ static ncclResult_t proxyProgressInit(struct ncclProxyState* proxyState) {
     state->opsPoolShmSuffix[suffixLen] = '\0';
 #endif
 
-    // All ops structures are created, we can start the progress thread
+    // 所有操作结构体都已创建完毕，现在可以启动进度推进线程了
     NCCLCHECK(ncclProxyProgressCreate(proxyState));
   }
   return ncclSuccess;
@@ -1549,7 +1582,7 @@ static ncclResult_t proxyConnInit(struct ncclProxyLocalPeer* peer, struct ncclPr
 
   (*connection)->tcomm = (*connection)->send ? &ncclTransports[(*connection)->transport]->send :
                                                &ncclTransports[(*connection)->transport]->recv;
-  // If we need proxy progress, let's allocate ops and start the thread
+  // 如果需要 代理 推进进度，则分配操作结构体并启动线程
   if ((*connection)->tcomm->proxyProgress) {
     NCCLCHECK(proxyProgressInit(proxyState));
     struct ncclProxyProgressState* state = &proxyState->progressState;
@@ -1577,10 +1610,10 @@ exit:
 #endif
 }
 
-// cuMem API support
+// 是否支持 cuMem(CUDA 虚拟内存管理)API
 static ncclResult_t proxyGetFd(struct ncclProxyState* proxyState, int rank, void* opId, uint64_t handle) {
 #if CUDART_VERSION >= 11030
-  // cuMem API support
+  // 是否支持 cuMem(CUDA 虚拟内存管理)API
   ncclResult_t ret = ncclSuccess;
   struct ncclIpcSocket ipcSock = {0};
   uint64_t hash = (uint64_t)opId;
@@ -1590,12 +1623,12 @@ static ncclResult_t proxyGetFd(struct ncclProxyState* proxyState, int rank, void
   int fd = -1;
 
   CUCHECK(cuMemExportToShareableHandle(&fd, handle, type, 0));
-  // Send back the converted fd using UDS
+  // 发送 后 the converted fd 使用 UDS
   NCCLCHECKGOTO(ncclIpcSocketInit(&ipcSock, proxyState->tpRank, hash ^ 1, proxyState->abortFlag), ret, error);
   NCCLCHECKGOTO(ncclIpcSocketSendFd(&ipcSock, fd, rank, hash), ret, error);
 error:
   NCCLCHECK(ncclIpcSocketClose(&ipcSock));
-  // We can now safely close the exported fd
+  // 我们可以 now safely close the exported fd
   SYSCHECK(close(fd), "close");
   return ret;
 #else
@@ -1660,11 +1693,11 @@ static ncclResult_t proxyProgressAsync(struct ncclProxyAsyncOp* op, struct ncclP
 
     ncclProxyRpcResponseHeader resp = {op->opId, res, op->respSize};
 
-    // Send the opId for referencing async operation
+    // 发送 opId for referencing async 操作
     NCCLCHECK(ncclSocketSend(op->connection->sock, &resp, sizeof(resp)));
 
     if (op->respSize) {
-      // Send the response
+      // 发送 响应
       NCCLCHECK(ncclSocketSend(op->connection->sock, op->respBuff, op->respSize));
     }
 
@@ -1697,7 +1730,7 @@ static ncclResult_t proxyServiceInitOp(int type, struct ncclProxyLocalPeer* peer
     NCCLCHECKGOTO(ncclSocketRecv(sock, asyncOp->reqBuff, asyncOp->reqSize), ret, fail);
   }
 
-  // Store opId for completion response
+  // 存储 opId for 完成 响应
   NCCLCHECKGOTO(ncclSocketRecv(sock, &asyncOp->opId, sizeof(asyncOp->opId)), ret, fail);
 
   if (asyncOp->respSize) NCCLCHECKGOTO(ncclCalloc(&asyncOp->respBuff, asyncOp->respSize), ret, fail);
@@ -1738,7 +1771,7 @@ enum {
 
 void* ncclProxyService(void* _args) {
   struct ncclProxyState* proxyState = (struct ncclProxyState*)_args;
-  // set the thread affinity before cudaSetDevice
+  // 将 ... 设为 线程 affinity 之前 cudaSetDevice
   std::call_once(proxyCpusetOnceFlag, proxyCpusetOnceFunc);
   if (ncclOsCpuCount(proxyCpuset)) ncclOsSetAffinity(proxyCpuset);
   INFO(NCCL_INIT, "[Proxy Service] Device %d CPU core %d", proxyState->cudaDev, ncclOsGetCpu());
@@ -1747,13 +1780,13 @@ void* ncclProxyService(void* _args) {
     WARN("[Proxy Service] Failed to set CUDA device %d", proxyState->cudaDev);
   }
 
-  // Prepare poll descriptor
+  // Prepare 轮询 descriptor
   struct ncclProxyConnectionPool connectionPool;
   connectionPool.pools = NULL;
   connectionPool.banks = 0;
   connectionPool.offset = NCCL_PROXY_CONN_POOL_SIZE;
 
-  // Size arrays based on tpnRanks to support cross-clique P2P with many peers
+  // 大小 数组 基于 tpnRanks to 支持 跨-clique P2P with 许多 对等端
   int maxProxyConnections = std::max(proxyState->tpnRanks + 1, NCCL_MAX_PROXY_CONNECTIONS);
   int maxnpeers = 0;
   int npeers = 0;
@@ -1781,7 +1814,7 @@ void* ncclProxyService(void* _args) {
   pollfds[maxProxyConnections].events = NCCL_POLLIN;
   pollfds[maxProxyConnections].revents = 0;
 
-  // Initialize peer sockets starting at index 1
+  // 初始化 对等端 套接字 starting at 索引 1
   for (int s = 0; s < maxProxyConnections; s++) {
     pollfds[s].fd = NCCL_INVALID_SOCKET;
     pollfds[s].events = NCCL_POLLIN;
@@ -1802,7 +1835,7 @@ void* ncclProxyService(void* _args) {
     const int timeout = asyncOpCount ? 0 : 500;
 #if defined(NCCL_OS_LINUX)
     do {
-      // poll all fds including the listenSock
+      // 轮询 所有 fds including the listenSock
       ret = poll(pollfds, maxProxyConnections + 1, timeout);
     } while (ret < 0 && errno == EINTR);
 #elif defined(NCCL_OS_WINDOWS)
@@ -1835,7 +1868,7 @@ void* ncclProxyService(void* _args) {
       goto fail;
     }
     if (pollfds[maxProxyConnections].revents) {
-      // We got an event on the listenSock
+      // We 已获取 an 事件 在 ... 上 listenSock
       int s = 0;
       while (s < maxProxyConnections && pollfds[s].fd != NCCL_INVALID_SOCKET) s++;
       if (s == maxProxyConnections) {
@@ -1866,7 +1899,7 @@ void* ncclProxyService(void* _args) {
       ncclResult_t res = ncclSuccess;
       if (pollfds[s].fd == NCCL_INVALID_SOCKET) continue;
 
-      // Progress all ops for this ncclProxyLocalPeer
+      // Progress 所有 ops for 此 ncclProxyLocalPeer
       if (stop == PROXY_ABORT && ncclCuMemEnable() && ncclCuMemHostEnable() && !proxyState->directMode &&
           COMPILER_ATOMIC_LOAD(&proxyState->stop, std::memory_order_acquire)) {
         closeConn = 1;
@@ -1875,14 +1908,14 @@ void* ncclProxyService(void* _args) {
       while (op != nullptr) {
         ncclProxyAsyncOp* opnext = op->next; /* in case op is freed in proxyProgressAsync */
         type = op->type;
-        // Coverity gets confused here by complex code structure.  Yes, connectionPool.pools gets dereferenced, and
-        // while calling proxyProgressAsync() connectionPool.pools is NULL, but that changes before it's dereferenced.
-        // coverity[var_deref_model:FALSE]
+        // Coverity gets confused here by complex 代码 结构.  是, connectionPool.池 gets dereferenced, 并且
+        // 当 calling proxyProgressAsync() connectionPool.池 is NULL, 但 那个 changes 之前 it's dereferenced.
+        // coverity[var_deref_model:假]
         res = proxyProgressAsync(op, proxyState, &asyncOpCount, peer, &connectionPool);
         if (res == ncclSuccess || res == ncclInProgress) {
           op = opnext;
         } else {
-          // Res is a bad result
+          // Res is a 糟糕 结果
           closeConn = 1;
           WARN("[Service thread] Error encountered progressing operation=%s, res=%d, closing connection",
                ncclProxyMsgTypeStr[type], res);
@@ -1890,7 +1923,7 @@ void* ncclProxyService(void* _args) {
         }
       }
 
-      // Check for additional ops coming in
+      // 检查 for 额外的 ops coming 入
       const int readableFlag = NCCL_POLLIN;
       if (pollfds[s].revents & readableFlag) {
         int closed;
@@ -1906,7 +1939,7 @@ void* ncclProxyService(void* _args) {
                peer->tpLocalRank);
           closeConn = 1;
         } else if (res == ncclSuccess) {
-          // We received something from the sock
+          // We received something 从 sock
           if (type == ncclProxyMsgStop) {
             stop = PROXY_STOP;
             closeConn = 1;
@@ -1922,7 +1955,7 @@ void* ncclProxyService(void* _args) {
           INFO(NCCL_PROXY, "Received and initiated operation=%s res=%d", ncclProxyMsgTypeStr[type], res);
         }
 
-        // Check for socket error conditions
+        // 检查 for 套接字 错误 conditions
       } else if (pollfds[s].revents & NCCL_POLLERR) {
         closeConn = 1;
       }
@@ -1948,7 +1981,7 @@ void* ncclProxyService(void* _args) {
     }
   }
 
-  // Wait for all operations to complete and stop progress thread before freeing any resource
+  // 等待 所有 操作 to 完成 并且 停止 progress 线程 之前 freeing 任意 resource
   if (ncclProxyProgressDestroy(proxyState) != ncclSuccess) {
     WARN("[Proxy Service] proxyDestroy failed");
   }
@@ -1969,24 +2002,24 @@ fail:
   return NULL;
 }
 
-// Process a request on the UDS socket
+// 处理 a 请求 在 ... 上 UDS 套接字
 static ncclResult_t proxyUDSRecvReq(struct ncclProxyState* proxyState, int reqFd) {
   ncclIpcHdr hdr;
   int rmtFd = -1;
 
   NCCLCHECK(ncclIpcSocketRecvMsg(&proxyState->ipcSock, &hdr, sizeof(hdr), &rmtFd));
   if (hdr.type == ncclProxyMsgGetFd) {
-    // cuMem API support for non-UB case, and rmtFd is not used since UDS proxy thread need to export
-    // fd from handle and send it back to the main thread to import the buffer. We just need to close
-    // this dummy rmtFd.
+    // cuMem API 支持 for non-UB 情形, 并且 rmtFd is 不 已使用 自 UDS 代理 线程 需要 export
+    // fd from 句柄 并且 发送 it 后 到 main 线程 to import 该缓冲区. We 仅 需要 close
+    // 此 dummy rmtFd.
     uint64_t handle = *(uint64_t*)hdr.data;
     INFO(NCCL_PROXY, "proxyUDSRecvReq::ncclProxyMsgGetFd rank %d opId %p handle=0x%lx", hdr.rank, hdr.opId, handle);
     close(rmtFd);
     return proxyGetFd(proxyState, hdr.rank, hdr.opId, handle);
   } else if (hdr.type == ncclProxyMsgQueryFd) {
-    // remote main thread registers buffer into this rank, it querys rmtFd of this rank through UDS
-    // and the rmtFd is returned unchanged back to remote main thread which will use rmtFd to call into
-    // proxy service thread for buffer registration.
+    // 远端 main 线程 寄存器 缓冲区 into 此 rank, it querys rmtFd of 此 rank through UDS
+    // 以及 rmtFd is 已返回 unchanged 后 to 远端 main 线程 该 will 使用 rmtFd to 调用 into
+    // 代理 service 线程 for 缓冲区 注册.
     INFO(NCCL_PROXY, "proxyUDSRecvReq::proxyQueryFd rank %d opId %p rmtFd %d", hdr.rank, hdr.opId, rmtFd);
     return proxyQueryFd(proxyState, hdr.rank, hdr.opId, rmtFd);
   }
@@ -1994,12 +2027,12 @@ static ncclResult_t proxyUDSRecvReq(struct ncclProxyState* proxyState, int reqFd
   return ncclInternalError;
 }
 
-// UDS fd handle support
+// UDS fd 句柄 支持
 void* ncclProxyServiceUDS(void* _args) {
   struct ncclProxyState* proxyState = (struct ncclProxyState*)_args;
   struct pollfd pollfds[1];
 
-  // set the thread affinity before cudaSetDevice
+  // 将 ... 设为 线程 affinity 之前 cudaSetDevice
   std::call_once(proxyCpusetOnceFlag, proxyCpusetOnceFunc);
   if (ncclOsCpuCount(proxyCpuset)) ncclOsSetAffinity(proxyCpuset);
   INFO(NCCL_INIT, "[Proxy Service UDS] Device %d CPU core %d", proxyState->cudaDev, ncclOsGetCpu());
@@ -2044,14 +2077,14 @@ void* ncclProxyServiceUDS(void* _args) {
     if (ret == 0) Sleep(500);
 #endif
 
-    // Check for stop/abort
+    // 检查 for 停止/中止
     if (COMPILER_ATOMIC_LOAD(&proxyState->stop, std::memory_order_acquire) ||
         COMPILER_ATOMIC_LOAD(proxyState->abortFlag, std::memory_order_acquire)) {
       break;
     }
 
     if (pollfds[0].revents) {
-      // A request was seen on the UDS fd
+      // A 请求 was 已见 在 ... 上 UDS fd
       proxyUDSRecvReq(proxyState, pollfds[0].fd);
     }
   }
@@ -2072,7 +2105,7 @@ ncclResult_t ncclProxyInit(struct ncclComm* comm, struct ncclSocket* sock, union
   comm->proxyState->peerAddressesUDS = peerAddressesUDS;
   comm->proxyState->netAttr = NCCL_NET_ATTR_INIT;
 
-  // UDS support
+  // UDS 支持
   NCCLCHECK(ncclIpcSocketInit(&comm->proxyState->ipcSock, comm->rank, peerAddressesUDS[comm->rank], comm->abortFlag));
   return ncclSuccess;
 }
@@ -2107,7 +2140,7 @@ ncclResult_t ncclProxyCreate(struct ncclComm* comm) {
     comm->proxyState->thread = std::thread(ncclProxyService, comm->proxyState);
     ncclSetThreadName(comm->proxyState->thread, "NCCL Service %2d", comm->cudaDev);
 
-    // UDS support
+    // UDS 支持
     INFO(NCCL_PROXY, "UDS: Creating service thread comm %p rank %d", comm, comm->rank);
     comm->proxyState->threadUDS = std::thread(ncclProxyServiceUDS, comm->proxyState);
     ncclSetThreadName(comm->proxyState->threadUDS, "NCCL UDS Service %2d", comm->cudaDev);
@@ -2121,7 +2154,7 @@ ncclResult_t ncclProxyStop(struct ncclComm* comm) {
 
     if ((comm->proxyRefCountOld = ncclAtomicRefCountDecrement(&sharedProxyState->refCount)) == 0) {
       if (*comm->abortFlag == 0 && sharedProxyState->peerAddresses) {
-        // We need to send a ncclProxyMsgStop message to our own proxy
+        // 需要 发送 a ncclProxyMsgStop 消息 to our 自身的 代理
         struct ncclSocket sock;
         int type = ncclProxyMsgStop;
         NCCLCHECK(ncclSocketInit(&sock, sharedProxyState->peerAddresses + comm->topParentRanks[comm->rank],
@@ -2152,7 +2185,7 @@ ncclResult_t ncclProxyStop(struct ncclComm* comm) {
           }
         }
       }
-      // Now we notify proxy service and UDS thread to exit.
+      // Now we notify 代理 service 并且 UDS 线程 to 退出.
       COMPILER_ATOMIC_STORE(&comm->proxyState->stop, 1, std::memory_order_release);
     }
   }

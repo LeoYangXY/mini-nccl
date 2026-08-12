@@ -5,6 +5,12 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/plugin/nccl_rma.h — RMA 插件接口聚合头 [NVIDIA 插件接口/第三方]
+ * ----------------------------------------------------------------------------
+ * 汇总 RMA(远程内存访问)插件的各版本接口(rma_v13/v14)，供上层调用。
+ */
+
 #ifndef NCCL_RMA_H_
 #define NCCL_RMA_H_
 
@@ -14,7 +20,7 @@
 #include <stdint.h>
 #include "nccl_gin.h"
 
-// Max number of ncclNet objects which can live in the same process
+// 最大值 数量： ncclNet objects 该 can live 入 相同 处理
 #ifndef NCCL_RMA_MAX_PLUGINS
 #define NCCL_RMA_MAX_PLUGINS 16
 #endif

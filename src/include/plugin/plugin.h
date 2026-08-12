@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/plugin/plugin.h — 插件系统总入口头 [NVIDIA 插件接口/第三方]
+ * ----------------------------------------------------------------------------
+ * 定义插件类型枚举 ncclPluginType（Net/Gin/Rma/Tuner/Profiler/...）与
+ * 插件加载入口，是各类插件聚合头的统一入口。mini-nccl 中多为 stub。
+ */
+
 #ifndef NCCL_PLUGIN_H_
 #define NCCL_PLUGIN_H_
 

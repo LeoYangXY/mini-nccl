@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/group.h — group(分组启动)接口声明
+ * ----------------------------------------------------------------------------
+ * 声明 NCCL group 语义：ncclGroupStart/ncclGroupEnd 之间的多个 collective 调用会被
+ * 收集成一个组，统一调度启动，减少启动开销并保证组内操作的一致性。
+ */
+
 #ifndef NCCL_GROUP_H_
 #define NCCL_GROUP_H_
 
@@ -100,27 +107,27 @@ inline ncclResult_t ncclGroupErrCheck(ncclResult_t ret) {
   return ret;
 }
 
-// Add comm to this thread's group
+// Add 通信域 to 此 线程's 组
 inline void ncclGroupCommJoin(struct ncclComm* comm, int type) {
   if (comm->groupNext[type] == reinterpret_cast<struct ncclComm*>(0x1)) {
-    // Insert comm into ncclGroupCommHead adjacent to sibling comms. This preserves
-    // the users program order yet insures siblings occur consecutively. This
-    // is required by doLaunches() in "group.cc".
+    // Insert 通信域 into ncclGroupCommHead 相邻的 to 兄弟 通信域. 此 preserves
+    // 用户s program order yet insures siblings occur consecutively. 此
+    // 需要 by doLaunches() 入 "组.cc".
     struct ncclComm** pp = &ncclGroupCommHead[type];
     while (*pp != nullptr && comm->intraComm0 != (*pp)->intraComm0) pp = &(*pp)->groupNext[type];
 
-    // didn't find its clique, we need to insert it with ascending order based on commHash
+    // didn't 查找 its clique, 需要 insert it with ascending order 基于 commHash
     if (*pp == nullptr) {
       pp = &ncclGroupCommHead[type];
       while (*pp != nullptr && (*pp)->commHash < comm->commHash) pp = &(*pp)->groupNext[type];
     }
     comm->groupNext[type] = *pp;
     *pp = comm;
-    // Comms gets a new memory stack scope upon joining. Each task batched for
-    // this comm is allocated there.
+    // 通信域 gets a new 内存 栈 scope upon joining. 每个 task batched for
+    // 此 通信域 is 已分配 there.
     ncclMemoryStackPush(&comm->memScoped);
     if (type == ncclGroupTaskTypeCollective) {
-      // Initialize planner
+      // 初始化 planner
       ncclKernelPlanner::Peer* tmp = comm->planner.peers;
       ncclIntruQueue<ncclTaskRma, &ncclTaskRma::next>* tmpRmaQueues = comm->planner.rmaTaskQueues;
       int numRmaCtx = comm->config.numRmaCtx;
@@ -139,7 +146,7 @@ inline void ncclGroupCommJoin(struct ncclComm* comm, int type) {
   ncclGroupBlocking = comm->config.blocking;
 }
 
-// Add comm to this thread's group needing preconnect
+// Add 通信域 to 此 线程's 组 needing preconnect
 inline void ncclGroupCommPreconnect(struct ncclComm* comm) {
   if (comm->preconnectNext == reinterpret_cast<struct ncclComm*>(0x1)) {
     comm->preconnectNext = ncclGroupCommPreconnectHead;
@@ -147,7 +154,7 @@ inline void ncclGroupCommPreconnect(struct ncclComm* comm) {
   }
 }
 
-// Comm has left group
+// 通信域 has 左 组
 inline ncclResult_t ncclGroupCommLeave(struct ncclComm* comm, int type) {
   comm->groupNext[type] = reinterpret_cast<struct ncclComm*>(0x1);
   ncclMemoryStackPop(&comm->memScoped);

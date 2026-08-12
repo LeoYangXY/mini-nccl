@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/param.h — 参数(param)内部定义
+ * ----------------------------------------------------------------------------
+ * 定义 NCCL_PARAM 系列宏与参数注册机制：把环境变量(NCCL_*)映射为可查询的整数/
+ * 字符串参数，供各模块通过 ncclParamXxx() 读取。实现见 param/ 与 misc/param.cc。
+ */
+
 #ifndef NCCL_PARAM_H_
 #define NCCL_PARAM_H_
 

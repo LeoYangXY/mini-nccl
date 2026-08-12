@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/argcheck.h — 参数校验(argument check)接口
+ * ----------------------------------------------------------------------------
+ * 声明 ncclInvalidArgument 等参数合法性检查：对用户传入的 comm/handle/数据类型/
+ * 指针等做前置校验，及早返回清晰的错误码。
+ */
+
 #ifndef NCCL_ARGCHECK_H_
 #define NCCL_ARGCHECK_H_
 

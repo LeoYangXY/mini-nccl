@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * src/include/compiler/msvc.h — MSVC 编译器内置(intrinsics)封装 [第三方/编译器]
+ * ----------------------------------------------------------------------------
+ * 提供在 MSVC 下实现原子操作、内存屏障、位操作等的内建封装，
+ * 让 NCCL 的跨平台代码在 Windows/MSVC 上也能编译。对应 GCC 实现见 gcc.h。
+ */
+
 #ifndef NCCL_COMPILER_MSVC_H
 #define NCCL_COMPILER_MSVC_H
 
@@ -11,8 +18,8 @@
 #include <emmintrin.h>
 #include <atomic>
 
-// Use standard C++ atomics via reinterpret_cast - this is safe for primitive types
-// since std::atomic<T> has the same size and alignment as T
+// 使用 标准 C++ atomics via reinterpret_cast - 这是 safe for primitive 类型
+// 自 std::原子<T> has 相同 大小 并且 对齐 as T
 
 template <typename T>
 static inline T COMPILER_ATOMIC_LOAD_impl(volatile T* ptr, std::memory_order order) {
@@ -32,7 +39,7 @@ static inline void COMPILER_ATOMIC_STORE_impl(volatile T* ptr, T val, std::memor
 }
 #define COMPILER_ATOMIC_STORE(ptr, val, order) COMPILER_ATOMIC_STORE_impl(ptr, val, order)
 
-// Explicit 32-bit variants (same as generic but fixed type for uint32_t* pointers)
+// Explicit 32-位 variants (相同 as 通用的 但 已修复 类型 for uint32_t* 指针)
 #define COMPILER_ATOMIC_LOAD_32(ptr, order) COMPILER_ATOMIC_LOAD_impl(reinterpret_cast<volatile uint32_t*>(ptr), order)
 #define COMPILER_ATOMIC_STORE_32(ptr, val, order) \
   COMPILER_ATOMIC_STORE_impl(reinterpret_cast<volatile uint32_t*>(ptr), static_cast<uint32_t>(val), order)
@@ -70,18 +77,18 @@ static inline T COMPILER_ATOMIC_SUB_FETCH_impl(volatile T* ptr, T val, std::memo
 }
 #define COMPILER_ATOMIC_SUB_FETCH(ptr, val, order) COMPILER_ATOMIC_SUB_FETCH_impl(ptr, val, order)
 
-// Prefetch
+// 预取
 #define COMPILER_PREFETCH(addr) _mm_prefetch((const char*)(addr), _MM_HINT_T0)
 
-// Population count
+// Population 计数
 #define COMPILER_POPCOUNT32(x) __popcnt(x)
 #define COMPILER_POPCOUNT64(x) __popcnt64(x)
 
-// Branch prediction hints (MSVC doesn't support these, so no-op)
+// Branch prediction hints (MSVC doesn't 支持 这些, 所以 无-操作)
 #define COMPILER_EXPECT(x, v) (x)
 
-// Find First Set (FFS) - returns index of first set bit (1-indexed), 0 if no bits set
-// MSVC uses _BitScanForward which gives 0-indexed position
+// 查找 第一 设置 (FFS) - 返回 索引 of 第一 设置 位 (1-indexed), 0 若 无 位 设置
+// MSVC 使用 _BitScanForward 该 gives 0-indexed position
 inline int NCCL_FFS_impl(int x) {
   unsigned long index;
   return _BitScanForward(&index, (unsigned long)x) ? (int)(index + 1) : 0;
@@ -95,7 +102,7 @@ inline int NCCL_FFSll_impl(long long x) {
 #ifdef _WIN64
   return _BitScanForward64(&index, (unsigned __int64)x) ? (int)(index + 1) : 0;
 #else
-  // For 32-bit, check low 32 bits first, then high 32 bits
+  // For 32-位, 检查 low 32 位 第一, then high 32 位
   if (_BitScanForward(&index, (unsigned long)(x & 0xFFFFFFFF))) return (int)(index + 1);
   if (_BitScanForward(&index, (unsigned long)(x >> 32))) return (int)(index + 33);
   return 0;
@@ -105,8 +112,8 @@ inline int NCCL_FFSll_impl(long long x) {
 #define COMPILER_FFSL(x) NCCL_FFSl_impl(x)
 #define COMPILER_FFSLL(x) NCCL_FFSll_impl(x)
 
-// Count Leading Zeros (CLZ) - undefined behavior if x == 0 (to match GCC behavior)
-// MSVC uses _BitScanReverse which gives position of highest bit
+// 计数 Leading Zeros (CLZ) - undefined behavior 若 x == 0 (to match GCC behavior)
+// MSVC 使用 _BitScanReverse 该 gives position of highest 位
 inline int nccl_clz_impl(unsigned int x) {
   unsigned long index;
   _BitScanReverse(&index, x);
@@ -123,7 +130,7 @@ inline int nccl_clzll_impl(unsigned long long x) {
   _BitScanReverse64(&index, (unsigned __int64)x);
   return 63 - (int)index;
 #else
-  // For 32-bit, check high 32 bits first, then low 32 bits
+  // For 32-位, 检查 high 32 位 第一, then low 32 位
   if (_BitScanReverse(&index, (unsigned long)(x >> 32))) return 31 - (int)index;
   _BitScanReverse(&index, (unsigned long)(x & 0xFFFFFFFF));
   return 63 - (int)index;
@@ -133,16 +140,16 @@ inline int nccl_clzll_impl(unsigned long long x) {
 #define COMPILER_CLZL(x) nccl_clzl_impl(x)
 #define COMPILER_CLZLL(x) nccl_clzll_impl(x)
 
-// Byte Swap
+// 字节 Swap
 #define COMPILER_BSWAP16(x) _byteswap_ushort(x)
 #define COMPILER_BSWAP32(x) _byteswap_ulong(x)
 #define COMPILER_BSWAP64(x) _byteswap_uint64(x)
 
-// Compiler hints
-// TODO: Check if __declspec(align(alignment)) can be used
+// 编译器 hints
+// 待办: 检查 若 __declspec(align(对齐)) 可以 已使用
 #define COMPILER_ASSUME_ALIGNED(ptr, alignment) (ptr)
 
-// Unused variable/parameter attribute (MSVC doesn't have __attribute__((unused)), use empty macro)
+// 未使用 变量/参数 属性 (MSVC doesn't have __attribute__((未使用)), 使用 空的 宏)
 #define COMPILER_ATTRIBUTE_UNUSED
 
 #endif // NCCL_COMPILER_MSVC_H

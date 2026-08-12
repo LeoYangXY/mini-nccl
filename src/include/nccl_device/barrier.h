@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/barrier.h — 设备 barrier API
+ * ----------------------------------------------------------------------------
+ * 声明 nccl_device 框架下的设备 barrier（线程块间栅栏同步）接口，用于 kernel 内
+ * 多 block 协同。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_BARRIER_H_
 #define _NCCL_DEVICE_BARRIER_H_
 #include "impl/core__types.h"
@@ -17,11 +24,11 @@ struct ncclBarrierSession_internal;
 
 template <typename Coop>
 struct ncclBarrierSession : ncclBarrierSession_internal<Coop> {
-  // Full featured constructor:
+  // 满的 featured constructor:
   NCCL_DEVICE_INLINE ncclBarrierSession(Coop, ncclTeam innerTeam, ncclTeam outerTeam, ncclGin,
                                         ncclLsaBarrierHandle innerBarHandle, ncclGinBarrierHandle outerBarHandle,
                                         uint32_t index, bool multimem = false, ncclMultimemHandle innerMmHandle = {});
-  // Convenience constructors for baked in teams:
+  // Convenience constructors for baked 入 teams:
   NCCL_DEVICE_INLINE ncclBarrierSession(Coop, ncclTeamTagWorld, ncclGin, uint32_t index, bool multimem = false);
   NCCL_DEVICE_INLINE ncclBarrierSession(Coop, ncclTeamTagLsa, ncclDevComm const&, uint32_t index,
                                         bool multimem = false);
@@ -40,7 +47,7 @@ private:
   NCCL_DEVICE_INLINE bool useWorldForFence(ncclGinFenceLevel fence) const;
 };
 
-// Free-function hybrid barrier. Wraps session construct + sync + destruct.
+// 释放-函数 hybrid 屏障. Wraps session construct + 同步 + destruct.
 
 template <typename Coop>
 NCCL_DEVICE_INLINE void ncclBarrier(Coop, ncclTeamTagWorld, ncclGin, uint32_t index,

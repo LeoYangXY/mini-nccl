@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/os.h — OS 抽象层接口
+ * ----------------------------------------------------------------------------
+ * 定义跨平台(Windows/Linux)的操作系统抽象：线程、互斥锁、条件变量、时间、文件等，
+ * 使 NCCL 上下层代码不直接依赖某特定 OS 的 API。
+ */
+
 #ifndef NCCL_OS_H_
 #define NCCL_OS_H_
 
@@ -21,7 +28,7 @@
 #include "os/linux.h"
 #endif
 
-// POSIX PATH_MAX equivalent on Windows
+// Windows 上等价于 POSIX 的 PATH_MAX
 #ifndef PATH_MAX
 #define PATH_MAX MAX_PATH
 #endif
@@ -83,7 +90,7 @@ ncclResult_t ncclOsGetNumaNodeAffinity(unsigned int numaId, char* affinityStr, s
 ncclResult_t ncclOsGetPciDeviceClassByBusId(const char* busId, char* deviceClass, size_t maxLen);
 
 #if NCCL_OS_WINDOWS
-// Forward declare nvmlDevice_t to avoid including nvml.h
+// Forward declare nvmlDevice_t to 避免 including nvml.h
 struct nvmlDevice_st;
 typedef struct nvmlDevice_st* nvmlDevice_t;
 ncclResult_t ncclOsGetPciDeviceParent(nvmlDevice_t device, char** parentBusId);
@@ -101,7 +108,7 @@ ncclResult_t ncclOsGetBcmLinks(const char* busId, int* nlinks, char** peers);
 #include <stddef.h>
 #include <stdbool.h>
 
-// Platform-specific shared memory descriptor (similar to ncclSocketDescriptor)
+// Platform-特定的 shared 内存 descriptor (类似于 ncclSocketDescriptor)
 #ifdef NCCL_OS_LINUX
 typedef int ncclShmDescriptor;
 #elif defined(NCCL_OS_WINDOWS)
@@ -110,7 +117,7 @@ typedef HANDLE ncclShmDescriptor;
 typedef int ncclShmDescriptor;  /* stub when no OS defined */
 #endif
 
-// Shared memory handle structure
+// Shared 内存 句柄 结构
 struct ncclShmHandleInternal {
   ncclShmDescriptor shmDesc;
   char* shmPath;

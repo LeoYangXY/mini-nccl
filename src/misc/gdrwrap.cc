@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/misc/gdrwrap.cc — GPU Direct RDMA 包装实现
+ * ----------------------------------------------------------------------------
+ * 动态解析 GDR(cuMem 直接访问)相关符号，封装 GPU Direct 能力；NCCL_CUMEM_ENABLE
+ * 环境变量控制是否使用 cuMem API。无 GDR 环境下为空实现，运行时按需解析。
+ */
+
 #include "gdrwrap.h"
 #include <mutex>
 
@@ -27,7 +34,7 @@ static void (*gdr_internal_driver_get_version)(gdr_t g, int* major, int* minor);
 static int (*gdr_internal_copy_to_mapping)(gdr_mh_t handle, void* map_d_ptr, const void* h_ptr, size_t size);
 static int (*gdr_internal_copy_from_mapping)(gdr_mh_t handle, void* h_ptr, const void* map_d_ptr, size_t size);
 
-// Used to make the GDR library calls thread safe
+// 用于 使 the GDR 库 调用 线程 safe
 std::mutex& getGdrMutex() {
   static std::mutex gdrMutex;
   return gdrMutex;

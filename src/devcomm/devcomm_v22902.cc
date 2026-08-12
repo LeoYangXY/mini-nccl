@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/devcomm/devcomm_v22902.cc — 设备通信兼容层(CUDA v2.29.2)
+ * ----------------------------------------------------------------------------
+ * 不同 CUDA 版本的 ncclDevComm 设备结构布局不同。本文件为 CUDA v2.29.2 提供对应
+ * 的设备结构定义与兼容代码，使同一份 kernel 二进制能在多版本 CUDA 上运行。
+ * devcomm_v22907.cc / devcomm_v23000.cc 分别提供其他版本。
+ */
+
 #include "comm.h"
 #include "dev_runtime.h"
 #include "utils.h"
@@ -43,7 +51,7 @@ struct ncclDevComm_v22902 {
 
   struct ncclDevCommWindowTable* windowTable;
 
-  // ncclWindow_t is just a (device) pointer.
+  // ncclWindow_t is 仅 a (设备) 指针.
   ncclWindow_t resourceWindow;
   struct ncclWindow_vidmem_v22902 resourceWindow_inlined;
 
@@ -84,12 +92,12 @@ static_assert(offsetof(struct ncclDevComm_v22902, ginSignalShadows) == 192);
 static_assert(sizeof(struct ncclDevComm_v22902) == 200);
 
 static ncclResult_t ncclCommPropertiesFilter_v22902(ncclComm_t comm, struct ncclCommProperties* props) {
-  // We don't provide backwards compatibility for GIN with 2.29.2.  If a communicator needs it, we indicate that
-  // the Device API is not available.
+  // We don't provide backwards compatibility for GIN with 2.29.2.  若 a 通信器 needs it, we indicate 那个
+  // 该设备 API is 不 可用.
   props->deviceApiSupport = (props->deviceApiSupport && ncclTeamLsa(comm).nRanks == comm->nRanks);
 
-  // v22902 ncclCommProperties is _almost_ compatible with newer ones, with the exception of ginType, which in that
-  // version was based on uint_8, not an int.
+  // v22902 ncclCommProperties is _almost_ compatible with newer ones, 带有 异常 of ginType, 该 入 那个
+  // 版本 was 基于 uint_8, 不 an 整型.
   ((struct ncclCommProperties_v22902*)props)->ginType = NCCL_GIN_TYPE_NONE_v22902;
 
   return ncclSuccess;
@@ -114,12 +122,12 @@ static ncclResult_t ncclDevCommRequirementsFilter_v22902(ncclComm_t comm, ncclDe
     return ncclInvalidUsage;
   }
 
-  // Prior to 2.29.4, a non-zero barrierCount did not imply GIN, but it does since.
+  // Prior to 2.29.4, a non-zero barrierCount 执行过 不 imply GIN, 但 it 执行 自.
   if (reqs->barrierCount) {
     reqs->lsaBarrierCount = std::max(reqs->lsaBarrierCount, reqs->barrierCount);
     reqs->barrierCount = 0;
   }
-  // Strangely, neither did railGinBarrierCount.
+  // Strangely, 两者都不 执行过 railGinBarrierCount.
   reqs->railGinBarrierCount = 0;
 
   return ncclSuccess;
@@ -131,7 +139,7 @@ static ncclResult_t ncclDevCommCopyNewToOld_v22902(ncclComm_t comm, void* oldDev
 
   memset(old, '\0', sizeof(*old));
   ncclDevCommCopyLsaData(&old->rank, &newDevComm->rank);
-  // No need to copy GIN-specific fields since we don't provide backwards compatibility for GIN with 2.29.2.
+  // 无 需要 拷贝 GIN-特定的 字段 自 we don't provide backwards compatibility for GIN with 2.29.2.
 
   return ncclSuccess;
 }
@@ -140,9 +148,9 @@ static ncclResult_t ncclDevCommCopyOldToNew_v22902(ncclComm_t comm, struct ncclD
                                                    void const* oldDevComm) {
   struct ncclDevComm_v22902* old = (struct ncclDevComm_v22902*)oldDevComm;
 
-  // Note: this callback will be used with v22907 as well because, prior to 2.30.0, ncclDevComm was unversioned,
-  // so v22902 and v22907 variants are indistinguishable.  Primary differences between them are related to GIN
-  // but, since we don't support GIN here with either, the differences are irrelevant to us.
+  // 注意: 此 回调函数 将会 已使用 with v22907 as well 因为, prior to 2.30.0, ncclDevComm was unversioned,
+  // 所以 v22902 并且 v22907 variants are indistinguishable.  Primary differences 在 ... 之间m are related to GIN
+  // 但, 自 we don't 支持 GIN here with 二者之一, the differences are irrelevant to us.
   ncclDevCommCopyLsaData(&newDevComm->rank, &old->rank);
 
   return ncclSuccess;

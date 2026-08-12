@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/dev_runtime.cc — device runtime：跨 CUDA 版本的 kernel 启动兼容
+ * ----------------------------------------------------------------------------
+ * 封装不同 CUDA toolkit 下的 kernel 启动与设备函数查询，使 NCCL 二进制能在多种
+ * CUDA 版本上运行。devcomm/ 提供各 CUDA 版本的具体实现，本文件做统一调度。
+ */
+
 #include "dev_runtime_internal.h"
 #include "comm.h"
 #include "nccl_device/core.h"
@@ -33,12 +40,12 @@ NCCL_PARAM(RMADisable, "RMA_DISABLE", 0);
 
 extern struct ncclDevCommCompat ncclDevCommCompat_v22902, ncclDevCommCompat_v22907, ncclDevCommCompat_v23000;
 
-// The order of entries in the array shouldn't matter (with the exception of the terminating nullptr)
+// 数组中各条目的顺序应当无关紧要(以 nullptr 结尾的终止项除外)
 static struct ncclDevCommCompat* devCommCompat[] = {&ncclDevCommCompat_v22902, &ncclDevCommCompat_v22907,
                                                     &ncclDevCommCompat_v23000, nullptr};
 
-// Global window map using intrusive address map
-// Uses ncclDevrWindow directly (vidmem as key, next pointer embedded in struct)
+// 用侵入式地址映射实现的全局窗口表
+// 直接使用 ncclDevrWindow(以显存地址为键，下一个 指针内嵌于结构体内)
 static std::mutex ncclWindowMapMutex;
 static ncclIntruAddressMap<ncclDevrWindow, struct ncclWindow_vidmem*, &ncclDevrWindow::vidmem, &ncclDevrWindow::next>
   ncclWindowMap;
@@ -59,9 +66,9 @@ struct ncclDevrTeam {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// Helpers at the bottom:
+// 下方辅助函数：
 
-// Find least index such that `arg < sorted[i].key` (least upper bound)
+// 找到满足 arg < sorted[i].key 的最小下标(即最小上界)
 template <typename Obj, typename Key>
 static int listFindSortedLub(Key Obj::* key, Obj* sorted, int count, Key arg);
 
@@ -75,20 +82,20 @@ static void listRemove(Obj* list, int* count, int index);
 
 NCCL_PARAM(LsaTeamSize, "LSA_TEAM_SIZE", 0)
 
-// Compute the LSA team size from the comm topology without any side effects.
+// 从通信域拓扑计算 LSA 团队大小，无任何副作用。
 static int computeLsaSize(struct ncclComm* comm) {
   if (comm->devrState.bigSize != 0) return comm->devrState.lsaSize;
 
-  // LSA needs to be the same size for all ranks, and it needs to represent
-  // a consecutive set of ranks.
+  // LSA 对所有 rank 必须大小一致，并且它要代表
+  // 一组连续的 rank。
   int lsaSize = ncclParamLsaTeamSize();
   if (comm->p2pCrossClique && comm->nvlDomainSize == comm->nRanks) {
-    // Single NVLD: all ranks share memory via fabric handles. Extend LSA to full domain.
-    // Multi-NVLD (with potentially unequal domain sizes) is not yet supported for cross-clique LSA
+    // 单个 NVLD：所有 rank 通过 fabric 句柄共享内存。把 LSA 扩展到整个域。
+    // 多 NVLD(各域大小可能不等)暂不支持跨 clique 的 LSA
     lsaSize = comm->nRanks;
     INFO(NCCL_INIT, "LSA extended to full NVL domain: lsaSize=%d (cross-clique P2P)", lsaSize);
   } else {
-    // Standard node-based gcd LSA calculation
+    // 基于节点的标准 gcd LSA 计算
     int nodeSize = 1;
     for (int r = 1; r < comm->nRanks; r++) {
       if (comm->rankToNode[r] == comm->rankToNode[r - 1]) {
@@ -114,8 +121,8 @@ ncclResult_t ncclDevrInitOnce(struct ncclComm* comm) {
   struct ncclDevrState* devr = &comm->devrState;
   if (devr->bigSize != 0) return ncclSuccess;
 
-  // LSA needs to be the same size for all ranks, and it needs to represent
-  // a consecutive set of ranks.
+  // LSA 对所有 rank 必须大小一致，并且它要代表
+  // 一组连续的 rank。
   int lsaSize = computeLsaSize(comm);
   devr->lsaSize = lsaSize;
   devr->lsaSelf = comm->rank % lsaSize;
@@ -168,9 +175,9 @@ ncclResult_t ncclDevrFinalize(struct ncclComm* comm) {
     free(task);
   }
 
-  // During abort or any other cases, users might not call deregister API for
-  // symmetric window objects, we need to destroy all remaining window objects
-  // that are not deregistered by user to avoid memory leaks here.
+  // 在 中止 或其它情形下，用户可能未调用 deregister API 来
+  // 注销对称窗口对象，因此我们需要销毁所有未被用户注销、
+  // 残留下来的窗口对象，以避免内存泄漏。
   CUDACHECKIGNORE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
   while (devr->winSortedCount > 0) {
     struct ncclDevrWindow* win = devr->winSorted[0].win;
@@ -180,7 +187,7 @@ ncclResult_t ncclDevrFinalize(struct ncclComm* comm) {
 
   symTeamDestroyAll(comm);
 
-  // delete windowTable
+  // 删除窗口表
   struct ncclDevCommWindowTable* tableDev;
   tableDev = devr->windowTable;
   while (tableDev != nullptr) {
@@ -208,7 +215,7 @@ ncclResult_t ncclDevrFinalize(struct ncclComm* comm) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Message layout used for LSA team all-gather (one per rank per segment).
+// LSA 团队 所有-收集 所使用的消息布局(每个 rank 每个段各一条)。
 struct symLsaMessage {
   union {
     CUmemGenericAllocationHandle memHandle;
@@ -318,7 +325,7 @@ static ncclResult_t symMemoryMapLsaTeam(struct ncclComm* comm, struct ncclDevrMe
                 ret, fail);
 
   if (devr->lsaFlatBase == nullptr) {
-    // Create on first need.
+    // 在首次需要时创建。
     CUdeviceptr addr;
     CUCHECKGOTO(cuMemAddressReserve(&addr, devr->lsaSize * devr->bigSize, NCCL_MAX_PAGE_SIZE, 0, 0), ret, fail);
     devr->lsaFlatBase = reinterpret_cast<void*>(addr);
@@ -329,7 +336,7 @@ static ncclResult_t symMemoryMapLsaTeam(struct ncclComm* comm, struct ncclDevrMe
                                                        mem->memHandles, mem->bigOffset),
                   ret, fail);
   }
-  // Ensure everyone has imported my mem handles.
+  // 确保所有人都已导入我的内存句柄。
   NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, devr->lsaRankList, devr->lsaSelf, devr->lsaSize, 0xbeef),
                 ret, fail);
 leave:
@@ -342,7 +349,7 @@ fail:
 static ncclResult_t symBindTeamMemory(struct ncclComm* comm, struct ncclDevrTeam* tm, struct ncclDevrMemory* mem) {
   if (comm->nvlsSupport && tm->mcBasePtr != nullptr) {
 #if CUDART_VERSION >= 12010
-    // Multimem teams are currently unsupported for memory containing CPU-backed physical segments
+    // 含 CPU 后端物理段的 mem 当前不支持 multimem 团队
     if (mem->globalHasSysmemSegment) {
       INFO(NCCL_NVLS, "Skipping bind multicast for maxGlobalNumSegments = %d, big=%lx, team {%d x %d}",
            mem->maxGlobalNumSegments, mem->bigOffset, tm->team.nRanks, tm->team.stride);
@@ -366,7 +373,7 @@ static ncclResult_t symUnbindTeamMemory(struct ncclComm* comm, struct ncclDevrTe
   return ncclSuccess;
 }
 
-// Caller must barrier the team afterward.
+// 调用者必须在此之后对团队做屏障同步。
 static ncclResult_t symTeamObtain(struct ncclComm* comm, struct ncclTeam team, bool multimem,
                                   struct ncclDevrTeam** outTeam) {
   ncclResult_t ret = ncclSuccess;
@@ -386,7 +393,7 @@ static ncclResult_t symTeamObtain(struct ncclComm* comm, struct ncclTeam team, b
       break;
     } else if (t->team.rank == team.rank && t->team.nRanks == team.nRanks && t->team.stride == team.stride) {
       if (!multimem || t->mcBasePtr != nullptr) {
-        // Matching team is sufficient
+        // 匹配的团队即已足够
         if (outTeam) *outTeam = t;
         return ncclSuccess;
       }
@@ -438,13 +445,13 @@ static ncclResult_t symTeamObtain(struct ncclComm* comm, struct ncclTeam team, b
       t->mcHandle = mcHandle;
       t->mcBasePtr = reinterpret_cast<void*>(mcAddr);
 
-      // Bind new team with all existing memories.
+      // 把新团队与所有已存在的内存绑定。
       for (struct ncclDevrMemory* mem = devr->memHead; mem != nullptr; mem = mem->next) {
         NCCLCHECKGOTO(symBindTeamMemory(comm, t, mem), ret, fail_mcHandle_mcAddr_unmap_mems);
       }
 
       if (false) {
-        // Error labels:
+        // 错误标签：
       fail_mcHandle_mcAddr_unmap_mems:
         for (struct ncclDevrMemory* mem = devr->memHead; mem != nullptr; mem = mem->next) {
           symUnbindTeamMemory(comm, t, mem);
@@ -466,7 +473,7 @@ static ncclResult_t symTeamObtain(struct ncclComm* comm, struct ncclTeam team, b
   }
 
   if (teamIsNew) {
-     // Add to list
+     // 加入列表
     t->next = devr->teamHead;
     devr->teamHead = t;
   }
@@ -515,7 +522,7 @@ static ncclResult_t symMemoryRegisterGin(struct ncclComm* comm, struct ncclDevrM
     offset += mem->ginSegmentInfos[segment].segmentSize;
   }
 
-  // Cache ginWins for the single segment case to avoid additional pointer dereference on the device
+  // 为单段情形缓存 ginWins，避免在设备上多做一次指针解引用
   if (mem->numGinSegments == 1) {
     for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS; i++) {
       mem->ginDevWins[i] = mem->ginSegmentInfos[0].ginDevWins[i];
@@ -539,9 +546,9 @@ static ncclResult_t symMemoryRegisterRma(struct ncclComm* comm, struct ncclDevrM
   return ncclSuccess;
 }
 
-// On success we take caller's reference on memHandle.
-// Due to multicast binds for each pre-exiting team, this function requires
-// caller do a world barrier before returning to user.
+// 成功时，接管调用者持有的 memHandle 引用。
+// 由于要对每个已存在的团队做多播绑定，本函数要求
+// 调用者在返回用户之前做一次全局(world)屏障。
 static ncclResult_t symMemoryObtain(struct ncclComm* comm, CUmemGenericAllocationHandle* memHandles, int numSegments,
                                     void* memAddr, size_t size, int winFlags, struct ncclDevrMemory** outMem,
                                     bool hasSysmemSegment = false) {
@@ -557,7 +564,7 @@ static ncclResult_t symMemoryObtain(struct ncclComm* comm, CUmemGenericAllocatio
   const int globalLsaTeamBaseIdx = devr->lsaSize * (comm->rank / devr->lsaSize);
 
   struct ncclDevrMemory* mem = nullptr;
-  // New memory.
+  // 新的内存。
   NCCLCHECKGOTO(ncclCalloc(&mem, 1), ret, fail_mem);
   NCCLCHECKGOTO(ncclCalloc(&mem->memHandles, numSegments), ret, fail_mem);
   memcpy(mem->memHandles, memHandles, sizeof(*mem->memHandles) * numSegments);
@@ -572,7 +579,7 @@ static ncclResult_t symMemoryObtain(struct ncclComm* comm, CUmemGenericAllocatio
 
   NCCLCHECKGOTO(ncclDevrPopulateSegmentSizes(mem, numSegments), ret, fail_mem);
 
-  // We need max segments and global sysmem info to selectively disable some features
+  // 我们需要最大段数与全局 sysmem 信息，以便有选择地禁用某些特性
   globalSegmentInfo[comm->rank].numSegments = numSegments;
   globalSegmentInfo[comm->rank].hasSysmemSegment = hasSysmemSegment;
   globalSegmentInfo[comm->rank].totalSize = size;
@@ -595,20 +602,20 @@ static ncclResult_t symMemoryObtain(struct ncclComm* comm, CUmemGenericAllocatio
     mem->lsaMaxSize = std::max(mem->lsaMaxSize, globalSegmentInfo[rank].totalSize);
   }
 
-  // Grab offset in the big space. Use lsaMaxSize (max across LSA ranks) to support asymmetric sizes.
+  // 在大地址空间中抢占偏移。使用 lsaMaxSize(LSA 各 rank 的最大值)以支持非对称大小。
   NCCLCHECKGOTO(ncclSpaceAlloc(&devr->bigSpace, devr->bigSize, mem->lsaMaxSize, devr->granularity, &bigOffset), ret,
                 fail_mem);
   mem->bigOffset = bigOffset;
 
-  // Map unicast addresses into flat VA space for lsa team.
+  // 把单播地址映射到 LSA 团队的扁平 VA 空间。
   NCCLCHECKGOTO(symMemoryMapLsaTeam(comm, mem), ret, fail_mem_space);
 
-  // If our caller doesn't have a VA then we'll use the LSA mapping.
+  // 若调用者没有 VA，则使用 LSA 映射。
   if (mem->primaryAddr == nullptr) {
     mem->primaryAddr = (char*)devr->lsaFlatBase + devr->lsaSelf * devr->bigSize + mem->bigOffset;
   }
 
-  // Bind new memory with each existing team.
+  // 把新内存与每个已存在的团队绑定。
   for (struct ncclDevrTeam* t = devr->teamHead; t != nullptr; t = t->next) {
     NCCLCHECKGOTO(symBindTeamMemory(comm, t, mem), ret, fail_mem_space_teams);
   }
@@ -616,20 +623,20 @@ static ncclResult_t symMemoryObtain(struct ncclComm* comm, CUmemGenericAllocatio
   if (devr->ginEnabled) {
     NCCLCHECKGOTO(symMemoryRegisterGin(comm, mem), ret, fail_mem_space_teams);
   } else {
-    // Default to single segment when GIN is not yet enabled.
-    // This will be recomputed in ncclDevrCommCreateInternal when GIN is activated.
+    // GIN 尚未启用时，默认使用单段。
+    // 这会在 GIN 激活时由 ncclDevrCommCreateInternal 重新计算。
     mem->numGinSegments = 1;
   }
 
-  // ginEnabled is set in ncclDevrCommCreateInternal, which might not be called for RMA proxy
-  // so we introduce rmaProxyEnabled to track if RMA proxy is enabled
+  // ginEnabled 在 ncclDevrCommCreateInternal 中设置，而 RMA 代理 场景下可能不会被调用，
+  // 因此我们引入 rmaProxyEnabled 来跟踪 RMA 代理 是否已启用
   devr->rmaProxyEnabled =
     devr->nLsaTeams > 1 && comm->config.numRmaCtx > 0 && comm->globalRmaProxySupport && !ncclParamRMADisable();
   if (devr->rmaProxyEnabled && mem->maxGlobalNumSegments == 1) {
     NCCLCHECKGOTO(symMemoryRegisterRma(comm, mem), ret, fail_mem_space_teams);
   }
 
-  // Add to list of mems.
+  // 加入内存列表。
   mem->next = devr->memHead;
   devr->memHead = mem;
 
@@ -651,7 +658,7 @@ fail_mem:
   }
   free(mem);
   free(globalSegmentInfo);
-// fail:
+// 失败:
   return ret;
 }
 
@@ -701,14 +708,14 @@ static ncclResult_t symWindowTableInitOnce(struct ncclComm* comm, cudaStream_t s
   struct ncclDevrState* devr = &comm->devrState;
   struct ncclDevCommWindowTable* tableDev = devr->windowTable;
   if (tableDev == nullptr) {
-    // Create on first need.
+    // 在首次需要时创建。
     NCCLCHECK(ncclShadowPoolAlloc<ncclDevCommWindowTable>(&devr->shadows, &tableDev, nullptr, stream));
     devr->windowTable = tableDev;
   }
   return ncclSuccess;
 }
 
-// On success we take callers reference on `mem`.
+// 成功时，接管调用者持有的 mem 引用。
 static ncclResult_t symWindowCreate(struct ncclComm* comm, struct ncclDevrMemory* mem, size_t memOffset, void* userPtr,
                                     size_t userSize, int winFlags, void* localReg, struct ncclWindow_vidmem** outWinDev,
                                     struct ncclDevrWindow** outWin, cudaStream_t stream) {
@@ -724,7 +731,7 @@ static ncclResult_t symWindowCreate(struct ncclComm* comm, struct ncclDevrMemory
   win->winFlags = winFlags;
   win->localRegHandle = localReg;
   if (userPtr == nullptr) {
-    // Null means caller has no VA and will use the lsa team flat VA address.
+    // Null 表示调用者没有 VA，将使用 LSA 团队的扁平 VA 地址。
     win->userPtr = userPtr = (char*)devr->lsaFlatBase + (devr->lsaSelf * devr->bigSize) + mem->bigOffset;
     userAddr = reinterpret_cast<uintptr_t>(userPtr);
   } else {
@@ -832,7 +839,7 @@ remove_winSorted:
     i -= 1; // least upper bound is just after ours.
     listRemove(devr->winSorted, &devr->winSortedCount, i);
   }
-  // Remove the just deallocated window from the table storing the communicator pointer
+  // 从保存通信域指针的表中移除刚被释放的窗口
   {
     std::lock_guard<std::mutex> lock(ncclWindowMapMutex);
     NCCLCHECKGOTO(ncclIntruAddressMapRemove(&ncclWindowMap, winDev), ret, fail);
@@ -864,11 +871,11 @@ ncclResult_t ncclDevrWindowRegisterInGroup(struct ncclComm* comm, void* userPtr,
   NCCLCHECKGOTO(ncclCommRegister(comm, userPtr, userSize, &localRegHandle), ret, fail);
 
   if (winFlags & NCCL_WIN_COLL_SYMMETRIC) {
-    // Defer symmetric kernel init until at least one window with that flag exists.
+    // 延迟对称 内核 初始化，直到至少存在一个带该标志的窗口。
     NCCLCHECKGOTO(ncclSymkInitOnce(comm), ret, fail_locReg);
   }
 
-  // Get underlying cumem base address and number of mapped physical segments that userPtr spans
+  // 获取底层 cumem 基址，以及 userPtr 所跨越的已映射物理段数量
   NCCLCHECKGOTO(ncclCuMemGetAddressRange(reinterpret_cast<CUdeviceptr>(userPtr), userSize, &memAddr, &memSize,
                                          &numSegments, &hasSysmemSegment),
                 ret, fail_locReg);
@@ -883,7 +890,7 @@ ncclResult_t ncclDevrWindowRegisterInGroup(struct ncclComm* comm, void* userPtr,
     goto fail_locReg;
   }
 
-  // Retain all handles and validate segment location types
+  // 保留所有句柄并校验各段的物理位置类型
   for (int segment = 0; segment < numSegments; segment++) {
     size_t baseSendSize;
     CUCHECK(cuMemGetAddressRange(nullptr, &baseSendSize, memAddr + offset));
@@ -893,7 +900,7 @@ ncclResult_t ncclDevrWindowRegisterInGroup(struct ncclComm* comm, void* userPtr,
     offset += baseSendSize;
   }
 
-  // Trade cumem handles for ncclDevrMemory*
+  // 用 cumem 句柄换取 ncclDevrMemory*
   NCCLCHECKGOTO(symMemoryObtain(comm, memHandles, numSegments, (void*)memAddr, memSize, winFlags, &mem,
                                 hasSysmemSegment),
                 ret, fail_locReg_memHandle);
@@ -908,17 +915,17 @@ ncclResult_t ncclDevrWindowRegisterInGroup(struct ncclComm* comm, void* userPtr,
 
   CUDACHECKGOTO(cudaStreamSynchronize(stream), ret, fail_locReg_memHandle_mem_stream_win);
 
-  // symWindowCreate needs barrier.
+  // symWindowCreate 需要屏障。
   NCCLCHECKGOTO(bootstrapBarrier(comm->bootstrap, comm->rank, comm->nRanks, 0xbeef), ret,
                 fail_locReg_memHandle_mem_stream_win);
 
   {
     std::lock_guard<std::mutex> lock(ncclWindowMapMutex);
-    // Set intrusive map fields directly on winHost
+    // 直接在 winHost 上设置侵入式映射字段
     winHost->comm = comm;
     winHost->next = nullptr;  // Initialize next pointer
-    // Since windows are unique and belong to a single communicator,
-    // it is not necessary to check if the insert would overwrite existing entries
+    // 由于窗口是唯一的、且只属于单个通信域，
+    // 因此无需检查插入是否会覆盖已有条目
     NCCLCHECKGOTO(ncclIntruAddressMapInsert(&ncclWindowMap, *outWinDev, winHost), ret,
                   fail_locReg_memHandle_mem_stream_win);
     INFO(NCCL_ALLOC, "Inserted window %p into address map, ret=%d", *outWinDev, ret);
@@ -959,8 +966,8 @@ static ncclResult_t deepCopyDevCommRequirements(struct ncclDevCommRequirements c
   NCCLCHECK(ncclCalloc(dst, 1));
   **dst = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
 
-  // Copy the entire struct now and update linked lists later.  Because of backwards compatibility, the source may
-  // actually be smaller than the type would imply.
+  // 先整体拷贝结构体、稍后更新链表。出于向后兼容考虑，源结构体可能
+  // 实际比类型应有的大小要小。
   memcpy(*dst, src, src->size);
 
   dstRes = &(*dst)->resourceRequirementsList;
@@ -1104,9 +1111,9 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
   struct ncclDevComm outDevCommTmp;
   cudaStreamCaptureMode captureMode = cudaStreamCaptureModeRelaxed;
 
-  // This function always operates on the current version of the ncclDevResourceRequirements structure, thanks
-  // to the deepCopyDevCommRequirements() function, so version checks are not needed.  The data in reqs can also
-  // be changed by this function, which is again OK thanks to the fact that it's not a user-supplied structure.
+  // 本函数始终操作 ncclDevResourceRequirements 结构的当前版本，因为
+  // 有 deepCopyDevCommRequirements() 函数，所以无需版本检查。reqs 中的数据也可
+  // 被本函数修改，这也没问题，因为它不是用户提供的结构体。
   ncclGinConnectionType_t requestedConnectionType = reqs->ginConnectionType;
 
   if (reqs->ginForceEnable) {
@@ -1147,15 +1154,15 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
 
   if (ginActivated) {
     NCCLCHECKGOTO(ncclGinConnectOnce(comm), ret, fail);
-    // Register all preexisting memories with GIN. Update the windows later when
-    // we have a stream.
+    // 用 GIN 注册所有已存在的内存。稍后、待有流可用时再更新窗口。
+    // 
     for (struct ncclDevrMemory* mem = devr->memHead; mem != nullptr; mem = mem->next) {
       NCCLCHECKGOTO(symMemoryRegisterGin(comm, mem), ret, fail);
     }
   }
 
-  // If we have a copy callback for backwards compatibility, we use a temporary buffer for the devComm and, once we're
-  // finished, we let the callback copy the data over.
+  // 若出于兼容保留了一个拷贝回调，我们用临时缓冲区存放 devComm，完成后
+  // 再让回调把数据拷过去。
   if (devCompat && devCompat->devCommCopyNewToOld) {
     outDevCommPreserve = outDevComm;
     outDevComm = &outDevCommTmp;
@@ -1191,7 +1198,7 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
 
   resReqsHead = reqs->resourceRequirementsList;
 
-  // Initialize resources for the hybrid barrier
+  // 为混合(hybrid)屏障初始化资源
   ncclLsaBarrierCreateRequirement(lsa, reqs->barrierCount, &outDevComm->hybridLsaBarrier, &hybridLsaBarrierReq);
   hybridLsaBarrierReq.next = resReqsHead;
   ncclGinBarrierCreateRequirement(comm, ncclTeamRail(comm), reqs->barrierCount, &outDevComm->hybridRailGinBarrier,
@@ -1247,7 +1254,7 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), ret, fail);
 
   if (ginActivated) {
-    // Now update the GIN handles in all existing windows. Registration of memories happened above.
+    // 现在更新所有已有窗口中的 GIN 句柄。内存的注册已在前面完成。
     for (int i = 0; i < devr->winSortedCount; i++) {
       struct ncclDevrWindow* win = devr->winSorted[i].win;
       struct ncclWindow_vidmem* winHost;
@@ -1276,8 +1283,8 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
     memProp.type = CU_MEM_ALLOCATION_TYPE_PINNED;
     memProp.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     memProp.requestedHandleTypes = ncclCuMemHandleType;
-    // We have to assume that if GIN is possible it might be requested in the future,
-    // even on single node.
+    // 我们必须假定：只要 GIN 有可能启用，将来就可能被请求，
+    // 即便在单节点上也不例外。
     memProp.allocFlags.gpuDirectRDMACapable = comm->sharedRes->ginState.ncclGin != nullptr ? 1 : 0;
     memProp.location.id = comm->cudaDev;
 
@@ -1418,8 +1425,8 @@ bool ncclDevrWindowHasSysmemSegment(struct ncclDevrWindow* win) {
   return win != NULL && win->memory->globalHasSysmemSegment;
 }
 
-// Returns ncclInvalidUsage if the compiled version is greater than the runtime version
-// and NCCL_ENABLE_VERSION_CHECK=0 is not set
+// 若编译版本高于运行时版本则返回 ncclInvalidUsage，
+// 且未设置 NCCL_ENABLE_VERSION_CHECK=0
 static ncclResult_t getNcclVersionCompat(int compiledVersion, struct ncclDevCommCompat** devCompatPtr) {
   *devCompatPtr = nullptr;
 
@@ -1477,7 +1484,7 @@ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* prop
   props->cudaDev = comm->cudaDev;
   props->nvmlDev = comm->nvmlDev;
   props->deviceApiSupport = comm->symmetricSupport;
-  // NVLS multicast isn't available across cliques
+  // NVLS 多播在 clique 之间不可用
   props->multimemSupport = comm->nvlsSupport && !comm->p2pCrossClique;
 
   if (props->version > NCCL_VERSION(2, 29, 3)) {
@@ -1485,8 +1492,8 @@ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* prop
     NCCLCHECK(ncclGetGinType(comm, &props->ginType));
     NCCLCHECK(ncclGetRailedGinType(comm, &props->railedGinType));
 
-    // Preferring to call ncclDevrInitOnce directly instead to calling ncclTeam* functions because
-    // we can propagate the result of ncclDevrInitOnce back to the caller.
+    // 倾向于直接调用 ncclDevrInitOnce 而非 ncclTeam* 函数，因为
+    // 这样可以把 ncclDevrInitOnce 的结果传播回调用者。
     NCCLCHECK(ncclDevrInitOnce(comm));
     props->nLsaTeams = comm->devrState.nLsaTeams;
   }
@@ -1531,7 +1538,7 @@ ncclResult_t ncclDevCommCreate(ncclComm_t comm, struct ncclDevCommRequirements c
   NCCLCHECKGOTO(ncclDevrInitOnce(comm), ret, fail);
 
   NCCLCHECKGOTO(ncclCalloc(&task, 1), ret, fail);
-  // reqs must be deep copied to the task so background threads can safely access it
+  // reqs 必须深拷贝到任务中，以便后台线程能安全访问
   NCCLCHECKGOTO(deepCopyDevCommRequirements(reqs, &task->reqs), ret, fail);
   if (devCompat->devCommRequirementsFilter) {
     NCCLCHECKGOTO(devCompat->devCommRequirementsFilter(comm, task->reqs), ret, fail);
@@ -1563,7 +1570,7 @@ ncclResult_t ncclDevCommDestroy(struct ncclComm* comm, struct ncclDevComm const*
   if (devComm->magic == NCCL_API_MAGIC) {
     NCCLCHECK(getNcclVersionCompat(devComm->version, &devCompat));
   } else {
-    // Unversioned devComm -- must be v22902 or v22907.  v22902 handles devCommDestroy for both.
+    // 无版本号的 devComm——必须是 v22902 或 v22907。v22902 同时处理二者的 devCommDestroy。
     devCompat = &ncclDevCommCompat_v22902;
   }
   if (devCompat->devCommCopyOldToNew) {
@@ -1627,7 +1634,7 @@ ncclResult_t ncclDevrWorldToLsaRank(struct ncclComm* comm, int peerWorldRank, in
   return ncclSuccess;
 }
 
-// Get the corresponding pointer in another lsa rank's symmetric memory window
+// 获取在另一个 lsa rank 的对称内存窗口中对应的指针
 ncclResult_t ncclDevrGetLsaRankPtr(struct ncclComm* comm, struct ncclDevrWindow* winHost, size_t offset, int lsaRank,
                                    void** outPtr) {
   NCCLCHECK(CommCheck(comm, __func__, "comm"));
@@ -1635,22 +1642,22 @@ ncclResult_t ncclDevrGetLsaRankPtr(struct ncclComm* comm, struct ncclDevrWindow*
 
   struct ncclDevrState* devr = &comm->devrState;
 
-  // Validate lsaRank is within bounds
+  // 校验 lsaRank 在界限内
   if (lsaRank < 0 || lsaRank >= devr->lsaSize) {
     return ncclInvalidArgument;
   }
 
-  // Validate offset is within bounds
+  // 校验 偏移 在界限内
   if (offset < 0 || offset >= winHost->size) {
     return ncclInvalidArgument;
   }
 
-  // Calculate the address with offset for the specified lsa rank
+  // 为指定的 lsa rank 计算加上 偏移 后的地址
   *outPtr = (void*)((uintptr_t)devr->lsaFlatBase + lsaRank * devr->bigSize + winHost->bigOffset + offset);
   return ncclSuccess;
 }
 
-// Get the RMA device window handle for a specific context
+// 获取特定上下文的 RMA 设备窗口句柄
 void* ncclDevrGetRmaWin(struct ncclDevrWindow* winHost, int ctx) {
   if (winHost == nullptr || winHost->memory == nullptr) {
     return nullptr;
@@ -1661,7 +1668,7 @@ void* ncclDevrGetRmaWin(struct ncclDevrWindow* winHost, int ctx) {
   return winHost->memory->rmaHostWins[ctx];
 }
 
-// Get the multicast address for a given team
+// 获取给定团队的多播地址
 ncclResult_t ncclDevrGetLsaTeamPtrMC(struct ncclComm* comm, struct ncclDevrWindow* winHost, size_t offset,
                                      struct ncclTeam lsaTeam, void** outPtr) {
   if (winHost == nullptr || outPtr == nullptr) return ncclInternalError;
@@ -1675,7 +1682,7 @@ ncclResult_t ncclDevrGetLsaTeamPtrMC(struct ncclComm* comm, struct ncclDevrWindo
   struct ncclDevrTeam* tm;
   NCCLCHECK(symTeamObtain(comm, lsaTeam, multimem, &tm));
 
-  // Return the base multicast address for this team with offset
+  // 返回本团队带 偏移 的基址多播地址
   *outPtr = (void*)((uintptr_t)tm->mcBasePtr + winHost->bigOffset + offset);
   return ncclSuccess;
 }
@@ -1749,7 +1756,7 @@ ncclResult_t ncclGetLsaDevicePointer(ncclWindow_t window, size_t offset, int lsa
   struct ncclDevrState* devr;
   struct ncclDevrWindow* winHost = nullptr;
 
-  // Get the host version of the device window
+  // 获取设备窗口的主机侧版本
   NCCLCHECK(findCommAndHostWindowFromDeviceWindow(window, &comm, &winHost));
 
   devr = &comm->devrState;
@@ -1776,9 +1783,9 @@ ncclResult_t ncclGetPeerDevicePointer(ncclWindow_t window, size_t offset, int pe
   ncclTeam_t worldTeam;
   ncclTeam_t lsaTeam;
 
-  // Get the host version of the device window
+  // 获取设备窗口的主机侧版本
   NCCLCHECK(findCommAndHostWindowFromDeviceWindow(window, &comm, &winHost));
-  // Validate peer rank is within bounds
+  // 校验对端 rank 在界限内
   if (peer < 0 || peer >= comm->nRanks) {
     WARN("peer %d is not within valid range of ranks %d.", peer, comm->nRanks);
     return ncclInvalidArgument;
@@ -1788,12 +1795,12 @@ ncclResult_t ncclGetPeerDevicePointer(ncclWindow_t window, size_t offset, int pe
   worldTeam = ncclTeamWorld(comm);
   lsaTeam = ncclTeamLsa(comm);
 
-  // Convert world rank to LSA team rank
+  // 把全局 world rank 转换为 LSA 团队 rank
   lsaRank = ncclTeamRankToTeam(lsaTeam, worldTeam, peer);
 
-  // Validate the converted LSA rank is within bounds
+  // 校验转换后的 LSA rank 在界限内
   if (lsaRank < 0 || lsaRank >= devr->lsaSize) {
-    // We return a nullptr if peer is not reachable. Same as device side
+    // 若对端不可达则返回 nullptr。与设备侧行为一致
     *outPtr = nullptr;
     return ncclSuccess;
   }
@@ -1804,7 +1811,7 @@ ncclResult_t ncclGetPeerDevicePointer(ncclWindow_t window, size_t offset, int pe
 }
 ////////////////////////////////////////////////////////////////////////////////
 
-// Find the least index strictly greater than arg.
+// 找到严格大于 arg 的最小下标。
 template <typename Obj, typename Key>
 static int listFindSortedLub(Key Obj::* key, Obj* sorted, int count, Key arg) {
   int lo = 0, hi = count;

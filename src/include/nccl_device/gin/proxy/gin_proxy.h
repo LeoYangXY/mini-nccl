@@ -5,10 +5,17 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/gin/proxy/gin_proxy.h — [GIN 相关] GIN proxy 设备 API
+ * ----------------------------------------------------------------------------
+ * 定义 GIN(第三方 GPU 内部接口库)的 proxy 层设备 API，用于在 device 与 host 间代理
+ * GIN 操作。GIN 由 Meta 引入，mini-nccl 精简版下多被 stub。
+ */
+
 #ifndef _NCCL_DEVICE_GIN_PROXY_H_
 #define _NCCL_DEVICE_GIN_PROXY_H_
 
-// #include <config.h>
+// #包含 <config.h>
 
 #include <cstdint>
 #include <cuda_runtime.h>
@@ -27,8 +34,8 @@ struct ncclGinCpuProxyRequest {
 static_assert(sizeof(ncclGinCpuProxyRequest) <= sizeof(ncclGinRequest_t),
               "ncclGinCpuProxyRequest must fit in ncclGinRequest_t");
 
-// Clang's CUDA mode skips sm_32_intrinsics.hpp; clang <= 20 has no __stwt
-// declarations.
+// Clang's CUDA 模式 skips sm_32_intrinsics.hpp; clang <= 20 has 无 __stwt
+// 声明。
 #if defined(__clang__) && defined(__CUDA__) && (__clang_major__ < 21)
 NCCL_DEVICE_INLINE void __stwt(uint4* addr, const uint4& val) {
   asm("st.global.wt.v4.u32 [%0], {%1,%2,%3,%4};" ::"l"(addr), "r"(val.x), "r"(val.y), "r"(val.z), "r"(val.w)
@@ -40,7 +47,7 @@ namespace nccl {
 namespace gin {
 namespace proxy {
 
-// Chunk size for Gin Proxy GFD operations
+// 块 大小 for Gin 代理 GFD 操作
 static constexpr size_t DataChunkSize = 1ULL << 30;  // 1 GB
 
 NCCL_DEVICE_INLINE void waitForGfdComplete(ncclGinProxyGpuCtx_t* proxyCtx, uint32_t pe, uint32_t nextGfdIdx,
@@ -50,8 +57,8 @@ NCCL_DEVICE_INLINE void waitForGfdComplete(ncclGinProxyGpuCtx_t* proxyCtx, uint3
   using nccl::utility::testAbort;
   cuda::atomic_ref<uint32_t, cuda::thread_scope_system> ci(loadConst(&proxyCtx->cis)[pe]);
   uint32_t steps = 0;
-  // The PI and CI can keep moving because of concurrent threads posting GFDs to this queue, and the CPU consuming
-  // them. Therefore, to prevent overflow issues in the while statement, we need to use a special comparison function.
+  // The PI 并且 CI can 保留 moving 由于 并发的 线程 posting GFDs to 此 队列, 以及 CPU consuming
+  // them. 因此, to 防止 overflow 问题 在 ... 中 当 statement, 需要 使用 a 特殊的 comparison 函数.
   NVCC_PRAGMA_UNROLL_DISABLED
   while (!rollingLessEq<uint32_t>(nextGfdIdx, ci.load(ord)) && !testAbort(abortFlag, steps)) continue;
 }
@@ -74,22 +81,22 @@ NCCL_DEVICE_INLINE void postGfd(Coop coop, ncclGinProxyGpuCtx_t* proxyCtx, ncclG
   ncclGinProxyGfd_t* q = &loadConst(&proxyCtx->queues)[pe * proxyCtx->queueSize];
   uint32_t queueSize = loadConst(&proxyCtx->queueSize);
   if (coop.thread_rank() == 0) {
-    // claim a slot in the gfd queue
+    // claim a slot 在 ... 中 gfd 队列
     uint32_t idx = pi.fetch_add(1, cuda::memory_order_relaxed);
-    // wait for credits
+    // 等待 credits
     while (queueSize <= idx - ci.load(cuda::memory_order_relaxed)) {
     }
     uint32_t gfdIdx = idx & (queueSize - 1);
-    // 16-byte vector stores with the write-through cache hint. Both sides cast
-    // through (uint4*), which emits v4.b32 PTX requiring 16-byte alignment.
-    // ncclGinProxyGfd_t is declared __attribute__((packed, aligned(16))) in
-    // gin_proxy_device_host_common.h; static_asserts there enforce the contract.
+    // 16-字节 向量 stores 带有 写入-through 缓存 提示. 两者 sides cast
+    // through (uint4*), 该 emits v4.b32 PTX requiring 16-字节 对齐.
+    // ncclGinProxyGfd_t is declared __attribute__((packed, 已对齐(16))) 入
+    // gin_proxy_device_host_common.h；其中的 static_assert 强制执行该契约。
     NVCC_PRAGMA_UNROLL_AUTO
     for (uint8_t i = 0; i < sizeof(ncclGinProxyGfd_t) / sizeof(uint4); i++) {
       __stwt((uint4*)&q[gfdIdx] + i, ((uint4*)gfd)[i]);
     }
     if (isGet) {
-      // Atomic max with rolling logic.
+      // 原子 最大值 with rolling logic.
       cuda::atomic_ref<uint32_t, cuda::thread_scope_device> lastIssuedGet(
         nccl::utility::loadConst(&proxyCtx->lastIssuedGet)[pe]);
       uint32_t current = lastIssuedGet.load(cuda::memory_order_relaxed);
@@ -104,8 +111,8 @@ NCCL_DEVICE_INLINE void postGfd(Coop coop, ncclGinProxyGpuCtx_t* proxyCtx, ncclG
 }
 
 template <typename T>
-// Descriptor must be at least GWQ_GFD_SIZE bytes and it should be aligned
-// Assumes little-endian, which is okay.
+// Descriptor 必须为 至少 GWQ_GFD_SIZE 字节 并且 it 应当 已对齐
+// Assumes little-endian, 该 is okay.
 __device__ __forceinline__ void buildGfd(ncclGinProxyGfd_t* gfd, ncclGinProxyOp_t op, T srcVal, bool hasInline,
                                          size_t srcOff, ncclGinWindow_t srcHandle, size_t dstOff,
                                          ncclGinWindow_t dstHandle, size_t size, ncclGinCounter_t counterId,
@@ -143,7 +150,7 @@ __device__ __forceinline__ void buildGfd(ncclGinProxyGfd_t* gfd, ncclGinProxyOp_
   gfd->qword[ncclGinProxyGfdCompletion].completion.counterId = counterId;
   gfd->qword[ncclGinProxyGfdCompletion].completion.signalId = signalId;
 
-  // The signal value is split between two qwords, as the signal value is a full 64 bits
+  // The 信号 值 is split 之间 two qwords, as the 信号 值 is a 满的 64 位
   gfd->qword[ncclGinProxyGfdCompletion].completion.signalValLow = (uint16_t)signalVal;
   gfd->qword[ncclGinProxyGfdSignalVal].signalVal.signalValLow2 = (uint16_t)(signalVal >> 16);
   gfd->qword[ncclGinProxyGfdSignalVal].signalVal.signalValHigh = (uint32_t)(signalVal >> 32);
@@ -259,7 +266,7 @@ NCCL_DEVICE_INLINE void put(Coop coop, ncclGinProxyGfd_t* gfd, ncclGinProxyGpuCt
     nccl::gin::proxy::postGfd<Coop>(coop, proxyCtx, gfd, peer);
   }
 
-  // Handle additional GFD for VA signals.
+  // 句柄 额外的 GFD for VA 信号.
   if (signal.type == NCCL_GIN_SIGNAL_TYPE_VA) {
     ncclGinProxyOp_t op;
     constructProxyOp(op, /*isGet*/ false, /*isFlush*/ false, /*hasInline*/ false, NCCL_GIN_SIGNAL_TYPE_VA, signalOp,
@@ -297,7 +304,7 @@ struct ncclGinApi_FlushAsync<NCCL_NET_DEVICE_GIN_PROXY> {
     req->peer = peer;
     ncclGinProxyGpuCtx_t* proxyCtx = &((ncclGinProxyGpuCtx_t*)ctx.handle)[ctx.contextId];
     cuda::atomic_ref<uint32_t, cuda::thread_scope_device> lastIssuedGet(loadConst(&proxyCtx->lastIssuedGet)[peer]);
-    // Must be before pi is loaded in case of concurrent gets
+    // 必须为 之前 pi is loaded 若发生 并发的 gets
     req->lastIssuedGet = lastIssuedGet.load(cuda::memory_order_acquire);
 
     cuda::atomic_ref<uint32_t, cuda::thread_scope_system> pi(loadConst(&proxyCtx->pis)[peer]);
@@ -314,7 +321,7 @@ struct ncclGinApi_Wait<NCCL_NET_DEVICE_GIN_PROXY> {
     ncclGinProxyGpuCtx_t* proxyCtx = &((ncclGinProxyGpuCtx_t*)ctx.handle)[ctx.contextId];
     nccl::gin::proxy::waitForGfdComplete(proxyCtx, req.peer, req.nextGfdIdx, cuda::memory_order_relaxed, abortFlag);
 
-    // Ensure gets are visible by issuing a local flush
+    // 确保 gets are visible by issuing a 本地 刷写
     uint32_t* visibleGets = nccl::utility::loadConst(&proxyCtx->lastVisibleGet);
     cuda::atomic_ref<uint32_t, cuda::thread_scope_device> lastVisibleGet(visibleGets[req.peer]);
     uint32_t visible = lastVisibleGet.load(cuda::memory_order_relaxed);
@@ -329,7 +336,7 @@ struct ncclGinApi_Wait<NCCL_NET_DEVICE_GIN_PROXY> {
       nccl::gin::proxy::postGfd(ncclCoopThread(), proxyCtx, &gfd, flushPeer);
 
       nccl::gin::proxy::flush(proxyCtx, flushPeer, ord, abortFlag);
-      // may move backward in case of concurrent flushes. That's okay.
+      // may move backward 若发生 并发的 flushes. 那个's okay.
       lastVisibleGet.store(req.lastIssuedGet, cuda::memory_order_relaxed);
     }
   }
@@ -386,8 +393,8 @@ struct ncclGinApi_Flush<NCCL_NET_DEVICE_GIN_PROXY> {
       ncclGinRequest_t request;
       ncclGinApi_FlushAsync<NCCL_NET_DEVICE_GIN_PROXY>::call(ctx, pe, &request, hasDescriptor, descriptor,
                                                              ncclGinOptFlagsDefault);
-      // This is slightly inefficient. If there are prior gets, there will be one flush GFD per peer even though 1
-      // suffices.
+      // 这是 slightly inefficient. 若re are prior gets, there 将会 one 刷写 GFD 每个 对等端 尽管 1
+      // 足够。
       ncclGinApi_Wait<NCCL_NET_DEVICE_GIN_PROXY>::call(ctx, request, hasDescriptor, descriptor, ord, abortFlag);
     }
   }

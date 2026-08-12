@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/rma/rma_proxy.h — RMA Proxy 端头
+ * ----------------------------------------------------------------------------
+ * 定义 RMA 在 proxy 线程侧使用的结构（ncclRmaArgs 的 proxy 视图、连接管理等），
+ * 由 proxy 线程负责与对端建立/维护 RMA 连接并执行传输。
+ */
+
 #ifndef _NCCL_RMA_PROXY_H_
 #define _NCCL_RMA_PROXY_H_
 
@@ -22,7 +29,7 @@ struct ncclRmaArgs;
 struct ncclKernelPlan;
 struct ncclDevrWindow;
 
-// Signal mode for put-signal operations.
+// 信号 模式 for 放置-信号 操作.
 typedef enum {
   NCCL_SIGNAL_NONE = 0,        // No signaling
   NCCL_SIGNAL = 1              // Default signal operation
@@ -48,7 +55,7 @@ typedef enum ncclRmaDescType_t {
 } ncclRmaDescType_t;
 
 struct ncclRmaPutSignalOp {
-  // Network function descriptor
+  // 网络 函数 descriptor
   uint64_t srcOff;
   void* srcHandle;
   uint64_t dstOff;
@@ -56,7 +63,7 @@ struct ncclRmaPutSignalOp {
   size_t size;
   int targetRank;
   ncclRmaSignal_t signal;
-  // Request handle for the network operation
+  // 请求 句柄 为了 网络 操作
   void* request;
 };
 
@@ -64,7 +71,7 @@ struct ncclRmaWaitSignalOp {
   int npeers;
   int* waitPeers;
   int* waitSignals;
-  // Local flush in graph mode
+  // 本地 刷写 入 图 模式
   int needFlush;
 };
 
@@ -86,9 +93,9 @@ struct ncclRmaProxyDesc {
     struct ncclRmaPutSignalGroupOp putSignalGroup;
   };
 
-  // Non graph mode, desc does not own the sequence allocations but points to the ctx's sequence allocations
-  // Graph mode, desc owns the per-descriptor sequence allocations and this needs to be freed when the desc is
-  // destroyed
+  // Non 图 模式, desc 执行 不 自身的 the sequence 分配 但 points 到 ctx's sequence 分配
+  // 图 模式, desc owns the 每个-descriptor sequence 分配 并且 此 需要 be 已释放 当 ... 时 desc is
+  // 已销毁
   uint64_t opSeq;
   uint64_t* readySeq;
   uint64_t* readySeqDev;
@@ -97,7 +104,7 @@ struct ncclRmaProxyDesc {
   uint64_t* doneSeqDev;
   void* doneSeqGdrHandle;
 
-  // Graph capture fields
+  // 图 capture 字段
   struct ncclKernelPlan* persistPlan; // Back reference to persistent plan during clean up
   bool persistDescValid; // Persistent descriptor is valid
 };
@@ -105,28 +112,28 @@ struct ncclRmaProxyDesc {
 struct ncclRmaProxyCtx {
   struct ncclComm* comm;
 
-  // GIN context for the RMA proxy context
+  // GIN 上下文 为了 RMA 代理 上下文
   void* rmaCollComm;
   void* rmaCtx;
   // ncclNetDeviceHandle_t *devHandle;
   ncclNetProperties_t props;
 
-  //---------Non-graph descriptor queues and synchronization---------
+  //---------Non-图 descriptor 队列 并且 同步---------
 
-  // Lock-free circular buffer for pending Descs
+  // 锁-释放 circular 缓冲区 for 待处理 Descs
   size_t queueSize;  // Power of 2 size for pending queue
   struct ncclRmaProxyDesc** circularBuffers;  // Lock-free circular buffer per peer
   uint32_t* pis;  // Producer Indices per peer
   uint32_t* cis;  // Consumer Indices per peer
 
-  // Per-rank inProgressQueues: Descs with issued network operations waiting for completion
+  // 每个-rank inProgressQueues: Descs with issued 网络 操作 waiting for 完成
   struct ncclIntruQueue<struct ncclRmaProxyDesc, &ncclRmaProxyDesc::next>* inProgressQueues;
 
-  // Per-target-rank request credits. Each target rank maps to one RMA send comm request pool.
+  // 每个-target-rank 请求 credits. 每个 target rank maps to one RMA 发送 通信域 请求 池.
   uint32_t maxInflightRequests;
   uint32_t* inflightRequests;
 
-  // Per-rank sequence number and counters
+  // 每个-rank sequence number 并且 counters
   uint64_t* opSeqs;
   uint64_t* opSeqsDev;
   void* opSeqsGdrHandle;
@@ -137,29 +144,29 @@ struct ncclRmaProxyCtx {
   uint64_t* doneSeqsDev;
   void* doneSeqsGdrHandle;
 
-  // Signal memory layout and management
-  // Each RMA context allocates a signal buffer with the following layout:
-  // - Offsets [0 to nRanks*8-1]: per-rank distinct signals (8 bytes per rank)
-  // - Offset [nRanks*8]: shared aggregate signal counter (8 bytes)
-  // Total signal buffer size: (nRanks + 1) * 8 bytes
+  // 信号 内存 布局 并且 management
+  // 每个 RMA 上下文 allocates a 信号 缓冲区 with 以下内容 布局:
+  // - 偏移 [0 to nRanks*8-1]: 每个-rank distinct 信号 (8 字节 每个 rank)
+  // - 偏移 [nRanks*8]: shared aggregate 信号 counter (8 字节)
+  // 总计 信号 缓冲区 大小: (nRanks + 1) * 8 字节
   CUmemGenericAllocationHandle signalsCumemhandle;
   void* signalsMhandle;
   uint64_t* signalsDev;
   uint64_t* signalsHost; // Host buffer to track the expected values of the signals
 
-  //---------Graph descriptor queues and synchronization---------
+  //---------图 descriptor 队列 并且 同步---------
 
-  // Per-rank persistent descriptor queue: Descs from all live graphs
+  // 每个-rank persistent descriptor 队列: Descs from 所有 live 图
   struct ncclIntruQueue<struct ncclRmaProxyDesc, &ncclRmaProxyDesc::next>* persistentQueues;
 
-  // CPU-accessible signal is required as proxy needs to poll on the signal values
+  // CPU-accessible 信号 需要 as 代理 需要 轮询 在 ... 上 信号 值
   void* cpuAccessSignalsGdrHandle;
   void* cpuAccessSignalsMhandle;
   uint64_t* cpuAccessSignals;
   uint64_t* cpuAccessSignalsDev;
   uint64_t* cpuAccessSignalsHost; // Host buffer to track the expected values of the signals
 
-  // Local flush buffer
+  // 本地 刷写 缓冲区
   CUmemGenericAllocationHandle flushBufCumemhandle;
   void* flushBufMhandle;
   uint64_t* flushBufDev;
@@ -173,12 +180,12 @@ struct ncclRmaProxyState {
   bool connected;
   int rmaType;
 
-  // Physical GIN communicator contexts
+  // Physical GIN 通信器 上下文
   int rmaCommCount;
   void* rmaComms[NCCL_GIN_MAX_CONNECTIONS];
   ncclNetProperties_t props[NCCL_GIN_MAX_CONNECTIONS];
 
-  // Virtual RMA proxy contexts
+  // 虚 RMA 代理 上下文
   int rmaProxyCtxCount;
   void** rmaProxyCtxs;
   int rmaProgress;         // RMA progress is enabled
@@ -188,95 +195,95 @@ struct ncclRmaProxyState {
   ncclResult_t asyncResult;
 };
 
-// Proxy-specific function declarations
+// 代理-特定的 函数 declarations
 ncclResult_t ncclRmaProxyPutLaunch(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream);
 ncclResult_t ncclRmaProxyWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream);
 ncclResult_t ncclRmaProxyReclaimPlan(struct ncclComm* comm, struct ncclKernelPlan* plan);
 
-// RMA Proxy lifecycle functions
+// RMA 代理 lifecycle 函数
 ncclResult_t ncclRmaProxyConnectOnce(struct ncclComm* comm);
 ncclResult_t ncclRmaProxyFinalize(struct ncclComm* comm);
 
-// RMA Proxy context management
+// RMA 代理 上下文 management
 ncclResult_t ncclRmaProxyCreateContext(struct ncclComm* comm, void* collComm, ncclNetProperties_t props,
                                        void** outRmaProxyCtx, ncclNetDeviceHandle_t** outDevHandle);
 ncclResult_t ncclRmaProxyDestroyContext(ncclRma_t* rmaComm, void* rmaProxyCtx);
 ncclResult_t ncclRmaProxyProgress(ncclRma_t* ncclRma, void* rmaProxyCtx);
 void* ncclRmaProxyProgressThread(struct ncclRmaProxyState* rmaProxyState_);
 
-// RMA Proxy memory registration
+// RMA 代理 内存 注册
 ncclResult_t ncclRmaProxyRegister(struct ncclComm* comm, void* address, size_t size,
                                   void* rmaHostWins[NCCL_GIN_MAX_CONNECTIONS]);
 ncclResult_t ncclRmaProxyDeregister(struct ncclComm* comm, void* rmaHostWins[NCCL_GIN_MAX_CONNECTIONS]);
 
-// Circular buffer helpers
+// Circular 缓冲区 辅助函数
 bool ncclRmaProxyCircularBufFull(struct ncclRmaProxyCtx* ctx, int peer);
 bool ncclRmaProxyCircularBufEmpty(struct ncclRmaProxyCtx* ctx, int peer);
 
-// Returns true if the queue this descriptor would enqueue into is full.
+// 返回 真 若 队列 此 descriptor would enqueue into is 满的.
 bool ncclRmaProxyEnqueueFull(struct ncclRmaProxyCtx* ctx, const struct ncclRmaProxyDesc* desc);
 
 // ============================================================================
-// Descriptor API: 4-step protocol
+// Descriptor API: 4-步骤 protocol
 // ============================================================================
-//   1. BuildDesc(...desc)          allocate desc, populate fields
-//   2. {Put,PutGroup,Wait}Params   snapshot fields into stream-batch params
-//   3. EnqueueDesc(ctx, &desc)     transfer ownership (queue or destroy);
-//   4. ncclCuStreamBatchMemOp(...) issue memops on the user stream
+//   1. BuildDesc(...desc)          分配 desc, populate 字段
+//   2. {放置,PutGroup,等待}Params   snapshot 字段 into 流-batch params
+//   3. EnqueueDesc(ctx, &desc)     transfer ownership (队列 或者 销毁);
+//   4. ncclCuStreamBatchMemOp(...) 问题 memops on 用户 流
 //
-// Step 2 must precede step 3: EnqueueDesc may free the desc (non-persistent
-// wait), so any field read happens in step 2.
+// 步骤 2 must precede 步骤 3: EnqueueDesc may 释放 desc (non-persistent
+// 等待), 所以 任意 字段 读取 happens 入 步骤 2.
 //
 // ============================================================================
 
-// ---- Descriptor builders ----
+// ---- 描述符构建器 ----
 
-// Helper to build a single put-signal op (used by both single put and group
-// put builders).
+// 辅助 to 构建 a 单个 放置-信号 操作 (已使用 by 两者 单个 放置 并且 组
+// 放置 builders).
 ncclResult_t ncclRmaProxyPutBuildOp(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx, int ctx,
                                     bool persistent, struct ncclDevrWindow* srcWin, size_t srcOff,
                                     struct ncclDevrWindow* peerWin, size_t peerOff, size_t size, int peer,
                                     ncclSignalMode_t signalMode, struct ncclRmaPutSignalOp* op);
 
-// Build a single put descriptor.
+// 构建 a 单个 放置 descriptor.
 ncclResult_t ncclRmaProxyPutBuildDesc(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx,
                                       struct ncclKernelPlan* plan, struct ncclDevrWindow* srcWinHost,
                                       size_t srcWinOffset, struct ncclDevrWindow* peerWinHost, size_t peerWinOffset,
                                       size_t size, int peer, int ctx, ncclSignalMode_t signalMode,
                                       struct ncclRmaProxyDesc* desc);
 
-// Build a put-signal-group descriptor over an array of pre-filled ops.
-// Takes ownership of *ops and nulls the caller's slot on success.
+// 构建 a 放置-信号-组 descriptor over an 数组 of 前-filled ops.
+// Takes ownership of *ops 并且 nulls 调用方's slot 成功时.
 ncclResult_t ncclRmaProxyPutGroupBuildDesc(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx,
                                            struct ncclKernelPlan* plan, int nOps, struct ncclRmaPutSignalOp** ops,
                                            int ctx, struct ncclRmaProxyDesc* desc);
 
-// Build a wait-signal descriptor.
-// Takes ownership of caller-allocated peers/nsignals arrays.
+// 构建 a 等待-信号 descriptor.
+// Takes ownership of 调用方-已分配 对等端/nsignals 数组.
 ncclResult_t ncclRmaProxyWaitBuildDesc(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx,
                                        struct ncclKernelPlan* plan, int npeers, int** peers, int** nsignals,
                                        struct ncclRmaProxyDesc* desc);
 
-// Stream-batch memop param builders for put descriptors.
+// 流-batch memop param builders for 放置 descriptors.
 int ncclRmaProxyPutStartNumOps(bool persistent);
 ncclResult_t ncclRmaProxyPutStartParams(struct ncclRmaProxyDesc* desc, CUstreamBatchMemOpParams* params);
 int ncclRmaProxyPutDoneNumOps(bool persistent);
 ncclResult_t ncclRmaProxyPutDoneParams(struct ncclRmaProxyDesc* desc, CUstreamBatchMemOpParams* params);
 
-// Stream-batch memop param builders for put-signal-group descriptors.
+// 流-batch memop param builders for 放置-信号-组 descriptors.
 int ncclRmaProxyPutGroupStartNumOps(bool persistent);
 ncclResult_t ncclRmaProxyPutGroupStartParams(struct ncclRmaProxyDesc* desc, CUstreamBatchMemOpParams* params);
 int ncclRmaProxyPutGroupDoneNumOps(bool persistent);
 ncclResult_t ncclRmaProxyPutGroupDoneParams(struct ncclRmaProxyDesc* desc, CUstreamBatchMemOpParams* params);
 
-// Stream-batch memop param builder for a wait descriptor.
+// 流-batch memop param builder for a 等待 descriptor.
 int ncclRmaProxyWaitNumStreamOps(const struct ncclRmaProxyDesc* desc);
 ncclResult_t ncclRmaProxyWaitParams(struct ncclRmaProxyCtx* rmaProxyCtx, struct ncclRmaProxyDesc* desc,
                                     CUstreamBatchMemOpParams* params);
 
-// Descriptor enqueue dispatcher.
+// 描述符入队分发器。
 ncclResult_t ncclRmaProxyEnqueueDesc(struct ncclRmaProxyCtx* rmaProxyCtx, struct ncclRmaProxyDesc** desc);
 
-// Descriptor destruction. Takes desc** and nulls *desc after free.
+// Descriptor destruction. Takes desc** 并且 nulls *desc 之后 释放.
 ncclResult_t ncclRmaProxyDestroyDesc(struct ncclComm* comm, struct ncclRmaProxyDesc** desc);
 #endif

@@ -5,7 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-// Implementation of the NVLink SHARP (NVLS) transport
+/*
+ * src/transport/nvls.cc — NVLS(NVLink SHARP)传输实现
+ * ----------------------------------------------------------------------------
+ * 实现经 NVSwitch 的多播/聚合传输：通过 NVLS 把数据在交换机层直接规约/广播，减少
+ * GPU 间往返。注意：mini-nccl 当前多为单节点 2 卡 P2P，本文件可能整体被 #if 0 屏蔽。
+ */
+
+// NVLink SHARP(NVLS)传输层的实现
 
 #include "comm.h"
 #include "graph.h"
@@ -31,7 +38,7 @@ struct localRegData {
 
 ncclResult_t nvlsCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo* info1,
                             struct ncclPeerInfo* info2) {
-  // This transport cannot be used for p2p
+  // 该传输层不能用于 P2P
   *ret = 0;
   return ncclSuccess;
 }
@@ -54,13 +61,13 @@ ncclResult_t ncclNvlsGroupCreate(struct ncclComm* comm, CUmulticastObjectProp* p
   CUmemAllocationHandleType type = ncclCuMemHandleType;
   size_t size = prop->size;
 
-  // Create a Multicast group
+  // 创建一个多播(Multicast)组
 
   INFO(NCCL_NVLS, "NVLS Creating Multicast group nranks %d size %zu on rank %d", nranks, size, rank);
   CUCHECK(cuMulticastCreate(mcHandle, prop));
 
   if (type == CU_MEM_HANDLE_TYPE_FABRIC) {
-    // Get a handle to pass to other ranks
+    // 获取一个句柄，传给其它 rank
     CUCHECK(cuMemExportToShareableHandle(shareableHandle, *mcHandle, ncclCuMemHandleType, 0));
   } else {
     memcpy(shareableHandle, mcHandle, sizeof(CUmemGenericAllocationHandle));
@@ -78,9 +85,9 @@ ncclResult_t ncclNvlsGroupConnect(struct ncclComm* comm, char* shareableHandle, 
   ncclResult_t ret = ncclSuccess;
   INFO(NCCL_NVLS, "NVLS importing shareableHandle %p from rank %d", shareableHandle, rank);
 
-  // Import and map the remote memory descriptor to the local GPU
+  // 导入远端内存描述符，并把它映射到本地 GPU 的地址空间
   if (type == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
-    // cuMem UDS support
+    // cuMem 的 UDS(Unix 域套接字)支持
     TRACE(NCCL_NVLS, "NVLS rank %d Importing shareable handle %p from rank %d", comm->localRank, shareableHandle, rank);
     TRACE(NCCL_NVLS, "NVLS rank %d request conversion of handle 0x%lx from rank %d", comm->localRank,
           *(uint64_t*)shareableHandle, rank);
@@ -106,7 +113,7 @@ ncclResult_t nvlsGroupUnbind(struct ncclComm* comm, size_t size, CUmemGenericAll
   int dev = comm->cudaDev;
   INFO(NCCL_NVLS, "NVLS Unbind MC handle %llx size %zu dev %d", *mcHandle, size, dev);
 
-  // Unbind physical memory from group for the given device
+  // 把给定设备的物理内存从组中解绑
   if (size) CUCHECK(cuMulticastUnbind(*mcHandle, dev, 0 /*mcOffset*/, size));
 
   return ncclSuccess;
@@ -114,8 +121,8 @@ ncclResult_t nvlsGroupUnbind(struct ncclComm* comm, size_t size, CUmemGenericAll
 
 ncclResult_t ncclNvlsDeregBuffer(struct ncclComm* comm, CUmemGenericAllocationHandle* mcHandler, CUdeviceptr ptr,
                                  int dev, size_t ucsize, size_t mcsize) {
-  // unbind can trigger RM error if buffer is freed already by users
-  // however, it is safe to ignore the error, and unbind will succeed anyway
+  // 若该缓冲区已被用户释放，unbind 可能触发 RM 错误
+  // 不过忽略该错误是安全的，unbind 最终仍会成功
   CUCALL(cuMulticastUnbind(*mcHandler, dev, 0 /*mcOffset*/, ucsize));
   CUCHECK(cuMemUnmap(ptr, mcsize));
   CUCHECK(cuMemAddressFree(ptr, mcsize));
@@ -131,14 +138,14 @@ ncclResult_t nvlsGroupUnmapMem(struct ncclComm* comm, size_t ucsize, void* ucptr
   INFO(NCCL_NVLS, "NVLS Unmap mem UC handle 0x%llx(%p) ucsize %zu MC handle 0x%llx(%p) mcsize %zd", *ucHandle, ucptr,
        ucsize, *mcHandle, mcptr, mcsize);
 
-  // Release the UC memory and mapping
+  // 释放 UC(单播)内存及其映射
   if (ucptr) {
     CUCHECK(cuMemUnmap((CUdeviceptr)ucptr, ucsize));
     CUCHECK(cuMemAddressFree((CUdeviceptr)ucptr, ucsize));
     CUCHECK(cuMemRelease(*ucHandle));
   }
 
-  // Release the MC memory and mapping
+  // 释放 MC(多播)内存及其映射
   if (mcptr) {
     CUCHECK(cuMemUnmap((CUdeviceptr)mcptr, mcsize));
     CUCHECK(cuMemAddressFree((CUdeviceptr)mcptr, mcsize));
@@ -160,7 +167,7 @@ NCCL_PARAM(NvlsEnable, "NVLS_ENABLE", 2);
 NCCL_PARAM(NvlsChunkSize, "NVLS_CHUNKSIZE", 128 * 1024);
 NCCL_PARAM(NvlsTreeMaxChunkSize, "NVLSTREE_MAX_CHUNKSIZE", -2);
 
-// Returns optimal NVLSTree tuning parameters for SM100 multi-node configurations.
+// 返回 SM100 多节点配置下的最优 NVLSTree 调优参数。
 static ncclResult_t ncclNvlsTreeSm100Tuning(struct ncclComm* comm, int* nChannels, int* chunkSize,
                                             int* treeMaxChunkSize) {
   int nNodes = comm->nNodes;
@@ -206,24 +213,24 @@ ncclResult_t ncclNvlsTuning(struct ncclComm* comm) {
   const char* chunkSizeEnv = ncclGetEnv("NCCL_NVLS_CHUNKSIZE");
   bool userSetChunkSize = (chunkSizeEnv != NULL && strlen(chunkSizeEnv) > 0);
 
-  // Set default nChannels based on SM architecture
+  // 根据 SM 架构设置默认的 通道 数量
   if (comm->compCap >= 100) {
     nChannels = (comm->nNodes > 1) ? NVLS_NCHANNELS_SM100 : NVLS_NCHANNELS_SM100_NVL;
   } else {
     nChannels = NVLS_NCHANNELS_SM90;
   }
 
-  // SM100 multi-node NVLSTree tuning (may adjust all three values)
+  // SM100 多节点 NVLSTree 调优(可能调整全部三个值)
   if (comm->minCompCap >= 100 && comm->nNodes > 1) {
     NCCLCHECK(ncclNvlsTreeSm100Tuning(comm, &nChannels, &chunkSize, &treeMaxChunkSize));
   }
 
-  // User overrides take priority over tuning
+  // 用户的覆盖设置优先于自动调优
   if (comm->config.nvlsCTAs != NCCL_CONFIG_UNDEF_INT) nChannels = comm->config.nvlsCTAs;
-  // If user has set chunk size or chunkSize is not set, use the chunk size as determined by ncclParamNvlsChunkSize()
+  // 若用户已设置 块 大小、或 chunkSize 未设置，则使用 ncclParamNvlsChunkSize() 确定的值
   if (userSetChunkSize || chunkSize == 0) chunkSize = ncclParamNvlsChunkSize();
 
-  // Determine final treeMaxChunkSize: env var > tuning > fallback
+  // 确定最终的 treeMaxChunkSize：环境变量 > 自动调优 > 兜底值
   int envTreeMaxChunkSize = (int)ncclParamNvlsTreeMaxChunkSize();
   if (envTreeMaxChunkSize == -2 && treeMaxChunkSize == 0) {
     treeMaxChunkSize = (comm->nNodes >= 4) ? 65536 : chunkSize;
@@ -231,10 +238,10 @@ ncclResult_t ncclNvlsTuning(struct ncclComm* comm) {
     treeMaxChunkSize = envTreeMaxChunkSize;
   }
 
-  // Clamp nvlsChannels to [minCTAs, maxCTAs]
+  // 把 nvlsChannels 钳制到 [minCTAs, maxCTAs] 区间内
   nChannels = std::max(comm->config.minCTAs, std::min(comm->config.maxCTAs, nChannels));
 
-  // Apply final values
+  // 应用最终取值
   comm->nvlsChannels = nChannels;
   comm->nvlsChunkSize = chunkSize;
   comm->nvlsTreeMaxChunkSize = treeMaxChunkSize;
@@ -268,7 +275,7 @@ ncclResult_t ncclNvlsInit(struct ncclComm* comm) {
   CUCHECK(cuCtxGetDevice(&dev));
   CUDACHECK(cudaDriverGetVersion(&driverVersion));
   if (ncclParamNvlsEnable() == 2) {
-    // NVLS Multicast support requires CUDA12.1 UMD + KMD
+    // NVLS 多播支持需要 CUDA12.1 的用户态驱动(UMD)与内核态驱动(KMD)
     if (CUPFN(cuMulticastCreate) != NULL /*&& driverVersion >= 12010 */) {
       CUCHECK(cuDeviceGetAttribute(&comm->nvlsSupport, CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, dev));
     }
@@ -350,25 +357,25 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   ucprop.requestedHandleTypes = ncclCuMemHandleType;
   CUCHECKGOTO(cuMemGetAllocationGranularity(&ucgran, &ucprop, CU_MEM_ALLOC_GRANULARITY_RECOMMENDED), ret, fail);
   ALIGN_SIZE(ucsize, ucgran);
-  // Map a VA for UC memory with MC alignment and size
+  // 为 UC 内存映射一个满足 MC 对齐与大小要求的虚拟地址(VA)
   CUCHECKGOTO(cuMemAddressReserve((CUdeviceptr*)ucptr, ucsize, ucgran, 0U, 0), ret, fail);
 
-  // Alloc local physical mem for this NVLS group
+  // 为本 NVLS 组分配本地物理内存
   CUCHECKGOTO(cuMemCreate(ucHandle, ucsize, &ucprop, 0), ret, fail1);
   CUCHECKGOTO(cuMemMap((CUdeviceptr)*ucptr, ucsize, 0, *ucHandle, 0), ret, fail2);
   CUCHECKGOTO(cuMemSetAccess((CUdeviceptr)*ucptr, ucsize, desc, 1), ret, fail3);
   CUDACHECKGOTO(cudaMemset(*ucptr, 0, ucsize), ret, fail3);
-  // Track NVLS buffer as persistent memory
+  // 把 NVLS 缓冲区登记为持久内存
   NCCLCHECKGOTO(ncclMemTrack(comm->memManager, *ucptr, ucsize, *ucHandle, ncclCuMemHandleType, ncclMemPersist), ret,
                 fail3);
 
-  // intra-node barrier to mitigate the possible hang in cuMulticastBindMem during abort
+  // 节点内屏障，用于缓解 中止 时 cuMulticastBindMem 可能卡死的问题
   NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks,
                                           comm->localRankToRank[0]),
                 ret, fail3);
-  // Bind physical memory to the Multicast group
-  // NB: It will block until all ranks have been added to the Group
-  // This is where we normally see issues if the system NVLS/Multicast support is broken
+  // 把物理内存绑定到多播组
+  // 注意：它会阻塞，直到所有 rank 都被加入该组
+  // 如果系统的 NVLS/多播支持有问题，通常就是在这里暴露出来
   err = CUPFN(cuMulticastBindMem(*mcHandle, 0 /*mcOffset*/, *ucHandle, 0 /*memOffset*/, ucsize, 0 /*flags*/));
   if (err != CUDA_SUCCESS) {
     const char* errStr;
@@ -381,7 +388,7 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
     goto fail3;
   }
 
-  // Map mc virtual address
+  // 映射多播(mc)虚拟地址
   CUCHECKGOTO(cuMemAddressReserve((CUdeviceptr*)mcptr, mcsize, mcgran, 0U, 0), ret, fail);
   CUCHECKGOTO(cuMemMap((CUdeviceptr)*mcptr, mcsize, 0, *mcHandle, 0), ret, fail);
   CUCHECKGOTO(cuMemSetAccess((CUdeviceptr)*mcptr, mcsize, desc, 1), ret, fail);
@@ -419,7 +426,7 @@ ncclResult_t ncclNvlsBufferSetup(struct ncclComm* comm) {
   cudaStream_t deviceStream, hostStream;
 
   if (comm->nvlsSupport == 0 || comm->nvlsResources->inited) return ncclSuccess;
-  // initialize after checking comm->nvlsSupport
+  // 在检查过 通信域->nvlsSupport 之后再初始化
   nHeads = comm->channels[0].nvls.nHeads;
   headRank = comm->channels[0].nvls.headRank;
   resources = comm->nvlsResources;
@@ -450,11 +457,11 @@ ncclResult_t ncclNvlsBufferSetup(struct ncclComm* comm) {
       struct ncclChannel* channel = comm->channels + c;
       struct ncclChannelPeer* peer = channel->peers[nvlsPeer];
 
-      // Reduce UC -> MC
+      // 把 UC 数据规约到 MC(单播规约写入多播)
       peer->send[1].conn.buffs[NCCL_PROTO_SIMPLE] = resources->ucBuff + (h * 2 * nChannels + c) * buffSize;
       peer->recv[0].conn.buffs[NCCL_PROTO_SIMPLE] = resources->mcBuff + (h * 2 * nChannels + c) * buffSize;
 
-      // Broadcast MC -> UC
+      // 把 MC 数据广播到 UC(多播读出到单播)
       peer->recv[1].conn.buffs[NCCL_PROTO_SIMPLE] = resources->ucBuff + ((h * 2 + 1) * nChannels + c) * buffSize;
       peer->send[0].conn.buffs[NCCL_PROTO_SIMPLE] = resources->mcBuff + ((h * 2 + 1) * nChannels + c) * buffSize;
 
@@ -480,7 +487,7 @@ ncclResult_t ncclNvlsBufferSetup(struct ncclComm* comm) {
   NCCLCHECKGOTO(ncclStrongStreamRelease(ncclCudaGraphNone(comm->config.graphUsageMode), &comm->sharedRes->hostStream,
                                         /*concurrent=*/false),
                 res, fail);
-  // For now, the barrier is a must that guarantees all buffers are mc-mapped before accessing peer's buffer
+  // 目前这个屏障是必须的：它保证在访问对端缓冲区之前，所有缓冲区都已完成 mc 映射
   NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks,
                                           comm->localRankToRank[0]),
                 res, fail);
@@ -557,7 +564,7 @@ ncclResult_t ncclNvlsSetup(struct ncclComm* comm, struct ncclComm* parent) {
                                   (void**)&resources->mcCredit, &resources->creditUCSize, &resources->creditMCSize),
                   res, fail);
 
-    // Set up head and tail only for now
+    // 目前只设置 头 与 尾
     NCCLCHECKGOTO(ncclStrongStreamAcquire(ncclCudaGraphNone(comm->config.graphUsageMode), &comm->sharedRes->hostStream,
                                           /*concurrent=*/false, &hostStream),
                   res, fail);
@@ -571,7 +578,7 @@ ncclResult_t ncclNvlsSetup(struct ncclComm* comm, struct ncclComm* parent) {
         char* mem = NULL;
         struct ncclChannelPeer* peer = channel->peers[nvlsPeer];
 
-        // Reduce UC -> MC
+        // 把 UC 数据规约到 MC(单播规约写入多播)
         mem = resources->ucCredit + (h * 2 * nChannels + c) * memSize;
         peer->send[1].transportComm = &nvlsTransport.send;
         peer->send[1].conn.buffs[NCCL_PROTO_SIMPLE] = NULL;
@@ -586,7 +593,7 @@ ncclResult_t ncclNvlsSetup(struct ncclComm* comm, struct ncclComm* parent) {
         peer->recv[0].conn.stepSize = nvlsStepSize;
         peer->recv[0].conn.flags |= NCCL_NVLS_MIN_POLL;
 
-        // Broadcast MC -> UC
+        // 把 MC 数据广播到 UC(多播读出到单播)
         mem = resources->ucCredit + ((h * 2 + 1) * nChannels + c) * memSize;
         peer->recv[1].transportComm = &nvlsTransport.recv;
         peer->recv[1].conn.buffs[NCCL_PROTO_SIMPLE] = NULL;
@@ -624,7 +631,7 @@ ncclResult_t ncclNvlsSetup(struct ncclComm* comm, struct ncclComm* parent) {
                   res, fail);
   }
 
-  // MNNVL does not support NVLS buffer registration
+  // MNNVL 不支持 NVLS 缓冲区注册
   if (!comm->MNNVL && comm->nvlsResources->nvlsShmemHandle == NULL) {
     /* create shared memory for fast NVLS buffer registration */
     typeSize = DIVUP(sizeof(struct localRegData) << 1, CACHE_LINE_SIZE) * CACHE_LINE_SIZE;
@@ -753,7 +760,7 @@ ncclResult_t tryRegisterBuffer(struct ncclComm* comm, uintptr_t userBuff, size_t
     if ((regData[i].reg.state & NVLS_REG_POSSIBLE) == 0) {
       goto fail;
     }
-    // We need to check whether the offsets are the same among ranks.
+    // 我们需要检查各 rank 之间的偏移是否一致。
     if (i > 0 && regData[i].offset != regData[i - 1].offset) {
       goto fail;
     }
@@ -782,18 +789,18 @@ ncclResult_t tryRegisterBuffer(struct ncclComm* comm, uintptr_t userBuff, size_t
   }
 
   CUCHECKGOTO(cuMulticastAddDevice(mcHandle, comm->nvlsResources->dev), ret, fail);
-  // intra-node barrier to mitigate the possible hang in cuMulticastBindAddr during abort
-  // It also ensures that if cuMulticastBindAddr fails, the cleanup code won't race with the UDS proxy
+  // 节点内屏障，用于缓解 中止 时 cuMulticastBindAddr 可能卡死的问题
+  // 它同时保证：若 cuMulticastBindAddr 失败，清理代码不会与 UDS 代理 发生竞态
   NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks,
                                           comm->localRankToRank[0]),
                 ret, fail);
-  // Coverity complains that regRecord could be NULL.  That won't in practice be the case because we've already checked
-  // (regData[i].reg.state & NVLS_REG_POSSIBLE) of all local ranks, which would catch it and bail out.
+  // Coverity 抱怨 regRecord 可能为 NULL。实践中不会如此，因为我们此前已检查过
+  // 所有本地 rank 的 (regData[i].reg.状态 & NVLS_REG_POSSIBLE)，那样会提前捕获并退出。
   // coverity[var_deref_op]
   CUresult err;
   err = CUPFN(cuMulticastBindAddr(mcHandle, 0, (CUdeviceptr)regRecord->begAddr, ucsize, 0));
   if (err != CUDA_SUCCESS) {
-    // Don't print an error in case of buffers that are incompatible with MC.
+    // 对于与 MC 不兼容的缓冲区，不要打印错误。
     if (err != CUDA_ERROR_INVALID_VALUE) {
       const char* errStr;
       CUCALL(cuGetErrorString(err, &errStr));
@@ -803,9 +810,9 @@ ncclResult_t tryRegisterBuffer(struct ncclComm* comm, uintptr_t userBuff, size_t
   }
   bindComplete = true;
 
-  // Create a VA for the NVLS
+  // 为 NVLS 创建一个虚拟地址(VA)
   CUCHECKGOTO(cuMemAddressReserve(&regPtr, mcsize, mcgran, 0U, 0), ret, fail);
-  // Map the VA locally
+  // 在本地映射该 VA
   CUCHECKGOTO(cuMemMap(regPtr, mcsize, 0, mcHandle, 0), ret, fail);
   mapComplete = true;
   CUCHECKGOTO(cuMemSetAccess(regPtr, mcsize, &comm->nvlsResources->accessDesc, 1), ret, fail);
@@ -1107,7 +1114,7 @@ ncclResult_t ncclNvlsRegResourcesQuery(struct ncclComm* comm, struct ncclTaskCol
       goto fail;
     }
   } else {
-    // Further tweaks for Blackwell with NVLS registered buffers
+    // 针对 Blackwell + NVLS 注册缓冲区的进一步微调
     if (info->func == ncclFuncReduceScatter) {
       factor = (comm->bandwidths[ncclFuncReduceScatter][NCCL_ALGO_NVLS][NCCL_PROTO_SIMPLE] > 400 ? 7 : 6) * 8;
       *recChannels =

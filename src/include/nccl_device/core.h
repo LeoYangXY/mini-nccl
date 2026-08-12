@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/core.h — nccl_device 设备 API 核心类型与宏
+ * ----------------------------------------------------------------------------
+ * 定义 nccl_device（dbV2 设备 API）的公共基础：ncclDeviceHandle/ncclDeviceComm 等
+ * 设备侧类型、线程块/线程映射宏，是整个 nccl_device 框架的“地基”。
+ */
+
 #ifndef _NCCL_DEVICE_CORE_H_
 #define _NCCL_DEVICE_CORE_H_
 #include <nccl.h>
@@ -17,7 +24,7 @@ typedef struct ncclDevComm ncclDevComm_t;
 struct ncclTeam;
 typedef struct ncclTeam ncclTeam_t;
 
-// typedef struct ncclWindow_vidmem* ncclWindow_t; // in nccl.h
+// typedef 结构体 ncclWindow_vidmem* ncclWindow_t; // 入 nccl.h
 typedef struct ncclWindow_vidmem ncclWindow_vidmem_t;
 
 struct ncclMultimemHandle;
@@ -105,16 +112,16 @@ struct ncclDevCommRequirements {
 
   int worldGinBarrierCount;
 
-  // Set to false if GIN strong signals will not be needed by the kernels using this devComm (defaults to true).
-  // When false, the use of GIN strong signals results in undefined behavior.
+  // 设为 假 若 GIN strong 信号 will 不 be 已需要 by 该内核s 使用 此 devComm (defaults to 真).
+  // 当 假, the 使用 of GIN strong 信号 results 入 undefined behavior.
   bool ginStrongSignalsRequired;
 
-  // Set to false if GIN VA signals will not be needed by the kernels using this devComm (defaults to true).
-  // When false, the use of GIN VA signals results in undefined behavior.
+  // 设为 假 若 GIN VA 信号 will 不 be 已需要 by 该内核s 使用 此 devComm (defaults to 真).
+  // 当 假, the 使用 of GIN VA 信号 results 入 undefined behavior.
   bool ginVaSignalsRequired;
 };
 
-// clang-format off: maintain hand-formatted code
+// clang-格式 off: maintain hand-formatted 代码
 #define NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER {                               \
     sizeof(ncclDevCommRequirements_t),           /* size */                    \
     NCCL_API_MAGIC,                              /* magic */                   \
@@ -139,7 +146,7 @@ struct ncclDevCommRequirements {
     true,                                        /* ginStrongSignalsRequired */ \
     true,                                        /* ginVaSignalsRequired */     \
 }
-// clang-format on
+// clang-格式 on
 
 struct ncclDevResourceRequirements {
   ncclDevResourceRequirements_t* next;
@@ -205,7 +212,7 @@ NCCL_EXTERN_C __host__ ncclResult_t ncclGetPeerDevicePointer(ncclWindow_t window
                                                              void** outPtr);
 
 ////////////////////////////////////////////////////////////////////////////////
-// Team API:
+// Team API：
 #if __cplusplus
 NCCL_IR_EXTERN_C NCCL_HOST_DEVICE_INLINE ncclTeam ncclTeamWorld(ncclDevComm const&);
 #endif
@@ -240,13 +247,13 @@ NCCL_EXTERN_C __host__ int ncclTeamRankToLsa(ncclComm_t comm, ncclTeam_t team, i
 NCCL_EXTERN_C NCCL_HOST_DEVICE_INLINE ncclTeam_t ncclTeamInnerFactor(ncclTeam_t parent, int innerSize);
 NCCL_EXTERN_C NCCL_HOST_DEVICE_INLINE ncclTeam_t ncclTeamOuterFactor(ncclTeam_t parent, int innerSize);
 
-// Interpret each team as a set of ranks. This function assumes that `subset`
-// is a subset of `parent`. Thus the number of ranks in the set difference of
-// `parent` minus `subset` is `super.nRanks - subset.nRanks`. Given `index` this
-// function returns the index'th element of `parent` minus `subset`.
+// Interpret 每个 team as a 设置 of ranks. 该函数 assumes 那个 `subset`
+// is a subset of `父`. 从而 的数量 ranks 在 ... 中 设置 difference of
+// `父` minus `subset` is `super.nRanks - subset.nRanks`. 给定的 `索引` 此
+// 函数 返回 the 索引'th 元素 of `父` minus `subset`.
 NCCL_EXTERN_C NCCL_HOST_DEVICE_INLINE int ncclTeamRankInDifference(ncclTeam_t parent, ncclTeam_t subset, int index);
 
-// Equivalent to ncclTeamOuterFactor of lsa team.
+// 等价于 ncclTeamOuterFactor of lsa team.
 #if __cplusplus
 NCCL_IR_EXTERN_C NCCL_HOST_DEVICE_INLINE ncclTeam ncclTeamRail(ncclDevComm const&);
 #endif
@@ -254,7 +261,7 @@ NCCL_IR_EXTERN_C NCCL_HOST_DEVICE_INLINE ncclTeam ncclTeamRail(ncclDevComm const
 NCCL_EXTERN_C __host__ ncclTeam_t ncclTeamRail(ncclComm_t comm);
 #endif
 
-// Get offset of resource buffer within `comm.resourceWindow`.
+// 获取 偏移 of resource 缓冲区 之内 `通信域.resourceWindow`.
 NCCL_EXTERN_C NCCL_HOST_DEVICE_INLINE size_t ncclGetResourceBufferOffset(ncclDevResourceHandle_t h);
 
 #if NCCL_CHECK_CUDACC
@@ -262,7 +269,7 @@ NCCL_DEVICE_INLINE ncclSymPtr<char> ncclGetResourceBuffer(ncclDevComm const&, nc
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-// Window API:
+// Window API：
 
 #if NCCL_CHECK_CUDACC
 NCCL_IR_EXTERN_C NCCL_DEVICE_INLINE void* ncclGetLocalPointer(ncclWindow_t w, size_t offset);
@@ -275,7 +282,7 @@ NCCL_IR_EXTERN_C NCCL_DEVICE_INLINE void* ncclGetLsaMultimemPointer(ncclWindow_t
 #endif
 
 #if NCCL_CHECK_CUDACC
-// Convenience for combining ncclGet***Pointer() with resource handle.
+// Convenience for combining ncclGet***指针() with resource 句柄.
 NCCL_IR_EXTERN_C NCCL_DEVICE_INLINE void* ncclGetResourceBufferLocalPointer(ncclDevComm const&, ncclDevResourceHandle);
 NCCL_IR_EXTERN_C NCCL_DEVICE_INLINE void* ncclGetResourceBufferLsaPointer(ncclDevComm const&, ncclDevResourceHandle,
                                                                           int peer);

@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/allocator.cc — 内存分配器(allocator)实现
+ * ----------------------------------------------------------------------------
+ * 实现 NCCL 统一的内存分配器：设备/主机内存的分配、对齐、缓存与回收（cudaMalloc
+ * 包装），被 comm 建立时的 buffer 分配、用户注册 buffer 等复用。
+ */
+
 #include "comm.h"
 #include "transport.h"
 #include "group.h"
@@ -39,7 +46,7 @@ ncclResult_t ncclMemAlloc(void** ptr, size_t size) {
     size_t handleSize = size;
     int requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 #if CUDART_VERSION >= 12030
-    // Query device to see if FABRIC handle support is available
+    // Query 设备 to 参见 若 FABRIC 句柄 支持 可用
     flag = 0;
     (void)CUPFN(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED, currentDev));
     if (flag) requestedHandleTypes |= CU_MEM_HANDLE_TYPE_FABRIC;
@@ -48,7 +55,7 @@ ncclResult_t ncclMemAlloc(void** ptr, size_t size) {
     memprop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     memprop.requestedHandleTypes = (CUmemAllocationHandleType)requestedHandleTypes;
     memprop.location.id = currentDev;
-    // Query device to see if RDMA support is available
+    // Query 设备 to 参见 若 RDMA 支持 可用
     flag = 0;
     CUCHECK(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED, currentDev));
     if (flag) memprop.allocFlags.gpuDirectRDMACapable = 1;
@@ -66,7 +73,7 @@ ncclResult_t ncclMemAlloc(void** ptr, size_t size) {
         /* Allocate the physical memory on the device */
         CUCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
       } else if (err != CUDA_SUCCESS) {
-        // Catch and report any error from above
+        // Catch 并且 报告 任意 错误 from 上方
         CUCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
       }
     } else
@@ -95,8 +102,8 @@ ncclResult_t ncclMemAlloc(void** ptr, size_t size) {
 
 fallback:
 #endif
-  // Coverity is right to complain that we may pass a NULL ptr to cudaMalloc.  That's deliberate though:
-  // we want CUDA to return an error to the caller.
+  // Coverity is 右 to complain 那个 we may pass a NULL ptr to cudaMalloc.  那个's deliberate 尽管:
+  // we 想要 CUDA to 返回 an 错误 to 调用方.
   // coverity[var_deref_model]
   CUDACHECKGOTO(cudaMalloc(ptr, size), ret, fail);
 
@@ -122,7 +129,7 @@ ncclResult_t ncclMemFree(void* ptr) {
   CUCHECKGOTO(cuPointerGetAttribute((void*)&ptrDev, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL, (CUdeviceptr)ptr), ret, fail);
   CUDACHECKGOTO(cudaSetDevice((int)ptrDev), ret, fail);
   if (ncclCuMemEnable()) {
-    // User facing API, memManager does not need to track user memory. Same as ncclMemAlloc
+    // 用户 facing API, memManager 执行 不 需要 track 用户 内存. 相同 as ncclMemAlloc
     NCCLCHECKGOTO(ncclCuMemFree(ptr, nullptr), ret, fail);
     goto exit;
   }
@@ -141,11 +148,11 @@ fail:
 ////////////////////////////////////////////////////////////////////////////////
 // ncclSpace:
 //
-// This datastructure "cuts" the line of non-negative integers into segments
-// which alternate between "full" (allocated) and "empty" (not allocated). The
-// cuts are sorted ascending. The segment after the last cut must be empty
-// (the unallocated frontier). Knwoing this we can deduce whether the segment
-// ending at cut[i] is full or empty with this formula:
+// 此 datastructure "cuts" the 行 of non-negative integers into 段
+// 该 alternate 之间 "满的" (已分配) 并且 "空的" (不 已分配). The
+// cuts are sorted ascending. The 段 在 ... 之后 最后 cut 必须为 空的
+// (the unallocated frontier). Knwoing 此 我们可以 deduce whether the 段
+// ending at cut[i] is 满的 或者 空的 with 此 formula:
 //   isFull(i) = (i%2 != ncuts%2)
 
 void ncclSpaceConstruct(struct ncclSpace* a) {
@@ -157,7 +164,7 @@ void ncclSpaceDestruct(struct ncclSpace* a) {
 }
 
 static void insertSegment(struct ncclSpace* a, int index, int64_t lo, int64_t hi) {
-  // Insert space for two cuts in `a->cuts[]` before `index`.
+  // Insert space for two cuts 入 `a->cuts[]` 之前 `索引`.
   if (a->count + 2 > a->capacity) {
     a->capacity *= 2;
     if (a->capacity == 0) a->capacity = 16;
@@ -173,13 +180,13 @@ static void insertSegment(struct ncclSpace* a, int index, int64_t lo, int64_t hi
   a->cuts[index + 1] = hi;
   a->count += 2;
 
-  // Filter pairs of adjacent repeated values from cuts[]. Since these mark
-  // boundaries where segments transition between full<->empty, dropping such a
-  // pair fuses two adjacent segments together. Examples:
+  // Filter pairs of 相邻的 repeated 值 from cuts[]. 自 这些 mark
+  // boundaries 何処 段 transition 之间 满的<->空的, dropping 此类 a
+  // pair fuses two 相邻的 段 together. Examples:
   //   [1,2,3,3,4] -> [1,2,4]
-  //   [1,2,3,3,3,4] -> [1,2,3,4] // have to leave one 3 because its a full<->empty transition
+  //   [1,2,3,3,3,4] -> [1,2,3,4] // 必须 leave one 3 因为 its a 满的<->空的 transition
   //   [1,2,3,3,3,3,4] -> [1,2,4]
-  // Leading zeros don't have to be in pairs, they are always dropped:
+  // Leading zeros don't 必须 be 入 pairs, they are always dropped:
   //   [0,1,2] -> [1,2]
   //   [0,0,1,2] -> [1,2]
   int r = index, w = index; // Read and write cursors.
@@ -188,14 +195,14 @@ static void insertSegment(struct ncclSpace* a, int index, int64_t lo, int64_t hi
     int64_t cur = a->cuts[r++];
     a->cuts[w++] = cur;
     if (prev == cur) {
-      // Repeated value is an empty segment which can be deleted.
-      // Erase last two cuts or just one if we're at the start.
+      // Repeated 值 is an 空的 段 该 可以 deleted.
+      // Erase 最后 two cuts 或者 仅 one 若 we're at the 起始.
       w -= w == 1 ? 1 : 2;
-      // Zeros can only occur at the beginning (due to being sorted). We want to
-      // drop any number of zeros, but only even numbers of other repeated values.
-      // So set to zero here, which will make prev=0, thus if next value is zero
-      // it will be dropped but if its not zero then it will need to begin a new
-      // pair to be dropped.
+      // Zeros can 仅 occur at the beginning (由于 being sorted). We 希望
+      // drop 任意 数量： zeros, 但 仅 甚至 numbers of 其他 repeated 值.
+      // 所以 设为 zero here, 该 will 使 prev=0, 从而 若 下一个 值 is zero
+      // it 将会 dropped 但 若 its 不 zero then it will 需要 开始 a new
+      // 待丢弃的配对。
       cur = 0;
     }
     prev = cur;
@@ -204,8 +211,8 @@ static void insertSegment(struct ncclSpace* a, int index, int64_t lo, int64_t hi
 }
 
 ncclResult_t ncclSpaceAlloc(struct ncclSpace* a, int64_t limit, int64_t size, int align, int64_t* outOffset) {
-  // When allocating we try to locate the first empty segment which can hold
-  // the allocation and move its lower cut upward.
+  // 当 allocating we 尝试 locate 第一个 空的 段 该 can 持有
+  // the 分配 并且 move its lower cut upward.
   int i = a->count % 2; // First empty segment ends at cuts[i]
   size_t off;
   while (i <= a->count) {
@@ -215,10 +222,10 @@ ncclResult_t ncclSpaceAlloc(struct ncclSpace* a, int64_t limit, int64_t size, in
     if (off + size <= hi) {
       *outOffset = off;
       if (i == 0 || off + size == hi) {
-        // Slow path required.
+        // 缓慢 路径 所需.
         insertSegment(a, i, off, off + size);
       } else {
-        // We can just append to the end of a full segment.
+        // 我们可以 仅 append 到 末尾 of a 满的 段.
         a->cuts[i - 1] = off + size;
       }
       return ncclSuccess;
@@ -236,7 +243,7 @@ ncclResult_t ncclSpaceFree(struct ncclSpace* a, int64_t offset, int64_t size) {
     return ncclInternalError;
   }
 
-  // This could be binary search, but since allocate is linear there's no point.
+  // 此 可能为 binary search, 但 自 分配 is linear there's 无 point.
   int i = 1 - a->count % 2; // First full segment ends at cuts[i]
   while (a->cuts[i] <= offset) i += 2;
 
@@ -248,13 +255,13 @@ ncclResult_t ncclSpaceFree(struct ncclSpace* a, int64_t offset, int64_t size) {
     return ncclInternalError;
   }
 
-  // First try the two fast cases which just shrink a segment from one side.
+  // 第一 尝试 the two 快速 情形 该 仅 shrink a 段 from one side.
   if (i != 0 && lo == offset && offset + size != hi) {
     a->cuts[i - 1] = offset + size; // Bring bottom up.
   } else if (lo != offset && offset + size == hi) {
     a->cuts[i] = offset; // Bring top down.
   } else {
-    // Slow path.
+    // 缓慢 路径.
     insertSegment(a, i, offset, offset + size);
   }
   return ncclSuccess;
@@ -292,7 +299,7 @@ ncclResult_t ncclShadowPoolDestruct(struct ncclShadowPool* pool, cudaStream_t st
           struct ncclShadowPage* page = obj->page;
           if (page != nullptr) {
             if (page->freeMask == 0) {
-              // Put full pages back into page list.
+              // 放置 满的 页 后 into 页 列表.
               page->freeMask = 1;
               page->next = pool->pages;
               pool->pages = page;
@@ -350,7 +357,7 @@ ncclResult_t ncclShadowPoolAlloc(struct ncclShadowPool* pool, size_t size, void*
     for (int i = 0; i < 1 << hbits; i++) pool->table[i] = nullptr;
   }
 
-  // Check for hash table size increase before inserting. Maintain 2:1 object:bucket ratio.
+  // 检查 for hash table 大小 increase 之前 inserting. Maintain 2:1 object:bucket ratio.
   if (pool->count + 1 > 2 << hbits) {
     struct ncclShadowObject** table0 = pool->table;
     struct ncclShadowObject** table1 =
@@ -387,7 +394,7 @@ ncclResult_t ncclShadowPoolAlloc(struct ncclShadowPool* pool, size_t size, void*
         pool->pages = page;
         CUDACHECK(cudaMallocFromPoolAsync(&page->devObjs, pageSize, pool->memPool, stream));
         CUDACHECK(cudaMemsetAsync(page->devObjs, 0, pageSize, stream));
-        // fall through...
+        // 贯穿执行...
       }
       if (page->objSize == pageObjSize) {
         int slot = popFirstOneBit(&page->freeMask);

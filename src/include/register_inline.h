@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/register_inline.h — 用户 buffer 注册内联辅助
+ * ----------------------------------------------------------------------------
+ * 提供 buffer 注册的内联函数与模板：把用户 host/device 内存登记为可被 transport
+ * 直接访问的段，处理 IPC 句柄与地址映射，被 register.cc 复用。
+ */
+
 #ifndef NCCL_REGISTER_INLINE_H_
 #define NCCL_REGISTER_INLINE_H_
 

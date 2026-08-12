@@ -58,7 +58,7 @@ struct p2pConnectInfo {
   int rank;
   int read;
   struct ncclP2pBuff p2pBuff;
-  // Used by CE memcpy
+  // 已使用 by CE memcpy
   ncclShmIpcDesc_t desc;
 };
 static_assert(sizeof(struct p2pConnectInfo) <= CONNECT_SIZE, "p2pConnectInfo is too large");
@@ -76,19 +76,19 @@ struct p2pShm {
   struct ncclRecvMem recvMem;
 };
 struct p2pShmProxyInfo {
-  // Shared memory between proxy and receiving GPU
+  // 代理 线程与接收端 GPU 之间的共享内存
   struct p2pShm* shm;
   struct p2pShm* devShm;
   ncclShmIpcDesc_t desc;
 
-  // Intermediate step for sender
+  // 发送方的中转步骤
   struct ncclRecvMem* ceRecvMem;
   char* ceDevBuff;
 
-  // Receiver buffer
+  // 接收方 缓冲区
   char* recvFifo;
 
-  // Used by CE memcpy progress only
+  // 已使用 by CE memcpy progress 仅
   uint64_t step;
   cudaStream_t stream;
   cudaEvent_t events[NCCL_STEPS];
@@ -105,14 +105,14 @@ struct p2pResources {
   int sendMemSameProc;
   void* recvMemIpc;
   int recvMemSameProc;
-  // CE memcpy support
+  // CE memcpy 支持
   struct p2pShmProxyInfo proxyInfo;
   struct p2pShm* shm;
   struct p2pShm* devShm;
   ncclShmIpcDesc_t desc;
 };
 
-// cuMem API support
+// 是否支持 cuMem(CUDA 虚拟内存管理)API
 struct p2pCuMemProxyInfo {
   struct ncclP2pBuff p2pBuff;
 };
@@ -133,11 +133,11 @@ static int busIdToCudaDev(int64_t busId) {
     NCCLCHECK(busIdToInt64(devBusIdStr, &devBusId));
     if (busId == devBusId) return i;
   }
-  // BusId was not found in our locally visible CUDA devices
+  // BusId was 不 已找到 入 our locally visible CUDA 设备
   return -1;
 }
 
-// CE memcpy support
+// CE memcpy 支持
 NCCL_PARAM(P2pUseCudaMemcpy, "P2P_USE_CUDA_MEMCPY", 0);
 static int useMemcpy = 0;
 static void initCeOperation();
@@ -149,7 +149,7 @@ ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph
                            struct ncclPeerInfo* info2) {
   initCeOperation();
 
-  // Check topology / p2p level.
+  // 检查 拓扑 / p2p 层级.
   int intermediateRank;
   NCCLCHECK(ncclTopoCheckP2p(comm, comm->topo, info1->rank, info2->rank, ret, NULL, &intermediateRank, NULL));
   if (*ret == 0) return ncclSuccess;
@@ -158,7 +158,7 @@ ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph
     return ncclSuccess;
   }
 
-  // Check if NET would work better
+  // 检查是否改用网络传输(网络)效果更好
   int useNet = 0;
   NCCLCHECK(ncclTopoCheckNet(comm->topo, info1->rank, info2->rank, &useNet));
   if (useNet) {
@@ -166,29 +166,37 @@ ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph
     return ncclSuccess;
   }
 
+  // hostHash 是主机的唯一标识。只要两个 rank 不在同一台机器上，
+  // 就不可能走 GPU 直连(P2P 只在单机内有效)，此时直接返回让上层改用网络传输。
   if (info1->hostHash != comm->peerInfo[comm->rank].hostHash || info1->hostHash != info2->hostHash) {
-    // If either peer is non-local then we are done.
+    // 只要任意一端不是本机的，就无需继续判断了。
     return ncclSuccess;
   }
 
-  // Convert the peer's busId into a local cudaDev index (cf. CUDA_VISIBLE_DEVICES)
+  // 把对端的 busId(PCIe 总线地址，全局唯一)转换成本进程可见的 cudaDev 序号。
+  // 之所以需要转换，是因为 CUDA_VISIBLE_DEVICES 会让同一块物理卡在不同进程中
+  // 拥有不同的设备序号，只有 busId 是稳定不变的。
   int cudaDev1 = busIdToCudaDev(info1->busId);
   int cudaDev2 = busIdToCudaDev(info2->busId);
   if (cudaDev1 == -1 || cudaDev2 == -1) {
+    // 转换失败，说明该卡在本进程的可见设备列表之外
 #if CUDART_VERSION >= 10010
-    // CUDA 10.1 and later can use P2P with invisible devices.
+    // CUDA 10.1 及以后版本，即使设备对本进程不可见，也仍然可以通过 IPC 走 P2P，
+    // 因此这里保持 *ret 的原值(乐观地认为可用)。
     return ncclSuccess;
 #else
-    // Peer's CUDA device is not visible in this process : we can't communicate with it.
+    // 旧版 CUDA：对端设备在本进程中不可见，就无法与之通信。
     *ret = 0;
     return ncclSuccess;
 #endif
   }
 
-  // Check that CUDA can do P2P
+  // 询问 CUDA 运行时：这两张卡之间到底能不能做 P2P 访问
   int p2p;
   if (cudaDev1 == cudaDev2) {
-    // This is useful for multi-rank GPUs. cudaDeviceCanAccessPeer would indicate that it is not allowed.
+    // 两个 rank 落在同一张物理卡上(多 rank 共享一个 GPU 的场景)。
+    // 此时必然可以互访，但 cudaDeviceCanAccessPeer 对“自己访问自己”会返回不允许，
+    // 所以这里必须特判，直接置为可用。
     p2p = 1;
   } else if (!CUDASUCCESS(cudaDeviceCanAccessPeer(&p2p, cudaDev1, cudaDev2))) {
     INFO(NCCL_INIT | NCCL_P2P, "peer query failed between dev %d(=%lx) and dev %d(=%lx)", cudaDev1, info1->busId,
@@ -197,15 +205,19 @@ ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph
     return ncclSuccess;
   }
 
-  // This will always fail when using NCCL_CUMEM_ENABLE=1
+  // 下面这段“传统 IPC 探测”在开启 NCCL_CUMEM_ENABLE=1 时必然失败，
+  // 因为那种模式走的是 cuMem 新接口而非 cudaIpc 旧接口，所以要用 !ncclCuMemEnable() 排除掉。
   if (p2p != 0 && !ncclCuMemEnable()) {
-    // Cached result of the legacyIPC detection
+    // 用 静态 变量缓存探测结果：这个检测需要真实分配显存并申请 IPC 句柄，
+    // 开销较大，而同一进程内结果恒定，因此只做一次。
     static int legacyIPC = -1;
     if (legacyIPC >= 0) {
       *ret = legacyIPC;
       return ncclSuccess;
     }
-    // Check that legacy IPC support is available (WSL WAR)
+    // 探测传统 cudaIpc 是否真的可用(这是针对 WSL 环境的规避手段 WAR：
+    // WSL 下 cudaDeviceCanAccessPeer 会返回可用，但实际申请 IPC 句柄时会失败，
+    // 因此必须实际试一次才能确定)。
     char* dummy;
     cudaIpcMemHandle_t ipc;
     NCCLCHECK(ncclCudaMalloc(&dummy, CUDA_IPC_MIN, comm->memManager, ncclMemOffload));
@@ -234,21 +246,21 @@ ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph
     TRACE(P2P, "IPC: %016lx %016lx %016lx %016lx", devIpc[4], devIpc[5], devIpc[6], devIpc[7]); \
   } while (0)
 
-// cuMem API support
+// 是否支持 cuMem(CUDA 虚拟内存管理)API
 ncclResult_t ncclP2pAllocateShareableBuffer(size_t size, int refcount, ncclIpcDesc* ipcDesc, void** ptr, int peerRank,
                                             struct ncclMemManager* manager, ncclMemType_t memtype) {
   if (ncclCuMemEnable()) {
 #if CUDART_VERSION >= 11030
     CUmemAllocationHandleType type = ncclCuMemHandleType;
 
-    // cuMem API support
+    // 是否支持 cuMem(CUDA 虚拟内存管理)API
     CUmemGenericAllocationHandle handle;
     NCCLCHECK(ncclCuMemAlloc(ptr, &handle, type, size, manager, memtype));
     if (manager != nullptr && peerRank >= 0 && memtype != ncclMemPersist) {
       NCCLCHECK(ncclDynMemMarkExportToPeer(manager, *ptr, peerRank));
     }
     if (type == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
-      // Return the native cuMem handle for later Export/Import via UDS
+      // 返回原生 cuMem 句柄，供后续通过 UDS(Unix 域套接字)导出/导入使用
       memcpy(&ipcDesc->cuDesc.data, &handle, sizeof(handle));
     } else {
       CUCHECK(cuMemExportToShareableHandle(&ipcDesc->cuDesc, handle, type, 0));
@@ -261,7 +273,7 @@ ncclResult_t ncclP2pAllocateShareableBuffer(size_t size, int refcount, ncclIpcDe
     return ncclInternalError;
 #endif
   } else {
-    // Allocate a CUDA buffer and generate an IPC handle for it
+    // 分配一块 CUDA 显存，并为其生成 IPC 句柄(供其它进程映射)
     NCCLCHECK(ncclCudaCalloc((char**)ptr, size, manager));
     cudaError_t res = cudaIpcGetMemHandle(&ipcDesc->devIpc, *ptr);
     if (res != cudaSuccess) {
@@ -283,7 +295,7 @@ ncclResult_t ncclP2pImportShareableBuffer(struct ncclComm* comm, int peer, size_
                                           void** devMemPtr, void* ownerPtr, ncclMemType_t memType) {
   if (ncclCuMemEnable()) {
 #if CUDART_VERSION >= 11030
-    // cuMem API support
+    // 是否支持 cuMem(CUDA 虚拟内存管理)API
     CUdeviceptr dptr = 0;
     CUmemAllocationHandleType type = ncclCuMemHandleType;
     CUmemGenericAllocationHandle handle;
@@ -298,11 +310,11 @@ ncclResult_t ncclP2pImportShareableBuffer(struct ncclComm* comm, int peer, size_
     CUCHECK(cuMemGetAllocationGranularity(&granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
     ALIGN_SIZE(size, granularity);
 
-    // Import and map the remote memory descriptor to the local GPU
+    // 导入远端内存描述符，并把它映射到本地 GPU 的地址空间
     if (type == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
-      // UDS fd support
+      // UDS fd 支持
       int fd = -1;
-      // Send cuMem handle to remote for conversion to an fd
+      // 把 cuMem 句柄发送给远端，由其转换为文件描述符(fd)
       NCCLCHECK(ncclProxyClientGetFdBlocking(comm, peer, &cuDesc->data, &fd));
       INFO(NCCL_P2P, "UDS converted handle 0x%lx to fd %d on remote peer %d", *(uint64_t*)&cuDesc->data, fd, peer);
       CUCHECK(cuMemImportFromShareableHandle(&handle, (void*)(uintptr_t)fd, type));
@@ -315,7 +327,7 @@ ncclResult_t ncclP2pImportShareableBuffer(struct ncclComm* comm, int peer, size_
 
     TRACE(NCCL_P2P, "Imported shareable buffer size %zu handle 0x%llx dptr %p", size, handle, (void*)dptr);
 
-    // Allow access by the local GPU
+    // 授权本地 GPU 访问该内存
     CUmemAccessDesc accessDesc = {};
     accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     accessDesc.location.id = comm->cudaDev;
@@ -325,14 +337,14 @@ ncclResult_t ncclP2pImportShareableBuffer(struct ncclComm* comm, int peer, size_
 
     *devMemPtr = (void*)dptr;
 
-    // Track imported buffer
+    // 跟踪已导入的缓冲区
     NCCLCHECK(ncclMemTrackImportFromPeer(comm->memManager, (void*)dptr, size, handle, type, memType, peer,
                                          comm->peerInfo[peer].cudaDev, ownerPtr));
 #else
     return ncclInternalError;
 #endif
   } else {
-    // Legacy CUDA IPC
+    // 传统 CUDA IPC 路径
     CUDACHECK(cudaIpcOpenMemHandle(devMemPtr, ipcDesc->devIpc, cudaIpcMemLazyEnablePeerAccess));
   }
 
@@ -341,20 +353,33 @@ ncclResult_t ncclP2pImportShareableBuffer(struct ncclComm* comm, int peer, size_
   return ncclSuccess;
 }
 
-// Setting this to non zero causes P2P to use Reads rather than Writes
+/*
+ * P2P 有两种数据搬运方向，性能差异很大：
+ *   - Write(写)：发送方主动把数据写入接收方显存。这是默认方式，
+ *                写操作可以“发射后不管(fire-and-forget)”，不需要等待返回，延迟低。
+ *   - Read(读) ：接收方主动去发送方显存里把数据读回来。读操作必须等待数据返回，
+ *                但在某些拓扑(如 Ampere + NVLink)上能获得更高的带宽利用率。
+ * 该参数设为非 0 时强制使用 Read 模式；-2 表示“不覆盖，交由拓扑自动决定”。
+ */
 NCCL_PARAM(P2pReadEnable, "P2P_READ_ENABLE", -2);
+// 设为 1 可禁用 P2P 直连指针(direct 指针)优化，强制走中转缓冲区，一般仅用于排查问题
 NCCL_PARAM(P2pDirectDisable, "P2P_DIRECT_DISABLE", 0);
 
+// 判断两个 rank 是否处于同一个进程内：主机相同 且 进程号相同。
+// 同进程意味着共享同一个虚拟地址空间，可以省去 IPC 句柄导入的开销。
 #define P2P_SAME_PID(MYINFO, PEERINFO) \
   ((MYINFO->hostHash == PEERINFO->hostHash) && (MYINFO->pidHash == PEERINFO->pidHash))
 
+// 决定这一对 rank 之间该用 读取 还是 写入 模式，以及是否需要经由中转 rank。
 static ncclResult_t p2pGetInfo(struct ncclComm* comm, struct ncclPeerInfo* info1, struct ncclPeerInfo* info2, int* read,
                                int* intermediateRank) {
   int p2p;
-  // Queries the topology to see if the GPUs are Ampere and
-  // connected via NVLink, if so we enable P2P Read by default
+  // 查询拓扑信息：如果两张 GPU 是 Ampere 及以上架构、且通过 NVLink 直连，
+  // 则默认启用 P2P 读取 模式(该组合下读比写更能压满 NVLink 带宽)。
+  // intermediateRank 是输出参数：当两卡无法直连时，返回一个可作为中转的 rank。
   NCCLCHECK(ncclTopoCheckP2p(comm, comm->topo, info1->rank, info2->rank, &p2p, read, intermediateRank, NULL));
 
+  // 用户通过环境变量显式指定时(非默认值 -2)，覆盖掉上面拓扑的自动判断结果
   int readEnable = ncclParamP2pReadEnable();
   if (readEnable != -2) *read = readEnable;
   return ncclSuccess;
@@ -363,11 +388,15 @@ static ncclResult_t p2pGetInfo(struct ncclComm* comm, struct ncclPeerInfo* info1
 static ncclResult_t p2pMap(struct ncclComm* comm, struct ncclProxyConnector* proxyConn, struct ncclPeerInfo* myInfo,
                            struct ncclPeerInfo* peerInfo, struct ncclP2pBuff* p2pBuff, void** devMem, void** ipcPtr) {
   if (P2P_SAME_PID(myInfo, peerInfo)) {
+    // 情况一：双方在同一进程内。地址空间共享，对端指针可以直接使用，
+    // 只需向 CUDA 声明“允许访问对方显存”即可，无需做 IPC 句柄的导出/导入。
     if (peerInfo->cudaDev != myInfo->cudaDev) {
-      // Same PID different GPUs, enable P2P access
-      // Legacy CUDA IPC
+      // 同一进程但是不同 GPU：需要显式开启 对等端 access 权限
+      // (走传统 CUDA IPC 路径)
       cudaError_t err = cudaDeviceEnablePeerAccess(peerInfo->cudaDev, 0);
       if (err == cudaErrorPeerAccessAlreadyEnabled) {
+        // 已经开启过则视为成功；这里调用 cudaGetLastError 是为了把这个
+        // “非致命错误”从 CUDA 的错误状态中清除掉，避免影响后续调用的错误判断。
         cudaGetLastError();
       } else if (err != cudaSuccess) {
         WARN("failed to peer with device %d(=%lx): %d %s", peerInfo->cudaDev, peerInfo->busId, err,
@@ -375,14 +404,14 @@ static ncclResult_t p2pMap(struct ncclComm* comm, struct ncclProxyConnector* pro
         return ncclInternalError;
       }
       if (ncclCuMemEnable()) {
-        // for intra-process ranks, we should map memHandle of the peers to increase refcount.
-        // Otherwise, if peers abort and free the buffer, the rank can suffer invalid access.
+        // 对于同进程内的 rank，仍需要映射对端的 memHandle 以增加其引用计数。
+        // 否则一旦对端异常退出并释放了该缓冲区，本 rank 继续访问就会触发非法内存访问。
         NCCLCHECK(ncclCuMemAllocAddr(devMem, &p2pBuff->ipcDesc.memHandle, p2pBuff->size));
         CUCHECK(cuMemRelease(p2pBuff->ipcDesc.memHandle));
         *ipcPtr = *devMem;
 
-        // Track as imported peer memory for dynamic memory management.
-        // Pass handle=0 since we already released the reference above; suspend shouldn't release again.
+        // 登记为“从对端导入的内存”，纳入动态内存管理进行跟踪
+        // 传 句柄=0：因为上面已经释放过一次引用，挂起流程不应重复释放
         NCCLCHECK(ncclMemTrackImportFromPeer(comm->memManager, *devMem, p2pBuff->size, 0, ncclCuMemHandleType,
                                              ncclMemOffload, peerInfo->rank, peerInfo->cudaDev, p2pBuff->directPtr));
       } else {
@@ -394,8 +423,8 @@ static ncclResult_t p2pMap(struct ncclComm* comm, struct ncclProxyConnector* pro
       *ipcPtr = NULL;
     }
   } else {
-    // Different PID
-    // Pass p2pBuff->directPtr as ownerPtr for P2P handle exchange during restore
+    // 不同 PID
+    // 把 p2pBuff->directPtr 作为 ownerPtr 传入，供恢复(restore)阶段做 P2P 句柄交换
     NCCLCHECK(ncclP2pImportShareableBuffer(comm, peerInfo->rank, p2pBuff->size, &p2pBuff->ipcDesc, devMem,
                                            p2pBuff->directPtr, ncclMemOffload));
     *ipcPtr = *devMem;
@@ -404,9 +433,9 @@ static ncclResult_t p2pMap(struct ncclComm* comm, struct ncclProxyConnector* pro
 }
 
 /* Send: Create and return connect structures for this peer to connect to me */
-// 发送端连接建立前的“setup”：与对端交换拓扑/地址信息，确定用哪种 p2pType
-// (DIRECT/IPC/CUMEM)，并准备对端显存的 IPC 句柄。AllReduce 的 ring/tree 每个
-// send 通道都会先走这里拿到连接所需元信息。
+// 发送端连接建立前的“设置”：与对端交换拓扑/地址信息，确定用哪种 p2pType
+// (DIRECT/IPC/CUMEM)，并准备对端显存的 IPC 句柄。全规约 的 环/树 每个
+// 发送 通道都会先走这里拿到连接所需元信息。
 ncclResult_t p2pSendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo* myInfo,
                           struct ncclPeerInfo* peerInfo, struct ncclConnect* connectInfo, struct ncclConnector* send,
                           int channelId, int connIndex) {
@@ -421,12 +450,12 @@ ncclResult_t p2pSendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
   static_assert(sizeof(struct p2pConnectInfo) <= sizeof(struct ncclConnect), "p2p Connect Info is too big");
   struct p2pConnectInfo* info = (struct p2pConnectInfo*)connectInfo;
   info->read = useRead;
-  // For CollNet, use write for scatter-reduce (conn 1), read for broadcast-gather (conn 0)
+  // CollNet 场景：散播-规约 阶段(连接 1)用写模式，广播-收集 阶段(连接 0)用读模式
   if (graph && connIndex == 1) info->read = 0;
   const char* useReadStr = info->read ? "/read" : "";
 
   int sendSize = sizeof(struct ncclSendMem);
-  // For P2P Read the SIMPLE buffer is tagged on the end of the ncclSendMem structure
+  // P2P 读模式下，SIMPLE 协议的缓冲区被追加在 ncclSendMem 结构体的末尾
   if (info->read) sendSize += comm->buffSizes[NCCL_PROTO_SIMPLE];
   ALIGN_SIZE(sendSize, CUDA_IPC_MIN);
 
@@ -437,7 +466,7 @@ ncclResult_t p2pSendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
       INFO(NCCL_INIT | NCCL_P2P, "Channel %02d/%01d : %d[%d] -> %d[%d] via P2P/direct pointer%s", channelId, connIndex,
            myInfo->rank, myInfo->nvmlDev, peerInfo->rank, peerInfo->nvmlDev, useReadStr);
     } else {
-      // cuMem API support
+      // 是否支持 cuMem(CUDA 虚拟内存管理)API
       if (ncclCuMemEnable()) {
         resources->type = P2P_CUMEM;
         const char* MNNVL = comm->MNNVL ? "MNNVL" : "CUMEM";
@@ -445,7 +474,7 @@ ncclResult_t p2pSendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
              myInfo->rank, myInfo->nvmlDev, peerInfo->rank, peerInfo->nvmlDev, MNNVL, useReadStr,
              useMemcpy ? "/CE" : "");
       } else {
-        // Legacy CUDA IPC
+        // 传统 CUDA IPC 路径
         resources->type = P2P_IPC;
         INFO(NCCL_INIT | NCCL_P2P, "Channel %02d/%01d : %d[%d] -> %d[%d] via P2P/IPC%s%s", channelId, connIndex,
              myInfo->rank, myInfo->nvmlDev, peerInfo->rank, peerInfo->nvmlDev, useReadStr, useMemcpy ? "/CE" : "");
@@ -501,11 +530,11 @@ ncclResult_t p2pRecvSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
   static_assert(sizeof(struct p2pConnectInfo) <= sizeof(struct ncclConnect), "p2p Connect Info is too big");
   struct p2pConnectInfo* info = (struct p2pConnectInfo*)connectInfo;
   info->read = useRead;
-  // For CollNet, use write for scatter-reduce (conn 1), read for broadcast-gather (conn 0)
+  // CollNet 场景：散播-规约 阶段(连接 1)用写模式，广播-收集 阶段(连接 0)用读模式
   if (graph && connIndex == 1) info->read = 0;
 
   int recvSize = sizeof(struct ncclRecvMem);
-  // For P2P Read the SIMPLE buffer is tagged on the end of the ncclSendMem structure
+  // P2P 读模式下，SIMPLE 协议的缓冲区被追加在 ncclSendMem 结构体的末尾
   for (int p = 0; p < NCCL_NUM_PROTOCOLS; p++) {
     if (!(info->read && p == NCCL_PROTO_SIMPLE)) recvSize += comm->buffSizes[p];
   }
@@ -517,12 +546,12 @@ ncclResult_t p2pRecvSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
       resources->type = P2P_DIRECT;
     } else {
       if (ncclCuMemEnable()) {
-        // cuMem API support
+        // 是否支持 cuMem(CUDA 虚拟内存管理)API
         resources->type = P2P_CUMEM;
         TRACE(NCCL_INIT | NCCL_P2P, "Ring %02d : %d[%d] <- %d[%d] via P2P/CUMEM", channelId, myInfo->rank,
               myInfo->nvmlDev, peerInfo->rank, peerInfo->nvmlDev);
       } else {
-        // Legacy CUDA IPC
+        // 传统 CUDA IPC 路径
         resources->type = P2P_IPC;
       }
     }
@@ -554,9 +583,9 @@ ncclResult_t p2pRecvSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
 }
 
 /* Connect/Send to this peer */
-// 发送端“connect”：使用 setup 阶段拿到的连接信息，把对端显存映射成本地可写指针，
-// 填充连接结构(struct connect)。之后 device kernel 就可以通过该指针把数据直接写到
-// 相邻 rank 的 buffer（跨进程走 CUDA IPC / CUMEM）。
+// 发送端“connect”：使用 设置 阶段拿到的连接信息，把对端显存映射成本地可写指针，
+// 填充连接结构(结构体 connect)。之后 设备 内核 就可以通过该指针把数据直接写到
+// 相邻 rank 的 缓冲区（跨进程走 CUDA IPC / CUMEM）。
 static ncclResult_t p2pSendConnect(struct ncclComm* comm, struct ncclConnect* connectInfo, int nranks, int rank,
                                    struct ncclConnector* send) {
   struct p2pResources* resources = (struct p2pResources*)send->transportResources;
@@ -584,7 +613,7 @@ static ncclResult_t p2pSendConnect(struct ncclComm* comm, struct ncclConnect* co
     send->conn.tail = &resources->proxyInfo.ceRecvMem->tail;
     send->conn.connFifo = resources->proxyInfo.ceRecvMem->connFifo;
     send->conn.head = &resources->proxyInfo.devShm->sendMem.head;
-    // Send SIMPLE buff to proxy, and replace it by local buffer
+    // 把 SIMPLE 缓冲区交给 代理，并用本地缓冲区替换它
     NCCLCHECK(ncclProxyCallBlocking(comm, &send->proxyConn, ncclProxyMsgConnect, &send->conn.buffs[NCCL_PROTO_SIMPLE],
                                     sizeof(void*), NULL, 0));
     send->conn.buffs[NCCL_PROTO_SIMPLE] = resources->proxyInfo.ceDevBuff;
@@ -594,7 +623,7 @@ static ncclResult_t p2pSendConnect(struct ncclComm* comm, struct ncclConnect* co
     send->conn.ptrExchange = &resources->sendDevMem->ptrExchange;
     send->conn.redOpArgExchange = resources->sendDevMem->redOpArgExchange;
   }
-  // We must assign the proxyConn's proxyProgress property for proper checking at enqueue-time
+  // 必须设置 proxyConn 的 proxyProgress 属性，才能在入队时正确校验
   send->proxyConn.proxyProgress = p2pTransport.send.proxyProgress;
   return ncclSuccess;
 }
@@ -608,7 +637,7 @@ ncclResult_t p2pRecvConnect(struct ncclComm* comm, struct ncclConnect* connectIn
   struct ncclSendMem* remDevMem = NULL;
 
   if (useMemcpy) {
-    // Attach to peer's SHM segment
+    // 挂接到对端的共享内存(SHM)段
     NCCLCHECK(ncclShmImportShareableBuffer(comm, info->rank, &info->desc, (void**)&resources->shm,
                                            (void**)&resources->devShm, &resources->desc));
 
@@ -645,7 +674,7 @@ ncclResult_t p2pSendFree(struct ncclComm* comm, struct ncclConnector* send) {
   struct p2pResources* resources = (struct p2pResources*)send->transportResources;
   if (resources) {
     if (ncclCuMemEnable()) {
-      // cuMem API support
+      // 是否支持 cuMem(CUDA 虚拟内存管理)API
       if (resources->sendMemIpc) {
         if (resources->sendMemSameProc) {
           NCCLCHECK(ncclCuMemFreeAddr(resources->sendMemIpc, comm->memManager));
@@ -674,7 +703,7 @@ ncclResult_t p2pRecvFree(struct ncclComm* comm, struct ncclConnector* recv) {
   struct p2pResources* resources = (struct p2pResources*)recv->transportResources;
   if (resources) {
     if (ncclCuMemEnable()) {
-      // cuMem API support
+      // 是否支持 cuMem(CUDA 虚拟内存管理)API
       if (resources->sendMemIpc) {
         if (resources->sendMemSameProc) {
           NCCLCHECK(ncclCuMemFreeAddr(resources->sendMemIpc, comm->memManager));
@@ -705,7 +734,7 @@ ncclResult_t p2pRecvFree(struct ncclComm* comm, struct ncclConnector* recv) {
 static ncclResult_t p2pSendProxySetup(struct ncclProxyConnection* connection, struct ncclProxyState* proxyState,
                                       void* reqBuff, int reqSize, void* respBuff, int respSize, int* done) {
   if (useMemcpy) {
-    // CE memcpy support
+    // CE memcpy 支持
     struct p2pShmProxyInfo* proxyInfo;
     size_t shmSize;
 
@@ -715,7 +744,7 @@ static ncclResult_t p2pSendProxySetup(struct ncclProxyConnection* connection, st
 
     NCCLCHECK(ncclCudaCalloc(&proxyInfo->ceDevBuff, proxyState->buffSizes[NCCL_PROTO_SIMPLE], proxyState->memManager));
 
-    // Create a SHM segment for the peer to attach to
+    // 创建一个共享内存段，供对端挂接
     shmSize = sizeof(struct ncclSendMem) + sizeof(struct ncclRecvMem);
     NCCLCHECK(ncclShmAllocateShareableBuffer(shmSize, false, &proxyInfo->desc, (void**)&proxyInfo->shm,
                                              (void**)&proxyInfo->devShm));
@@ -732,7 +761,7 @@ static ncclResult_t p2pSendProxySetup(struct ncclProxyConnection* connection, st
                                              proxyState->memManager, ncclMemOffload));
     p2pBuff->size = size;
     if (ncclCuMemEnable()) {
-      // cuMem API support
+      // 是否支持 cuMem(CUDA 虚拟内存管理)API
       struct p2pCuMemProxyInfo* proxyInfo;
       NCCLCHECK(ncclCalloc(&proxyInfo, 1));
       memcpy(&proxyInfo->p2pBuff, p2pBuff, sizeof(*p2pBuff));
@@ -756,7 +785,7 @@ static ncclResult_t p2pRecvProxySetup(struct ncclProxyConnection* connection, st
                                            proxyState->memManager, ncclMemOffload));
   p2pBuff->size = size;
   if (ncclCuMemEnable()) {
-    // cuMem API support
+    // 是否支持 cuMem(CUDA 虚拟内存管理)API
     struct p2pCuMemProxyInfo* proxyInfo;
     NCCLCHECK(ncclCalloc(&proxyInfo, 1));
     memcpy(&proxyInfo->p2pBuff, p2pBuff, sizeof(*p2pBuff));
@@ -806,7 +835,7 @@ static ncclResult_t p2pSendProxyFree(struct ncclProxyConnection* connection, str
     free(memHandle);
   }
 
-  // CE memcpy support
+  // CE memcpy 支持
   if (useMemcpy) {
     struct p2pShmProxyInfo* proxyInfo = (struct p2pShmProxyInfo*)connection->transportResources;
     if (proxyInfo) {
@@ -821,7 +850,7 @@ static ncclResult_t p2pSendProxyFree(struct ncclProxyConnection* connection, str
     }
   } else {
     if (ncclCuMemEnable()) {
-      // cuMem API support
+      // 是否支持 cuMem(CUDA 虚拟内存管理)API
       struct p2pCuMemProxyInfo* proxyInfo = (struct p2pCuMemProxyInfo*)connection->transportResources;
       if (proxyInfo) {
         struct ncclP2pBuff* p2pBuff = &proxyInfo->p2pBuff;
@@ -830,7 +859,7 @@ static ncclResult_t p2pSendProxyFree(struct ncclProxyConnection* connection, str
         free(proxyInfo);
       }
     } else {
-      // Do not check return code as CUDA may have already shut down
+      // 执行 不 检查 返回 代码 as CUDA may have 已经 shut down
       ncclCudaFree(connection->transportResources, proxyState->memManager);
     }
   }
@@ -854,22 +883,22 @@ static ncclResult_t p2pRecvProxyFree(struct ncclProxyConnection* connection, str
       free(proxyInfo);
     }
   } else {
-    // Do not check return code as CUDA may have already shut down
+    // 执行 不 检查 返回 代码 as CUDA may have 已经 shut down
     ncclCudaFree(connection->transportResources, proxyState->memManager);
   }
   return ncclSuccess;
 }
 
-// CE memcpy support
-// proxy 线程驱动的“发送进度”函数：Simple 协议下，由 proxy 线程把本 rank 的数据
-// 推送到相邻 rank 的 buffer（或 LL/LL128 协议下做带 flag 的同步搬运）。它会被
-// ncclProxyProgress 在进度循环里反复调用，直到本次 send 的 all bytes 完成。
+// CE memcpy 支持
+// 代理 线程驱动的“发送进度”函数：Simple 协议下，由 代理 线程把本 rank 的数据
+// 推送到相邻 rank 的 缓冲区（或 LL/LL128 协议下做带 标志 的同步搬运）。它会被
+// ncclProxyProgress 在进度循环里反复调用，直到本次 发送 的 所有 字节 完成。
 static ncclResult_t p2pSendProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
   if (args->state == ncclProxyOpReady) {
     for (int s = 0; s < args->nsubs; s++) {
       struct ncclProxySubArgs* sub = args->subs + s;
       struct p2pShmProxyInfo* resources = (struct p2pShmProxyInfo*)(sub->connection->transportResources);
-      // Round to next multiple of sliceSteps
+      // 向上取整到 sliceSteps 的整数倍
       sub->base = ROUNDUP(resources->step, args->chunkSteps);
       sub->posted = sub->transmitted = sub->done = 0;
     }
@@ -883,7 +912,7 @@ static ncclResult_t p2pSendProxyProgress(struct ncclProxyState* proxyState, stru
       struct ncclProxySubArgs* sub = args->subs + s;
       struct p2pShmProxyInfo* resources = (struct p2pShmProxyInfo*)(sub->connection->transportResources);
       if (p != NCCL_PROTO_SIMPLE) {
-        // Only Simple uses cudaMemcpy
+        // 仅 Simple 使用 cudaMemcpy
         resources->step = sub->base + sub->nsteps;
         args->done++;
         continue;
@@ -892,7 +921,7 @@ static ncclResult_t p2pSendProxyProgress(struct ncclProxyState* proxyState, stru
         int buffSlot = (sub->base + sub->transmitted) % NCCL_STEPS;
         volatile struct ncclConnFifo* connFifo = resources->ceRecvMem->connFifo;
         volatile uint64_t* recvTail = &resources->ceRecvMem->tail;
-        // Check GPU has sent everything
+        // 检查 GPU has sent everything
         if ((*recvTail > sub->base + sub->transmitted)) {
           int size = connFifo[buffSlot].size;
           CUDACHECK(cudaMemcpyAsync(resources->recvFifo + buffSlot * stepSize,
@@ -908,7 +937,7 @@ static ncclResult_t p2pSendProxyProgress(struct ncclProxyState* proxyState, stru
         if (res != cudaErrorNotReady) CUDACHECK(res);
         if (res == cudaSuccess) {
           sub->done += args->sliceSteps;
-          // Notify SHM
+          // 通知 SHM
           resources->shm->recvMem.tail = sub->base + sub->done;
         }
         if (sub->done == sub->nsteps) {
@@ -939,7 +968,7 @@ ncclResult_t ipcHandleMultiSegmentRegistration(CUdeviceptr userBuff, size_t user
   int* expFds = nullptr;
   int* impFds = nullptr;
   int capacity = 2;
-  // Minimum of two segments in this codepath
+  // 该代码路径下至少需要两个段
   NCCLCHECK(ncclCalloc(ipcInfos, capacity));
   if (ncclCuMemHandleType == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
     NCCLCHECK(ncclCalloc(&expFds, capacity));
@@ -966,7 +995,7 @@ ncclResult_t ipcHandleMultiSegmentRegistration(CUdeviceptr userBuff, size_t user
     CUCHECKGOTO(cuMemGetAddressRange(&tmpBase, &tmpBaseSize, mappedPtrEnd), ret, fail);
     ipcInfo->size = tmpBaseSize;
     CUCHECKGOTO(cuMemRetainAllocationHandle(&segmentHandles[segment], (void*)tmpBase), ret, fail);
-    // Increment numSegments here so that retained handles are released if exporting a segment fails
+    // 在此处递增 numSegments，以便某个段导出失败时，已持有的句柄仍能被正确释放
     *numSegments = *numSegments + 1;
     if (*numSegments > NCCL_P2P_MAX_PHYSICAL_SEGMENTS) {
       INFO(NCCL_REG,
@@ -1046,7 +1075,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
   size_t totalMappedSize = 0;
   void* baseAddr = NULL;
   bool needUpdate = false;
-  // For cross-clique P2P, use peerRank as index and nRanks for array size
+  // 跨 clique(可直连分组)的 P2P：用 peerRank 作为下标，用 nRanks 作为数组长度
   int ipcIndexSize = comm->p2pCrossClique ? comm->nRanks : comm->localRanks;
 
   *regBufFlag = 0;
@@ -1054,10 +1083,10 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
   *peerRmtAddrsOut = NULL;
   if (isLegacyIpc) *isLegacyIpc = false;
   if (regRecord) {
-    // buffer was registered by users, we need to start to register or reuse it
+    // 该缓冲区由用户注册，我们需要开始注册它或复用已有注册
     int peerIndex = -1;
 
-    // Allocate or resize ipcInfos array if needed
+    // 分配 或者 resize ipcInfos 数组 如有需要
     if (regRecord->ipcInfos == NULL || regRecord->ipcInfosSize < ipcIndexSize) {
       NCCLCHECKGOTO(ncclRealloc(&regRecord->ipcInfos, regRecord->ipcInfosSize, ipcIndexSize), ret, fail);
       regRecord->ipcInfosSize = ipcIndexSize;
@@ -1070,7 +1099,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
         ret = ncclInternalError;
         goto fail;
       }
-      // For cross-clique P2P, use peerRank directly to avoid localRank conflicts between cliques
+      // 跨 clique 的 P2P 直接使用 peerRank，避免不同 clique 之间 localRank 冲突
       peerIndex = comm->p2pCrossClique ? peerRank : comm->rankToLocalRank[peerRank];
       if (peerIndex < 0 || peerIndex >= ipcIndexSize) {
         WARN("rank %d invalid IPC peerIndex %d for peerRank %d ipcIndexSize %d ipcInfosSize %d p2pCrossClique %d",
@@ -1079,7 +1108,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
         goto fail;
       }
       if (regRecord->ipcInfos[peerIndex]) {
-        // We already have IPC info for this peer, no need to register it, we can reuse it
+        // 该对端的 IPC 信息已存在，无需重复注册，直接复用即可
         *regBufFlag = 1;
         if (isLegacyIpc) *isLegacyIpc = regRecord->ipcInfos[peerIndex]->impInfo.legacyIpcCap;
         INFO(NCCL_REG,
@@ -1088,7 +1117,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
              regRecord->ipcInfos[peerIndex]->impInfo.numSegments, peerRank,
              regRecord->ipcInfos[peerIndex]->impInfo.rmtRegAddr);
       } else {
-        // Register buffer with peerLocalRank
+        // 使用 peerLocalRank 注册缓冲区
         struct ncclProxyConnector* proxyConn = NULL;
         int numSegments = 1;
         bool multiSegment = false;
@@ -1113,8 +1142,8 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
         }
         proxyConn = &comm->gproxyConn[peerRank];
 
-        // Get the mem handle for that buffer. It may have been allocated through cudaMalloc in which case we'll
-        // get the CUDA legacy mem handle, or through cuMem*.
+        // 获取该缓冲区的内存句柄。它可能是通过 cudaMalloc 分配的，那样我们会
+        // 拿到传统 CUDA 内存句柄；也可能是通过 cuMem* 系列接口分配的。
         if (ncclCuMemEnable()) {
           if (multiSegment) {
             NCCLCHECKGOTO(ipcHandleMultiSegmentRegistration((CUdeviceptr)userbuff, buffSize, comm, proxyConn,
@@ -1123,7 +1152,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
           } else {
             CUmemGenericAllocationHandle handle;
             if (CUPFN(cuMemRetainAllocationHandle(&handle, baseAddr)) != CUDA_SUCCESS) {
-              // if cuMem* export fails, retry legacy export
+              // 若 cuMem* export 失败, 重试 legacy export
               if (comm->directMode || !ncclParamLegacyCudaRegister()) goto fail;
               CUDACHECKGOTO(cudaIpcGetMemHandle(&ipcInfo->ipcDesc.devIpc, baseAddr), ret, fail);
               ipcInfo->legacyIpcCap = true;
@@ -1131,7 +1160,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
             } else {
               ipcInfo->legacyIpcCap = false;
               if (isLegacyIpc) *isLegacyIpc = false;
-              // cuMem* export to file descriptor or fabric handle
+              // 通过 cuMem* 接口导出为文件描述符或 fabric 句柄
               if (proxyConn->sameProcess) {
                 memcpy(&ipcInfo->ipcDesc.memHandle, &handle, sizeof(CUmemGenericAllocationHandle));
               } else {
@@ -1141,7 +1170,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
                   NCCLCHECKGOTO(ncclProxyClientQueryFdBlocking(comm, proxyConn, expFd, &ipcInfo->impFd), ret, fail);
                   SYSCHECKGOTO(close(expFd), "close", ret, fail);
                 } else {
-                  // Allow this to silently fail for cases where the user buff cannot be registered
+                  // 允许此处静默失败：用户缓冲区确实存在无法注册的情况，属于正常回退
                   if (CUPFN(cuMemExportToShareableHandle(&ipcInfo->ipcDesc.cuDesc.handle, handle, ncclCuMemHandleType,
                                                          0)) != CUDA_SUCCESS) {
                     CUCHECKGOTO(cuMemRelease(handle), ret, fail);
@@ -1153,13 +1182,13 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
             }
           }
         } else if (legacyIpcCap) {
-          // legacy export
+          // 旧版导出
           if (comm->directMode || !ncclParamLegacyCudaRegister()) goto fail;
           CUDACHECKGOTO(cudaIpcGetMemHandle(&ipcInfo->ipcDesc.devIpc, baseAddr), ret, fail);
           ipcInfo->legacyIpcCap = true;
           if (isLegacyIpc) *isLegacyIpc = true;
         } else {
-          // nothing works, just return
+          // nothing works, 仅 返回
           goto fail;
         }
 
@@ -1168,8 +1197,8 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
           ipcInfo->size = totalMappedSize;
         }
         ipcInfo->offset = regRecord->begAddr - (uintptr_t)baseAddr;
-        // Now ipcInfo contains all necessary registration info. Start to register buffer on proxy side
-        // and get the remote register address back.
+        // 此时 ipcInfo 已包含全部必要的注册信息。接下来在 代理 侧注册缓冲区，
+        // 并把远端的注册地址取回来。
         if (proxyConn) {
           INFO(NCCL_REG,
                "rank %d - IPC registering buffer %p size %zu (baseAddr %p totalSize %zu numSegments %d) to peer %d",
@@ -1231,11 +1260,11 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
                       ret, fail);
       }
       if (type == NCCL_IPC_COLLECTIVE) {
-        // for collective, registered remote buffers are copied to dev memory for future reference
+        // for 集合, 已注册 远端 缓冲区 are copied to dev 内存 for future 参考
         peerRmtAddrs = regRecord->regIpcAddrs.devPeerRmtAddrs;
       } else {
         assert(nPeers == 1);
-        // p2p always returns remote addr here since remote buffer addr is passed in ncclDevWorkP2p struct
+        // p2p always 返回 远端 addr here 自 远端 缓冲区 addr is passed 入 ncclDevWorkP2p 结构体
         peerRmtAddrs = (uintptr_t*)regRecord->regIpcAddrs.hostPeerRmtAddrs[peerIndex];
       }
       *offsetOut = (uintptr_t)userbuff - regRecord->begAddr;
@@ -1336,7 +1365,7 @@ ncclResult_t ncclIpcGraphRegisterBuffer(ncclComm* comm, const void* userbuff, si
   }
 
 exit:
-  // coverity[leaked_storage:FALSE] => normally, addrsRecord is added to the cleanupQueue
+  // coverity[leaked_storage:假] => normally, addrsRecord is added 到 cleanupQueue
   return ret;
 fail:
   *regBufFlag = 0;
@@ -1377,10 +1406,10 @@ static ncclResult_t p2pProxyRegister(struct ncclProxyConnection* connection, str
        proxyState->tpRank, reqBuff, ipcExpInfo->size, ipcExpInfo->offset, ipcExpInfo->legacyIpcCap,
        connection->sameProcess, totalSize);
 
-  // request peer passes all necessary buffer info to import. The proxy thread would register
-  // the buffer locally and return register addr back
+  // 请求 对等端 passes 所有 necessary 缓冲区 信息 to import. The 代理 线程 would 寄存器
+  // 该缓冲区 locally 并且 返回 寄存器 addr 后
   if (ipcExpInfo->legacyIpcCap) {
-    // legacy import
+    // 旧版导入
     CUDACHECKGOTO(cudaIpcOpenMemHandle(&regAddr, ipcExpInfo->ipcDesc.devIpc, cudaIpcMemLazyEnablePeerAccess), ret,
                   fail);
     regAddr = (void*)((uintptr_t)regAddr + ipcExpInfo->offset);
@@ -1389,9 +1418,9 @@ static ncclResult_t p2pProxyRegister(struct ncclProxyConnection* connection, str
                 ret, fail);
     size_t offset = 0;
     for (int segment = 0; segment < numSegments; segment++) {
-      // cuMem import
+      // cuMem 导入
       if (connection->sameProcess) {
-        // if proxy is same process as request peer, we just need to map the handle.
+        // 若 代理 is 相同 处理 as 请求 对等端, we 仅 需要 映射 the 句柄.
         memcpy(&segmentHandles[segment], &ipcExpInfo[segment].ipcDesc.memHandle, sizeof(CUmemGenericAllocationHandle));
       } else {
         if (ncclCuMemHandleType == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
@@ -1413,7 +1442,7 @@ static ncclResult_t p2pProxyRegister(struct ncclProxyConnection* connection, str
       offset += ipcExpInfo[segment].size;
       mapped[segment] = true;
     }
-    // Allow access by the local GPU
+    // 授权本地 GPU 访问该内存
     CUmemAccessDesc accessDesc = {};
     accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     accessDesc.location.id = proxyState->cudaDev;
@@ -1490,7 +1519,7 @@ fail:
   goto exit;
 }
 
-// 把 P2P 传输层注册到 NCCL：名字 "P2P"，并挂上上面实现的 setup/connect/progress
+// 把 P2P 传输层注册到 NCCL：名字 "P2P"，并挂上上面实现的 设置/connect/progress
 // 等函数表。enqueue/transport 层据此选择 "P2P" 作为本机 GPU 间的传输后端。
 struct ncclTransport p2pTransport = {"P2P",
                                      p2pCanConnect,
@@ -1511,7 +1540,7 @@ static void initCeOperation() {
   }
 }
 
-// Function to check if P2P is using memcpy (for registration optimization)
+// 函数 to 检查 若 P2P is 使用 memcpy (for 注册 优化)
 bool ncclP2pUsesMemcpy() {
   initCeOperation(); // Ensure initialization
   return useMemcpy != 0;

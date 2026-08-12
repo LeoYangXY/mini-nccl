@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/onerank.cu — 单 rank 本地规约 kernel
+ * ----------------------------------------------------------------------------
+ * 实现 oneRankReduce：当通信域只有 1 个 rank（无需跨卡通信）时，直接在本地完成
+ * reduce，避免走完整的 channel/算法路径。是“退化情况”的高效处理。
+ */
+
 #include "alloc.h"
 #include "collectives.h"
 #include "common_kernel.h"
@@ -21,7 +28,7 @@ __global__ __launch_bounds__(512, 1) void oneRankReduce(void* dst, void* src, si
   int bid = blockIdx.x;
   int bn = gridDim.x;
 
-  // each block/channel gets a roughly equal segment of 16 byte packs
+  // 每个 块/通道 gets a roughly equal 段 of 16 字节 packs
   constexpr int EltPerPack = 16 / sizeof(T);
   intptr_t i0 = (bid + 0) * alignUp(divUp(nElts, bn), EltPerPack);
   intptr_t i1 = (bid + 1) * alignUp(divUp(nElts, bn), EltPerPack);

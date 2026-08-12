@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/dev_runtime_segments.cc — device runtime 的“段(segment)”管理
+ * ----------------------------------------------------------------------------
+ * 管理 device runtime 所用到的内存段（kernel 参数、常量等按段分配与映射），支撑
+ * 跨 CUDA 版本的 kernel 参数布局兼容。
+ */
+
 #include "dev_runtime_internal.h"
 #include "alloc.h"
 #include "bootstrap.h"
@@ -18,8 +25,8 @@ extern int64_t ncclParamElasticBufferRegister();
 ncclResult_t ncclDevrPopulateSegmentSizes(struct ncclDevrMemory* mem, int numSegments) {
   ncclResult_t ret = ncclSuccess;
 
-  // If our caller does not have a VA (for instance, in ncclDevrCommCreateInternal),
-  // there's only one segment with size = mem->size.
+  // 若 our 调用方 执行 不 have a VA (for instance, 入 ncclDevrCommCreateInternal),
+  // there's 仅 one 段 with 大小 = mem->大小.
   if (mem->primaryAddr == nullptr) {
     assert(numSegments == 1);
     mem->segmentSizes[0] = mem->size;
@@ -99,7 +106,7 @@ ncclResult_t ncclDevrVerifySegmentLayouts(struct ncclDevrMemory* mem, struct ncc
     goto exit;
   }
 
-  // Gather segment sizes from all ranks to verify they are identical.
+  // 收集 段 sizes from 所有 ranks to 校验 they are identical.
   NCCLCHECKGOTO(ncclCalloc(&globalPaddedSegmentSizes, (size_t)mem->maxGlobalNumSegments * comm->nRanks), ret, exit);
   memcpy(&globalPaddedSegmentSizes[(size_t)comm->rank * mem->maxGlobalNumSegments], mem->segmentSizes,
          sizeof(size_t) * mem->numSegments);
@@ -148,7 +155,7 @@ exit:
   return ret;
 }
 
-// Segment windows need their own shadow-pool allocation because they're variable in size.
+// 段 windows 需要 their 自身的 shadow-池 分配 因为 they're 变量 入 大小.
 ncclResult_t ncclDevrAllocAndPopulateSegmentWindows(struct ncclDevrState* devr, struct ncclDevrMemory* mem,
                                                     cudaStream_t stream,
                                                     struct ncclSegmentWindow** outSegmentWindowsDev) {
@@ -186,8 +193,8 @@ fail:
 ncclResult_t ncclDevrReplaceSegmentWindowsIfNeeded(struct ncclDevrState* devr, struct ncclDevrMemory* mem,
                                                    struct ncclWindow_vidmem* winHost, cudaStream_t stream) {
   struct ncclSegmentWindow* segmentWindowsDev = nullptr;
-  // When a window is created, numGinSegments is always set to `1`.  As we now
-  // know that there are multiple segments, we need to reallocate ginMultiSegmentWins.
+  // 当 a window is 已创建, numGinSegments is always 设为 `1`.  As we now
+  // 知道 那个 there are 多个 段, 需要 reallocate ginMultiSegmentWins.
   if (mem->numGinSegments > 1) {
     NCCLCHECK(ncclShadowPoolFree(&devr->shadows, winHost->ginMultiSegmentWins, stream));
     NCCLCHECK(ncclDevrAllocAndPopulateSegmentWindows(devr, mem, stream, &segmentWindowsDev));

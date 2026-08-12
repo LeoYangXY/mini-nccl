@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/op128.h — 128-bit 原子 load/store 内建指令封装
+ * ----------------------------------------------------------------------------
+ * 用 PTX 内建指令实现 128-bit(两个 64-bit)的 volatile 全局 load/store（ld/st
+ * .volatile.global.v2.u64），是 LL128 协议与对齐搬运的基础原语。
+ */
+
 #ifndef OP128_H_
 #define OP128_H_
 
@@ -42,8 +49,8 @@ inline __device__ void loadShmemMisaligned128(T* ptr, uint64_t& v0, uint64_t& v1
     uint32_t* ptr4 = reinterpret_cast<uint32_t*>(reinterpret_cast<uintptr_t>(ptr) & -uintptr_t(4));
     NVCC_PRAGMA_UNROLL_AUTO
     for (int e = 0; e < 4; e++) {
-      // Produce 4 bytes of sub-register type by reading 2 4-byte
-      // aligned values and shifting.
+      // Produce 4 字节 of sub-寄存器 类型 by reading 2 4-字节
+      // 已对齐 值 并且 shifting.
       uint32_t lo, hi;
       asm volatile("ld.shared.b32 %0,[%1];" : "=r"(lo) : "l"(ptr4 + e + 0) : "memory");
       asm volatile("ld.shared.b32 %0,[%1];" : "=r"(hi) : "l"(ptr4 + e + 1) : "memory");
@@ -83,7 +90,7 @@ __device__ __forceinline__ T* cvta_from_global(uintptr_t gptr) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// BytePack<Size>: struct of bytes.
+// BytePack<大小>: 结构体 of 字节.
 
 template <int Size>
 union BytePack;
@@ -164,8 +171,8 @@ __device__ __forceinline__ typename BytePackOf<T>::Pack toPack(T value) {
     typename BytePackOf<T>::Pack p;
     T v;
   };
-  // Coverity recommends the use of std::move here but, given that T is a POD
-  // scalar, a plain copy will be just as efficient.
+  // Coverity recommends the 使用 of std::move here 但, 给定的 那个 T is a POD
+  // 标量, a plain 拷贝 将会 仅 as efficient.
   // coverity[copy_assignment_call]
   v = value;
   return p;
@@ -182,7 +189,7 @@ __device__ __forceinline__ T fromPack(typename BytePackOf<T>::Pack pack) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Load/store of BytePack<?> using integral addresses.
+// 加载/存储 of BytePack<?> 使用 integral 地址.
 
 template <int Size>
 __device__ BytePack<Size> ld_global(uintptr_t addr);
@@ -228,7 +235,7 @@ __device__ __forceinline__ void st_shared<0>(uint32_t addr, BytePack<0> value) {
 template <>
 __device__ __forceinline__ void st_relaxed_gpu_global<0>(uintptr_t addr, BytePack<0> value) {}
 
-// Used to define implementations for above prototypes.
+// 用于 定义 实现 for 上方 prototypes.
 #define DEFINE_ld_st__size_space(bytes, data_cxx_ty, data_ptx_ty, data_reg_ty, space, addr_cxx_ty, addr_reg_ty) \
   template <> \
   __device__ __forceinline__ BytePack<bytes> ld_##space<bytes>(addr_cxx_ty addr) { \
@@ -285,8 +292,8 @@ __device__ __forceinline__ void st_relaxed_gpu_global<0>(uintptr_t addr, BytePac
     DEFINE_ld_st__size_space(bytes, data_cxx_ty, data_ptx_ty, data_reg_ty, shared, uint32_t, r) \
       DEFINE_ld_st_gpu_relaxed__size(bytes, data_cxx_ty, data_ptx_ty, data_reg_ty)
 
-// Single-byte types use 4-byte registers since there is no 1-byte register
-// character for asm blocks. See https://docs.nvidia.com/cuda/inline-ptx-assembly/index.html#constraints
+// 单个-字节 类型 使用 4-字节 寄存器 自 there is 无 1-字节 寄存器
+// character for asm 线程块. 参见 https://docs.nvidia.com/CUDA/内联-ptx-assembly/索引.html#约束
 DEFINE_ld_st__size(1, uint32_t, b8, r) DEFINE_ld_st__size(2, uint16_t, b16, h) DEFINE_ld_st__size(4, uint32_t, b32, r)
   DEFINE_ld_st__size(8, uint64_t, b64, l)
 #undef DEFINE_ld_st__size_space
@@ -337,7 +344,7 @@ __device__ __forceinline__ void st_relaxed_gpu_global<16>(uintptr_t addr, BytePa
 #undef PTX_relaxed_gpu
 
 ////////////////////////////////////////////////////////////////////////////////
-// Atomic load/store using c++ pointers.
+// 原子 加载/存储 使用 c++ 指针.
 
 __device__ __forceinline__ uint64_t ld_volatile_global(uint64_t* ptr) {
   uint64_t ans;
@@ -406,7 +413,7 @@ __device__ __forceinline__ void fence_acq_rel_gpu() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Multimem stores of BytePack<?>.
+// BytePack<?> 的 Multimem 存储。
 
 template <int Size>
 __device__ __forceinline__ void multimem_st_global(uintptr_t addr, BytePack<Size> val);
@@ -445,7 +452,7 @@ __device__ __forceinline__ void multimem_st_global(uintptr_t addr, BytePack<Size
 }
 #endif
 
-// Load pack starting at index in array. Ignore elements past end (length of array).
+// 加载 打包 starting at 索引 入 数组. Ignore 元素 past 末尾 (长度 of 数组).
 template <typename Pack, typename T>
 __device__ __forceinline__ Pack loadPack(T* ptr, int ix, int end) {
   constexpr int Size = sizeof(Pack);
@@ -460,7 +467,7 @@ __device__ __forceinline__ Pack loadPack(T* ptr, int ix, int end) {
     };
     int misalign = reinterpret_cast<uintptr_t>(ptr) % 4;
     uint32_t* down = reinterpret_cast<uint32_t*>(reinterpret_cast<uintptr_t>(ptr) & -uintptr_t(4));
-    // ndiv holds the number of aligned 4-byte loads needed to cover the entire input
+    // ndiv holds 的数量 已对齐 4-字节 loads 需要 cover the entire 输入
     int ndiv = (n * sizeof(T) + misalign + 3) / 4;
     int imax = min(Size / 4 + (misalign > 0), ndiv);
     int i;
@@ -488,7 +495,7 @@ __device__ __forceinline__ Pack loadPack(T* ptr, int ix, int end) {
   }
 }
 
-// Store pack starting at index in array. Ignore elements past end (length of array).
+// 存储 打包 starting at 索引 入 数组. Ignore 元素 past 末尾 (长度 of 数组).
 template <typename Pack, typename T>
 __device__ __forceinline__ void storePack(T* ptr, int ix, int end, Pack val) {
   constexpr int Size = sizeof(Pack);
@@ -505,9 +512,9 @@ __device__ __forceinline__ void storePack(T* ptr, int ix, int end, Pack val) {
   }
 }
 
-// Warp-uniform memory copy from shared address (not generic) to global memory.
-// The number of bytes copied is `min(MaxBytes, nBytesAhead)`, a negative value
-// is interpeted as zero. EltSize is the guaranteed alignment of the addresses and sizes.
+// 线程束-uniform 内存 拷贝 from shared 地址 (不 通用的) to 全局的 内存.
+// 的数量 字节 copied is `最小值(MaxBytes, nBytesAhead)`, a negative 值
+// is interpeted as zero. EltSize is the 已保证 对齐 的 地址 并且 sizes.
 template <int EltSize, int MaxBytes, bool Multimem, typename IntBytes>
 __device__ __forceinline__ void copyGlobalShared_WarpUnrolled(int lane, uintptr_t dstAddr, uint32_t srcAddr,
                                                               IntBytes nBytesAhead) {
@@ -524,7 +531,7 @@ __device__ __forceinline__ void copyGlobalShared_WarpUnrolled(int lane, uintptr_
     int offset = hasFront ? lane * EltSize : (nBytes - (backLane + 1) * EltSize);
     if (hasFront | hasBack) {
       BytePack<EltSize> tmp = ld_shared<EltSize>(srcAddr + offset);
-      // Can't use multimem_st since it doesn't support EltSize==2
+      // Can't 使用 multimem_st 自 it doesn't 支持 EltSize==2
       st_global<EltSize>(dstAddr + offset, tmp);
     }
   }

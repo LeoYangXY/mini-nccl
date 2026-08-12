@@ -5,10 +5,17 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/utility.h — 设备工具与宏
+ * ----------------------------------------------------------------------------
+ * 定义 nccl_device 框架的通用工具：编译器/CUDACC 检查、类型与内存辅助宏，被其他
+ * 设备 API 头文件引用。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_UTILITY_H_
 #define _NCCL_DEVICE_UTILITY_H_
 
-// compiler specific check for __CUDACC__
+// 编译器 特定的 检查 for __CUDACC__
 #ifndef NCCL_CHECK_CUDACC
 #if defined(__clang__)
 #ifdef __CUDACC__
@@ -45,7 +52,7 @@
 #endif
 #endif
 
-// Macro for conditional constexpr support
+// 宏 for conditional constexpr 支持
 #if defined(__cpp_if_constexpr) && __cpp_if_constexpr >= 201606
 #ifndef NCCL_IF_CONSTEXPR
 #define NCCL_IF_CONSTEXPR constexpr
@@ -56,14 +63,14 @@
 #endif
 #endif
 
-// NVCC pragmas for controling loop unrolling for subsequent loop
-// trip_count must be integer constant expression (integer literal or constexpr) may optionally
-// follow.
-// 1. If trip_count is absent, the compiler try auto determine a trip count and unroll the loop.
-// 2. If trip_count evaluates to 0 or 1, the loop will not be unrolled.
-// 3. If trip_count is a non-positive integer or greater than INT_MAX, the pragma will be ignored,
-//    and a warning will be issued.
-// https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#pragma-unroll
+// NVCC pragmas for controling 循环 unrolling for subsequent 循环
+// trip_count 必须为 整数 constant expression (整数 literal 或者 constexpr) may optionally
+// 如下。
+// 1. 若 trip_count is absent, the 编译器 尝试 auto determine a trip 计数 并且 unroll the 循环.
+// 2. 若 trip_count evaluates to 0 或者 1, the 循环 will 不 be unrolled.
+// 3. 若 trip_count is a non-positive 整数 或者 greater than INT_MAX, the pragma 将会 ignored,
+//    并且 a 警告 将会 issued.
+// https://docs.nvidia.com/CUDA/CUDA-programming-guide/05-appendices/cpp-language-extensions.html#pragma-unroll
 #define DO_PRAGMA(x) _Pragma(#x)
 #define NVCC_PRAGMA_UNROLL(trip_count) DO_PRAGMA(unroll trip_count)
 #define NVCC_PRAGMA_UNROLL_AUTO DO_PRAGMA(unroll)
@@ -97,7 +104,7 @@ namespace nccl {
 namespace utility {
 
 #if NCCL_CHECK_CUDACC
-// cuda/atomic header file is included so we can use atomic_ref to load the abortFlag
+// CUDA/原子 头文件 文件 is included 所以 我们可以 使用 atomic_ref to 加载 abortFlag
 static NCCL_DEVICE_INLINE bool testAbort(uint32_t* abortFlag, uint32_t& steps) {
   const uint32_t maxSteps = 10000;
   if (++steps < maxSteps) {
@@ -135,8 +142,8 @@ struct ValueAsType {
   static constexpr T value = value_;
 };
 
-// Returns the value zero but the compiler cannot prove that it is zero so it
-// is useful to inhibit compiler optimizations.
+// 返回 the 值 zero 但 the 编译器 cannot prove 那个 这是 zero 所以 it
+// is useful to inhibit 编译器 optimizations.
 #if NCCL_CHECK_CUDACC
 template <typename = void>
 NCCL_DEVICE_INLINE int opaqueZero() {
@@ -159,7 +166,7 @@ NCCL_HOST_DEVICE_INLINE constexpr Z roundDown(X x, Y y) {
   return x - x % y;
 }
 
-// assumes second argument is a power of 2
+// assumes 第二 参数 is a power of 2
 template <typename X, typename Y, typename Z = decltype(X() + Y())>
 NCCL_HOST_DEVICE_INLINE constexpr Z alignUp(X x, Y a) {
   return (x + a - 1) & -Z(a);
@@ -174,7 +181,7 @@ NCCL_HOST_DEVICE_INLINE void* alignUp(void const* x, size_t a) {
   return reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(x) + a - 1) & -uintptr_t(a));
 }
 
-// assumes second argument is a power of 2
+// assumes 第二 参数 is a power of 2
 template <typename X, typename Y, typename Z = decltype(X() + int())>
 NCCL_HOST_DEVICE_INLINE constexpr Z alignDown(X x, Y a) {
   return x & -Z(a);
@@ -216,7 +223,7 @@ NCCL_HOST_DEVICE_INLINE bool rollingLessThan(Uint a, Uint b, int nBits = 8 * siz
   return !rollingLessEq(b, a, nBits);
 }
 
-// Produce the reciprocal of x for use in idivByRcp
+// Produce the reciprocal of x for 使用 入 idivByRcp
 NCCL_HOST_DEVICE_INLINE constexpr uint32_t idivRcp32(uint32_t x) {
   return uint32_t(-1) / x + isPow2(x);
 }
@@ -235,15 +242,15 @@ NCCL_HOST_DEVICE_INLINE uint64_t mul64hi(uint64_t a, uint64_t b) {
 #if __CUDA_ARCH__
   return __umul64hi(a, b);
 #elif defined(NCCL_OS_WINDOWS)
-  // Use MSVC intrinsic for 64-bit multiplication with high part result
+  // 使用 MSVC intrinsic for 64-位 multiplication with high part 结果
   return __umulh(a, b);
 #else
   return (uint64_t)(((unsigned __int128)a) * b >> 64);
 #endif
 }
 
-// Produce the reciprocal of x*y given their respective reciprocals. This incurs
-// no integer division on device.
+// Produce the reciprocal of x*y 给定的 their respective reciprocals. 此 incurs
+// 无 整数 division on 设备.
 NCCL_HOST_DEVICE_INLINE uint32_t imulRcp32(uint32_t x, uint32_t xrcp, uint32_t y, uint32_t yrcp) {
   if (xrcp == 0) return yrcp;
   if (yrcp == 0) return xrcp;
@@ -261,7 +268,7 @@ NCCL_HOST_DEVICE_INLINE uint64_t imulRcp64(uint64_t x, uint64_t xrcp, uint64_t y
   return rcp;
 }
 
-// Fast unsigned integer division where divisor has precomputed reciprocal.
+// 快速 unsigned 整数 division 何処 divisor has precomputed reciprocal.
 // idivFast(x, y, idivRcp(y)) == x/y
 NCCL_HOST_DEVICE_INLINE void idivmodFast32(uint32_t* quo, uint32_t* rem, uint32_t x, uint32_t y, uint32_t yrcp) {
   uint32_t q = yrcp == 0 ? x : mul32hi(x, yrcp);
@@ -307,10 +314,10 @@ NCCL_HOST_DEVICE_INLINE uint64_t imodFast64(uint64_t x, uint64_t y, uint64_t yrc
 }
 
 #if NCCL_CHECK_CUDACC
-// Precomputed integer reciprocoals for denominator values 1..64 inclusive.
-// Pass these to idivFast64() for fast division on the GPU.
+// Precomputed 整数 reciprocoals for denominator 值 1..64 inclusive.
+// Pass 这些 to idivFast64() for 快速 division 在 ... 上 GPU.
 NCCL_DEVICE_INLINE uint64_t idivRcp64_upto64(int x) {
-  // clang-format off
+  // clang-格式 off
   static constexpr uint64_t table[65] = {
     idivRcp64(0x01), idivRcp64(0x01), idivRcp64(0x02), idivRcp64(0x03),
     idivRcp64(0x04), idivRcp64(0x05), idivRcp64(0x06), idivRcp64(0x07),
@@ -330,7 +337,7 @@ NCCL_DEVICE_INLINE uint64_t idivRcp64_upto64(int x) {
     idivRcp64(0x3c), idivRcp64(0x3d), idivRcp64(0x3e), idivRcp64(0x3f),
     idivRcp64(0x40)
   };
-  // clang-format on
+  // clang-格式 on
   return table[x];
 }
 #endif
@@ -408,7 +415,7 @@ NCCL_DEVICE_INLINE unsigned int lanemask_lt() {
 #endif
 
 #if NCCL_CHECK_CUDACC
-// Load anything, but cache like its constant memory.
+// 加载 anything, 但 缓存 like its constant 内存.
 template <typename T>
 NCCL_DEVICE_INLINE T loadConst(T const* p) {
   if (alignof(T) == 1) {
@@ -452,10 +459,10 @@ NCCL_DEVICE_INLINE T loadConst(T const* p) {
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-// Optional<T>: Holds a T that may or may not be constructed. An Optional
-// constructed with a Present<Arg...> will have its T constructed via the
-// T::T(Arg...) constructor. An Optional constructed with a Absent will not
-// have its T constructed.
+// 可选<T>: Holds a T 那个 may 或者 may 不 be constructed. An 可选
+// 使用 Present<Arg...> 构造时，其 T 将通过以下方式被构造：
+// T::T(Arg...) constructor. An 可选 constructed with a Absent will 不
+// 其 T 会被构造。
 
 template <int... vals>
 struct IntSeq {};
@@ -467,7 +474,7 @@ struct IntSeqUpTo<n, n, i...> {
   using Type = IntSeq<i...>;
 };
 
-// Present<Arg...>: Packs a list of arguments together to be passed to Optional<T>.
+// Present<Arg...>: Packs a 列表 of 参数 together to be 传递给 可选<T>.
 template <typename... Arg>
 struct Present;
 template <>
@@ -506,15 +513,15 @@ struct Optional {
     T thing;
   };
 
-  // Construct with absent thing:
+  // 以缺失对象构造：
   NCCL_HOST_DEVICE_INLINE constexpr Optional() : present(false) {}
   NCCL_HOST_DEVICE_INLINE constexpr Optional(Absent) : present(false) {}
 
-  // Helper constructor
+  // 辅助 constructor
   template <typename... Arg, int... i>
   NCCL_HOST_DEVICE_INLINE Optional(Present<Arg...> args, IntSeq<i...>)
     : present(true), thing{args.get(IntSeq<i>())...} {}
-  // Construct with present thing:
+  // 以存在对象构造：
   template <typename... Arg>
   NCCL_HOST_DEVICE_INLINE Optional(Present<Arg...> args)
     : Optional(args, typename IntSeqUpTo<sizeof...(Arg), 0>::Type()) {}

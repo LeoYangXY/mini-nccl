@@ -33,6 +33,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/mlx5/mlx5dvcore.h — MLX5 Direct Verbs 核心结构 [第三方/Mellanox]
+ * ----------------------------------------------------------------------------
+ * Mellanox(现 NVIDIA)提供的 MLX5 直接verbs(direct verbs)基础结构体与枚举，
+ * 用于在不直接包含官方 MLX5 头文件的情况下动态加载相关函数。
+ */
+
 #ifndef NCCL_MLX5DV_CORE_H_
 #define NCCL_MLX5DV_CORE_H_
 

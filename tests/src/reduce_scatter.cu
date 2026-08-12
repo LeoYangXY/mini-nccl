@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/reduce_scatter.cu — ReduceScatter 性能/功能测试
+ * ----------------------------------------------------------------------------
+ * 实现 reduce_scatter_perf 基准：先把所有 rank 数据规约，再把结果分散到各 rank，
+ * 演示 NCCL ReduceScatter API 用法与字节计数计算。取自 nccl-tests 并裁剪。
+ */
+
 #include "cuda_runtime.h"
 #include "common.h"
 

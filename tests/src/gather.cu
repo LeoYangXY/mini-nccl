@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/gather.cu — Gather 性能/功能测试
+ * ----------------------------------------------------------------------------
+ * 实现 gather_perf 基准：把各 rank 的数据片段聚到 root，演示 NCCL Gather API 用法
+ * 与字节计数计算。取自 nccl-tests 并裁剪。
+ */
+
 #include "cuda_runtime.h"
 #include "common.h"
 

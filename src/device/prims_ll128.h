@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/prims_ll128.h — LL128 协议的 Primitives 实现
+ * ----------------------------------------------------------------------------
+ * 特化 Primitives 模板的 ProtoLL128 版本：每 128 字节打包为一个含 flag 的单元，
+ * 兼顾 LL 的可靠性与更高带宽。依赖 op128.h 的 128-bit 原子 load/store。是 device
+ * 端三种协议之一。
+ */
+
 #include "op128.h"
 
 #define NCCL_LL128_FLAGTHREAD (NCCL_LL128_LINEELEMS - 1)
@@ -113,8 +121,8 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
         }
       }
     } else {
-      // Not aligned. Stage the smallest 16 byte aligned region subsuming the
-      // buffer into shmem.
+      // 不 已对齐. Stage the smallest 16 字节 已对齐 区域 subsuming the
+      // 缓冲区 into shmem.
       int misalignment = reinterpret_cast<uintptr_t>(src) % 16;
       uint64_t* src8 = reinterpret_cast<uint64_t*>(reinterpret_cast<uintptr_t>(src) & -uintptr_t(16));
       uint64_t* shm8 = shmemCvtPtr((uint64_t*)ncclScratchForWarp(warpInBlock));
@@ -128,8 +136,8 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
 
       __syncwarp();
 
-      // Now load from shmem stage to regs. Preserve the same pre-shuffled layout
-      // as the aligned case since Finish() will be applied regardless.
+      // Now 加载 from shmem stage to regs. Preserve 相同 前-shuffled 布局
+      // as the 已对齐 情形 自 完成() 将会 applied regardless.
       T* shm = (T*)shm8 + misalignment / sizeof(T);
       NVCC_PRAGMA_UNROLL_AUTO
       for (int g = 0; g < WordPerThread / 2; g++) {
@@ -143,7 +151,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
 
   template <int WordPerThread>
   __device__ __forceinline__ void loadRegsFinish(uint64_t (&regs)[WordPerThread]) {
-    // Move data out of flag registers into the vacant registers.
+    // Move 数据 脱离 标志 寄存器 入到 vacant 寄存器.
     NVCC_PRAGMA_UNROLL_AUTO
     for (int g = 1; g < WordPerThread / 2; g += 2) {
       if (flagThread) regs[2 * g] = regs[2 * g - 1];
@@ -153,12 +161,12 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
   template <int WordPerThread>
   __device__ __forceinline__ void storeRegs(T* dst, uint64_t (&regs)[WordPerThread], int eltN) {
     constexpr int EltPer16B = 16 / sizeof(T);
-    // Reverse Finish() register permuatation.
+    // Reverse 完成() 寄存器 permuatation.
     NVCC_PRAGMA_UNROLL_AUTO
     for (int g = 1; g < WordPerThread / 2; g += 2) {
       if (flagThread) regs[2 * g - 1] = regs[2 * g];
     }
-    // Write to dst if 16-byte aligned, shmem otherwise.
+    // 写入 to 目标 若 16-字节 已对齐, shmem 否则.
     int misalignment = reinterpret_cast<uintptr_t>(dst) % 16;
     uint64_t* shm8 = shmemCvtPtr((uint64_t*)ncclScratchForWarp(warpInBlock));
     NVCC_PRAGMA_UNROLL_AUTO
@@ -171,8 +179,8 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
       }
     }
     __syncwarp();
-    // Write rest from shmem to dst. No need to coalesce stores to 16-bytes,
-    // the hardware keeps up fine.
+    // 写入 rest from shmem to 目标. 无 需要 coalesce stores to 16-字节,
+    // 硬件能很好地跟上。
     T* shm = (T*)ncclScratchForWarp(warpInBlock);
     int skip = misalignment == 0 ? eltN & -EltPer16B : 0;
     for (int i = skip + wid; i < eltN; i += WARP_SIZE) dst[i] = shm[i];
@@ -208,8 +216,8 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
 
     /************* Finish register load **************/
     if (SRC) {
-      // By deferring register shuffle here we've overlapped spinning on first
-      // peer's data with memory loads of src data.
+      // By deferring 寄存器 shuffle 这里've overlapped spinning on 第一
+      // 对等端's 数据 with 内存 loads of 源 数据.
       loadRegsFinish(v);
       if (SrcBuf == Input) {
         NVCC_PRAGMA_UNROLL_AUTO
@@ -230,7 +238,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
         }
       }
 
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_line]
       for (int i = 1; i < MaxRecv && i < fan.nrecv(); i++) {
         uint64_t flag = recvFlag(i);
@@ -269,7 +277,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
 
     /************************ Send **************************/
     if (SEND) {
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_line]
       for (int i = 1; i < MaxSend && i < fan.nsend(); i++) {
         uint64_t flag = sendFlag(i);
@@ -383,20 +391,20 @@ public:
       nsend++;
     }
     this->fan = Fan(nrecv, nsend);
-    // Coverity reports recvConn and sendConn being possibly NULL at this point but that won't actually
-    // happen given the two "while" loops just above.
-    // coverity[var_deref_model:FALSE]
+    // Coverity reports recvConn 并且 sendConn being possibly NULL 此时 但 那个 won't actually
+    // happen 给定的 the two "当" 循环 仅 上方.
+    // coverity[var_deref_model:假]
     loadRecvSync();
-    // coverity[var_deref_model:FALSE]
+    // coverity[var_deref_model:假]
     loadSendSync();
     setDataPtrs(inputBuf, outputBuf);
   }
 
   __device__ ~Primitives() {
-    // Save steps for the next operation
+    // Save 步骤 for 下一个 操作
     if (tid >= nthreads - WARP_SIZE && wid < fan.nrecv()) recvConn->step = recvConnHead;
     if (tid < fan.nsend()) sendConn->step = sendConnHead;
-    // Ensure all steps written back
+    // 确保 所有 步骤 written 后
     barrier();
   }
 

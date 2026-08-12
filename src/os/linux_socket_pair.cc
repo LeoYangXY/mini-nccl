@@ -4,12 +4,19 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * src/os/linux_socket_pair.cc — socket pair 的 Linux 实现
+ * ----------------------------------------------------------------------------
+ * 实现一对互相连通的 socket（当前用 pipe() 实现，TODO：改为 socketpair(AF_UNIX)），
+ * 用于本机进程间（如 proxy 线程与主线程）点对点通信。
+ */
+
 #include "os_socket_pair.h"
 #include "checks.h"
 
 #include <unistd.h>
 
-// TODO: switch from pipe() to socketpair(AF_UNIX, SOCK_STREAM, 0) to align with the Windows implementation
+// 待办: switch from pipe() to socketpair(AF_UNIX, SOCK_STREAM, 0) to align 带有 Windows 实现
 ncclResult_t ncclOsSocketPairCreate(ncclSocketPairDescriptor pair[2]) {
   int fds[2];
   SYSCHECK(pipe(fds), "pipe");

@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/lsa_barrier__funcs.h — LSA barrier 函数实现
+ * ----------------------------------------------------------------------------
+ * 实现 nccl_device 框架 LSA(Latency-Sensitive Allocator) barrier 的函数体，提供
+ * 设备端跨线程块的高效栅栏同步。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_MEM_BARRIER__FUNCS_H_
 #define _NCCL_DEVICE_MEM_BARRIER__FUNCS_H_
 #include "lsa_barrier__types.h"
@@ -40,7 +47,7 @@ NCCL_DEVICE_INLINE ncclLsaBarrierSession<Coop>::~ncclLsaBarrierSession() {
   uint32_t* state = (uint32_t*)ncclGetResourceBufferLocalPointer(this->comm, this->handle.bufHandle);
   if (this->coop.thread_rank() == 0) {
 #if __CUDA_ARCH__ == 1200 && CUDART_VERSION < 13000
-    // WAR for a compiler issue with CTK < 13.0
+    // WAR for a 编译器 问题 with CTK < 13.0
     if (this->index == 0) state[(this->multimem ? 0 : 1) * this->handle.nBarriers] = this->epoch;
     else
 #endif

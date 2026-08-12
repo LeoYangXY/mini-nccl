@@ -61,10 +61,10 @@ static bool ncclWarnSetDebugInfo = false;
 
 static thread_local int tid = -1;
 
-// clang-format off
+// clang-格式 off
 // ===== NCCL 日志/调试相关环境变量（本段集中定义，学习时最常用的几个）=====
 // 这些 DEFINE_NCCL_PARAM 的第二参数是环境变量名（如 NCCL_DEBUG），运行时通过
-// getenv 读取；在 mini-nccl 里常用于排查 AllReduce 建连/拓扑/性能问题。
+// getenv 读取；在 mini-nccl 里常用于排查 全规约 建连/拓扑/性能问题。
 DEFINE_NCCL_PARAM(ncclParamDebugLevel, ncclDebugLogLevel, NCCL_DEBUG, NCCL_LOG_NONE,
                   NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT,
                   ncclParamOneOf<ncclDebugLogLevel>(makeOptions(
@@ -76,8 +76,8 @@ DEFINE_NCCL_PARAM(ncclParamDebugLevel, ncclDebugLogLevel, NCCL_DEBUG, NCCL_LOG_N
                   )), "Set debug output level, the option is inclusive for any level that is less verbose than the set value");
 
 // NCCL_DEBUG_SUBSYS：按“子系统”过滤日志(逗号分隔)。例如只关心建连与图搜索时设
-// NCCL_DEBUG_SUBSYS=BOOTSTRAP,GRAPH。默认已含 INIT/ENV/BOOTSTRAP。其余可选 COLL/P2P/SHM/
-// NET/GRAPH/TUNING/ALLOC/CALL/PROXY/NVLS/REG/PROFILE/RAS/DESTROY，ALL 表示全部。
+// NCCL_DEBUG_SUBSYS=BOOTSTRAP,图。默认已含 初始化/ENV/BOOTSTRAP。其余可选 COLL/P2P/SHM/
+// 网络/图/TUNING/ALLOC/调用/代理/NVLS/REG/剖析/RAS/销毁，所有 表示全部。
 DEFINE_NCCL_PARAM(ncclParamDebugSubsys, uint64_t, NCCL_DEBUG_SUBSYS,
                   NCCL_INIT | NCCL_BOOTSTRAP | NCCL_ENV,
                   NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT,
@@ -103,14 +103,14 @@ DEFINE_NCCL_PARAM(ncclParamDebugSubsys, uint64_t, NCCL_DEBUG_SUBSYS,
                     makeOption("ALL", NCCL_ALL, "All categories")
                   ))), "Filter debug output by (comma-separated)");
 
-// NCCL_WARN_ENABLE_DEBUG_INFO：一旦打出 WARN 级别消息，就自动把调试级别提升到 INFO，
+// NCCL_WARN_ENABLE_DEBUG_INFO：一旦打出 WARN 级别消息，就自动把调试级别提升到 信息，
 // 方便在出错后看到更多上下文。
 DEFINE_NCCL_PARAM(ncclParamWarnEnableDebugInfo, bool, NCCL_WARN_ENABLE_DEBUG_INFO, false,
                   NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT, NCCL_PARAM_DEFAULT,
                   "If enabled, the debug level will be set to INFO after a WARN level debug message is logged.");
-// clang-format on
+// clang-格式 on
 
-// NCCL_DEBUG_TIMESTAMP_LEVELS：给哪些级别的日志行加时间戳(位掩码,如 WARN/INFO/TRACE)。
+// NCCL_DEBUG_TIMESTAMP_LEVELS：给哪些级别的日志行加时间戳(位掩码,如 WARN/信息/追踪)。
 DEFINE_NCCL_PARAM(ncclParamDebugTimestampLevel, uint32_t, NCCL_DEBUG_TIMESTAMP_LEVELS, (1u << NCCL_LOG_WARN),
                   NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT,
                   ncclParamBitsetOf<uint32_t>(
@@ -146,7 +146,7 @@ static ncclResult_t getHostNameForLog(char* hostname, int maxlen, const char del
   if (ret != ncclSuccess) return ret;
 
   for (int i = 0; i < maxlen - 1 && hostname[i]; ++i) {
-    // Replace special characters in hostnames with dashes
+    // Replace 特殊的 characters 入 hostnames with dashes
     switch (hostname[i]) {
     case '%':
     case '/':
@@ -159,11 +159,11 @@ static ncclResult_t getHostNameForLog(char* hostname, int maxlen, const char del
   return ncclSuccess;
 }
 
-// This function must be called with ncclDebugLock locked!
+// 该函数 必须为 被调用 with ncclDebugLock 已加锁!
 static void ncclDebugInit() {
   int tempNcclDebugLevel = -1;
   if (ncclDebugLevel == NCCL_DEBUG_RESET_TRIGGERED && ncclDebugFile != stdout) {
-    // Finish the reset initiated via ncclResetDebugInit().
+    // 完成 the reset initiated via ncclResetDebugInit().
     fclose(ncclDebugFile);
     ncclDebugFile = stdout;
   }
@@ -172,17 +172,17 @@ static void ncclDebugInit() {
 
   ncclWarnSetDebugInfo = ncclParamWarnEnableDebugInfo();
 
-  // Determine which debug levels will have timestamps.
+  // Determine 该 调试 层级 will have timestamps.
   ncclDebugTimestampLevels = ncclParamDebugTimestampLevel();
 
-  // Store a copy of the timestamp format with space for the subseconds, if used.
+  // 存储 a 拷贝 的 timestamp 格式 with space 为了 subseconds, 若 已使用.
   const char* tsFormat = ncclParamDebugTsFormat();
   ncclDebugTimestampSubsecondsStart = -1;
-  // Find where the subseconds are in the format.
+  // 查找 何処 the subseconds are 在 ... 中 格式.
   for (int i = 0; tsFormat[i] != '\0'; ++i) {
     if (tsFormat[i] == '%' && tsFormat[i + 1] == '%') {
-      // Next two chars are "%"
-      // Skip the next character, too, and restart checking after that.
+      // 下一个 two chars are "%"
+      // 跳过 下一个 character, too, 并且 restart checking 之后 那个.
       ++i;
       continue;
     }
@@ -193,7 +193,7 @@ static void ncclDebugInit() {
       constexpr int replaceLen = sizeof("%Xf") - 1;
       ncclDebugTimestampSubsecondDigits = tsFormat[i + 1] - '0';
       if (ncclDebugTimestampSubsecondDigits + strlen(tsFormat) - replaceLen > sizeof(ncclDebugTimestampFormat) - 1) {
-        // Won't fit; fall back on the default.
+        // Won't fit; 回退 on 默认值.
         break;
       }
       ncclDebugTimestampSubsecondsStart = i;
@@ -216,12 +216,12 @@ static void ncclDebugInit() {
     }
   }
 
-  // Replace underscore with spaces... it is hard to put spaces in command line parameters.
+  // Replace underscore with spaces... 这是 hard to 放置 spaces 入 command 行 参数.
   for (int i = 0; ncclDebugTimestampFormat[i] != '\0'; ++i) {
     if (ncclDebugTimestampFormat[i] == '_') ncclDebugTimestampFormat[i] = ' ';
   }
 
-  // Cache pid and hostname
+  // 缓存 pid 并且 hostname
   getHostNameForLog(hostname, 1024, '.');
   pid = ncclOsGetPid();
 
@@ -257,9 +257,9 @@ static void ncclDebugInit() {
         break;
       }
       if ((dfn - debugFn) > PATH_MAX) {
-        // snprintf wanted to overfill the buffer: set dfn to the end
-        // of the buffer (for null char) and it will naturally exit
-        // the loop.
+        // snprintf wanted to overfill 该缓冲区: 设置 dfn 到 末尾
+        // of 该缓冲区 (for null char) 并且 it will naturally 退出
+        // the 循环.
         dfn = debugFn + PATH_MAX;
       }
     }
@@ -291,7 +291,7 @@ static void ncclDebugLogV(ncclDebugLogLevel level, unsigned long flags, const ch
     flags = ncclDebugNoWarn;
   }
 
-  // Save the last error (WARN) as a human readable string
+  // Save 最后一个 错误 (WARN) as a human readable string
   if (level == NCCL_LOG_WARN) {
     std::lock_guard<std::mutex> lock(ncclDebugMutex);
     va_list vcopy;
@@ -317,12 +317,12 @@ static void ncclDebugLogV(ncclDebugLogLevel level, unsigned long flags, const ch
   char buffer[1024];
   size_t len = 0;
 
-  // WARNs come with an extra newline at the beginning.
+  // WARNs come with an 额外的 newline at the beginning.
   if (level == NCCL_LOG_WARN) {
     buffer[len++] = '\n';
   }
 
-  // Add the timestamp to the buffer if they are turned on for this level.
+  // Add the timestamp to 该缓冲区 若y are turned on for 此 层级.
   if (ncclDebugTimestampLevels & (1 << level)) {
     if (ncclDebugTimestampFormat[0] != '\0') {
       struct timespec ts;
@@ -332,7 +332,7 @@ static void ncclDebugLogV(ncclDebugLogLevel level, unsigned long flags, const ch
       std::tm nowTm;
       ncclOsLocaltime(&nowTimeT, &nowTm);
 
-      // Add the subseconds portion if it is part of the format.
+      // Add the subseconds portion 若 这是 part 的 格式.
       char localTimestampFormat[sizeof(ncclDebugTimestampFormat)];
       const char* pformat = ncclDebugTimestampFormat;
       if (ncclDebugTimestampSubsecondsStart != -1) {
@@ -345,10 +345,10 @@ static void ncclDebugLogV(ncclDebugLogLevel level, unsigned long flags, const ch
                ncclDebugTimestampFormat + ncclDebugTimestampSubsecondsStart + ncclDebugTimestampSubsecondDigits);
       }
 
-      // Format the time. If it runs out of space, fall back on a simpler format.
+      // 格式 the time. 若 it runs 脱离 space, 回退 on a simpler 格式.
       int adv = std::strftime(buffer + len, sizeof(buffer) - len, pformat, &nowTm);
       if (adv == 0 && ncclDebugTimestampFormat[0] != '\0') {
-        // Ran out of space. Fall back on the default. This should never fail.
+        // Ran 脱离 space. 回退 on 默认值. 此 should never 失败.
         adv = std::strftime(buffer + len, sizeof(buffer) - len, "[%F %T] ", &nowTm);
       }
       len += adv;
@@ -356,7 +356,7 @@ static void ncclDebugLogV(ncclDebugLogLevel level, unsigned long flags, const ch
   }
   len = std::min(len, sizeof(buffer) - 1);  // prevent overflows
 
-  // Add hostname, pid and tid portion of the log line.
+  // Add hostname, pid 并且 tid portion 的 日志 行.
   if (level != NCCL_LOG_VERSION) {
     len += snprintf(buffer + len, sizeof(buffer) - len, "%s:%d:%d ", hostname, pid, tid);
     len = std::min(len, sizeof(buffer) - 1);  // prevent overflows
@@ -370,7 +370,7 @@ static void ncclDebugLogV(ncclDebugLogLevel level, unsigned long flags, const ch
   const char* fileStr = file ? file : "<unknown>";
   const char* funcStr = func ? func : "<unknown>";
 
-  // Add level specific formatting. The format string from the call site is incorporated into this prefix.
+  // Add 层级 特定的 formatting. The 格式 string 从 调用 site is incorporated into 此 prefix.
   if (level == NCCL_LOG_WARN) {
     if (func && func[0]) {
       len += snprintf(buffer + len, sizeof(buffer) - len, "[%d] %s:%d (%s) NCCL WARN %s\n", cudaDev, fileStr, line,
@@ -394,21 +394,21 @@ static void ncclDebugLogV(ncclDebugLogLevel level, unsigned long flags, const ch
     len += snprintf(buffer + len, sizeof(buffer) - len, "%s\n", fmt);
   }
 
-  // If the prefixed format string overflows, make sure it is still terminated with a newline.
+  // 若 prefixed 格式 string overflows, 确保 这是 仍 terminated with a newline.
   if (len > sizeof(buffer) - 1) {
-    // snprintf already placed a \0 at sizeof(buffer)-1
+    // snprintf 已经 placed a \0 at sizeof(缓冲区)-1
     buffer[sizeof(buffer) - 2] = '\n';
   }
 
-  // Add the message as given by the call site.
-  // The call site's format string has been incorporated into `buffer` along with our prefix.
+  // Add the 消息 as 给定的 由 调用 site.
+  // The 调用 site's 格式 string 已经 incorporated into `缓冲区` 连同 our prefix.
   va_list vcopy;
   va_copy(vcopy, vargs);
   (void)vfprintf(ncclDebugFile, buffer, vcopy);
   va_end(vcopy);
 }
 
-// Internal only Common logging function used by the INFO, WARN and TRACE macros
+// 内部 仅 通用 logging 函数 已使用 由 信息, WARN 并且 追踪 宏
 void ncclDebugLogInternal(ncclDebugLogLevel level, unsigned long flags, const char* file, const char* func, int line,
                           const char* fmt, ...) {
   va_list vargs;
@@ -434,20 +434,20 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char* file
   va_end(vargs);
 }
 
-// Non-deprecated version for internal use.
+// Non-deprecated 版本 for 内部 使用.
 extern "C"
 #if !defined(NCCL_OS_WINDOWS)
   __attribute__((visibility("default")))
 #endif
   void ncclResetDebugInitInternal() {
-  // Cleans up from a previous ncclDebugInit() and reruns.
-  // Use this after changing NCCL_DEBUG and related parameters in the environment.
+  // Cleans up from a 前一个 ncclDebugInit() 并且 reruns.
+  // 使用 此 之后 changing NCCL_DEBUG 并且 related 参数 在 ... 中 environment.
   std::lock_guard<std::mutex> lock(ncclDebugMutex);
-  // Let ncclDebugInit() know to complete the reset.
+  // Let ncclDebugInit() 知道 to 完成 the reset.
   COMPILER_ATOMIC_STORE(&ncclDebugLevel, static_cast<int>(NCCL_DEBUG_RESET_TRIGGERED), std::memory_order_release);
 }
 
-// In place of: NCCL_API(void, ncclResetDebugInit);
+// 就地 of: NCCL_API(void, ncclResetDebugInit);
 #ifdef pncclResetDebugInit
 #undef pncclResetDebugInit
 #endif
@@ -463,9 +463,9 @@ extern "C"
   void ncclResetDebugInit();
 
 extern "C" void ncclResetDebugInit() {
-  // This is now deprecated as part of the NCCL API. It will be removed
-  // from the API in the future. It is still available as an
-  // exported symbol.
+  // 这是 now deprecated as part 的 NCCL API. It 将会 removed
+  // 从 API 在 ... 中 future. 这是 仍 可用 as an
+  // 导出的符号。
   ncclResetDebugInitInternal();
 }
 
@@ -474,8 +474,8 @@ DEFINE_NCCL_PARAM(ncclParamSetThreadName, bool, NCCL_SET_THREAD_NAME, false,
                   "Allow NCCL to give meaningful names to NCCL CPU threads via pthread_setname_np");
 
 void ncclSetThreadName(std::thread& thread, const char* fmt, ...) {
-  // pthread_setname_np is nonstandard GNU extension
-  // needs the following feature test macro
+  // pthread_setname_np 是非标准的 GNU 扩展
+  // needs 以下内容 特性 测试 宏
 #ifdef _GNU_SOURCE
   if (ncclParamSetThreadName() == false) return;
   char threadName[NCCL_THREAD_NAMELEN];

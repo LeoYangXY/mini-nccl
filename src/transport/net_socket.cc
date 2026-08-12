@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/transport/net_socket.cc — 基于 socket 的网络后端实现
+ * ----------------------------------------------------------------------------
+ * 实现 NCCL net 传输的 socket(TCP) 后端：用 include/socket.h 的自带 TCP 抽象完成
+ * 连接建立、收发与进度管理，是不依赖第三方网络库的最小化跨节点通信实现。
+ */
+
 #include "comm.h"
 #include "core.h"
 #include "socket.h"
@@ -33,18 +40,18 @@ static std::mutex ncclNetSocketMutex;
 static ncclResult_t ncclNetSocketGetPciPath(char* devName, char** pciPath) {
   char devicePath[PATH_MAX];
   snprintf(devicePath, PATH_MAX, "/sys/class/net/%s/device", devName);
-  // May return NULL if the file doesn't exist.
+  // May 返回 NULL 若 文件 doesn't exist.
   *pciPath = ncclOsRealpath(devicePath, NULL);
   return ncclSuccess;
 }
 
 static ncclProfilerCallback_t ncclProfilerFunction;
 
-// With ncclNet_v11_t the NCCL core initializes the network plugin per-communicator
-// rather than once for all communicators. However, the internal plugin implementation
-// still assumes the plugin is initialized only once across all communicators. The ref
-// counter makes sure the plugin internally initializes only once. When per communicator
-// context support is added to the plugin the ref counter can be removed.
+// With ncclNet_v11_t the NCCL core initializes the 网络 插件 每个-通信器
+// rather than 一旦 对所有 communicators. 然而, the 内部 插件 实现
+// 仍 assumes the 插件 is 已初始化 仅 一旦 across 所有 communicators. The ref
+// counter makes sure the 插件 internally initializes 仅 一旦. 当 每个 通信器
+// 上下文 支持 is added 到 plug在 ... 中 ref counter 可以 removed.
 static int netRefCount;
 
 ncclResult_t ncclNetSocketInit(void** ctx, uint64_t commId, ncclNetCommConfig_t* config, ncclDebugLogger_t logFunction,
@@ -91,7 +98,7 @@ static ncclResult_t ncclNetSocketGetSpeed(char* devName, int* speed) {
   *speed = 0;
 
 #if defined(NCCL_OS_WINDOWS)
-  // On Windows, use GetAdaptersAddresses to get network interface speed
+  // On Windows, 使用 GetAdaptersAddresses to 获取 网络 接口 speed
   ULONG bufferSize = 15000;
   IP_ADAPTER_ADDRESSES* adapterAddresses = NULL;
   ULONG result;
@@ -114,15 +121,15 @@ static ncclResult_t ncclNetSocketGetSpeed(char* devName, int* speed) {
   } while (result == ERROR_BUFFER_OVERFLOW && attempts < 3);
 
   if (result == NO_ERROR) {
-    // Iterate through adapters to find the matching one
+    // Iterate through adapters to 查找 the matching one
     for (IP_ADAPTER_ADDRESSES* adapter = adapterAddresses; adapter != NULL; adapter = adapter->Next) {
-      // Convert adapter friendly name to UTF-8 for comparison
+      // 将 ... 转换dapter friendly name to UTF-8 for comparison
       char adapterName[MAX_IF_NAME_SIZE];
       WideCharToMultiByte(CP_UTF8, 0, adapter->FriendlyName, -1, adapterName, sizeof(adapterName), NULL, NULL);
 
-      // Check if this is the adapter we're looking for
+      // 检查 若 这是 the adapter we're looking for
       if (strstr(adapterName, devName) != NULL || strstr(devName, adapterName) != NULL) {
-        // TransmitLinkSpeed is in bits per second, convert to Mbps
+        // TransmitLinkSpeed is 入 位 每个 第二, convert to Mbps
         if (adapter->TransmitLinkSpeed > 0) {
           *speed = (int)(adapter->TransmitLinkSpeed / 1000000);
           INFO(NCCL_NET, "Found network interface %s with speed %d Mbps", devName, *speed);
@@ -148,7 +155,7 @@ static ncclResult_t ncclNetSocketGetSpeed(char* devName, int* speed) {
   if (fd != -1) {
     char speedStr[] = "        ";
     int n;
-    // Allow this to silently fail
+    // 允许 此 to 静默地 失败
     n = read(fd, speedStr, sizeof(speedStr) - 1);
     if (n > 0) {
       *speed = strtol(speedStr, NULL, 0);
@@ -356,18 +363,18 @@ ncclResult_t ncclNetSocketGetNsockNthread(int dev, int* ns, int* nt) {
   int fd = -1;
   int nSocks;
   if (nThreads == -2 || nSocksPerThread == -2) {
-    // Auto-detection
+    // 自动探测
     int autoNt = 0, autoNs = 1; // By default, we only use the main thread and do not spawn extra threads
     char vendorPath[PATH_MAX];
     snprintf(vendorPath, PATH_MAX, "/sys/class/net/%s/device/vendor", ncclNetSocketDevs[dev].devName);
-    // Coverity is wrong.  NULL second argument to realpath() is OK by POSIX.1-2008.
-    // coverity[alias_transfer:FALSE]
+    // Coverity is 错误.  NULL 第二 参数 to realpath() is OK by POSIX.1-2008.
+    // coverity[alias_transfer:假]
     char* rPath = ncclOsRealpath(vendorPath, NULL);
     fd = open(rPath, O_RDONLY);
     free(rPath);
     if (fd == -1) {
-      // Could not find device vendor. This is handled silently so
-      // we don't want to print an INFO error.
+      // Could 不 查找 设备 vendor. 这是 handled 静默地 所以
+      // we don't 希望 打印 an 信息 错误.
       TRACE(NCCL_NET, "Open of %s failed : %s", vendorPath, strerror(errno));
       goto end;
     }
@@ -407,7 +414,7 @@ fail:
 
 ncclResult_t ncclNetSocketListen(void* ctx, int dev, void* opaqueHandle, void** listenComm) {
   if (dev < 0 || dev >= ncclNetIfs) {
-    // data transfer socket is based on specified dev
+    // 数据 transfer 套接字 is 基于 specified dev
     WARN("NET/Socket : ncclNetSocketListen dev=%d ncclNetIfs=%d", dev, ncclNetIfs);
     return ncclInternalError;
   }
@@ -440,7 +447,7 @@ fail:
 ncclResult_t ncclNetSocketConnect(void* ctx, int dev, void* opaqueHandle, void** sendComm,
                                   ncclNetDeviceHandle_t** /*sendDevComm*/) {
   if (dev < 0 || dev >= ncclNetIfs) {
-    // data transfer socket is based on specified dev
+    // 数据 transfer 套接字 is 基于 specified dev
     return ncclInternalError;
   }
 
@@ -564,11 +571,11 @@ ncclResult_t ncclNetSocketGetTask(struct ncclNetSocketComm* comm, struct ncclPro
   int tid = comm->nextSock % comm->nThreads;
   struct ncclNetSocketThreadResources* res = comm->threadResources + tid;
   struct ncclNetSocketTaskQueue* queue = &res->threadTaskQueue;
-  // create helper threads and prepare per-thread task queue
+  // 创建 辅助 线程 并且 prepare 每个-线程 task 队列
   if (queue->tasks == NULL) {
-    // each request can be divided up to nSocks tasks, and
-    // these tasks are distributed to nThreads threads,
-    // we need to make sure each thread queue has enough slots for MAX_REQUESTS
+    // 每个 请求 可以 divided 多达 nSocks tasks, 并且
+    // 这些 tasks are distributed to nThreads 线程,
+    // 需要 确保 每个 线程 队列 has enough slots for MAX_REQUESTS
     queue->len = MAX_REQUESTS * DIVUP(comm->nSocks, comm->nThreads);
     NCCLCHECK(ncclCalloc(&queue->tasks, queue->len));
     queue->next = 0;
@@ -600,7 +607,7 @@ ncclResult_t ncclNetSocketGetTask(struct ncclNetSocketComm* comm, struct ncclPro
   return ncclInternalError;
 }
 
-// if the dataSize is smaller than the inline size, return the inline size; if not, return 0 to avoid the extra copy.
+// 若 dataSize is smaller than the 内联 大小, 返回 the 内联 大小; 否则, 返回 0 to 避免 the 额外的 拷贝.
 static int ncclNetSocketInlineSize(int dataSize) {
   return (dataSize <= ncclParamSocketInlineSize()) ? dataSize : 0;
 }
@@ -616,13 +623,13 @@ ncclResult_t ncclNetSocketTest(void* request, int* done, int* size) {
     int msgSize;
     uint8_t* msg = (uint8_t*)r->inlineData;
     if (r->op == NCCL_SOCKET_SEND) {
-      // sender side has the right data size, copy size info + inline data to the buffer
+      // 发送方 side has the 右 数据 大小, 拷贝 大小 信息 + 内联 数据 to 该缓冲区
       int inlineSize = ncclNetSocketInlineSize(r->size);
       msgSize = inlineSize + SOCKET_CTRL_SIZE;
       memcpy(msg, &r->size, SOCKET_CTRL_SIZE);
       if (inlineSize > 0) memcpy(msg + SOCKET_CTRL_SIZE, r->data, inlineSize);
     } else {
-      // receiver side doesn't have the right data size, wait for the sender to send it
+      // 接收方 side doesn't have the 右 数据 大小, 等待 the 发送方 to 发送 it
       int sizeOffset = 0, senderSize = 0;
       while (sizeOffset < SOCKET_CTRL_SIZE) {
         NCCLCHECK(ncclSocketProgress(r->op, r->ctrlSock, msg, SOCKET_CTRL_SIZE, &sizeOffset));
@@ -640,11 +647,11 @@ ncclResult_t ncclNetSocketTest(void* request, int* done, int* size) {
              ncclSocketToString(&addr, line), senderSize, r->size);
         return ncclInvalidUsage;
       }
-      // copy to the data buffer if we have received some inline data already
+      // 拷贝 到 数据 缓冲区 若 我们已有 received 一些 内联 数据 已经
       int receivedInline = sizeOffset - SOCKET_CTRL_SIZE;
       if (receivedInline > 0) memcpy(r->data, msg + SOCKET_CTRL_SIZE, receivedInline);
-      // from the actual size, extract the remaining inline size to be received and redirect the msg buffer to the
-      // user data
+      // 从 actual 大小, extract the 剩余的 内联 大小 to be received 并且 redirect the msg 缓冲区 到
+      // 用户 数据
       r->size = senderSize;
       msgSize = ncclNetSocketInlineSize(r->size) - receivedInline;
       msg = (uint8_t*)r->data + receivedInline;
@@ -654,12 +661,12 @@ ncclResult_t ncclNetSocketTest(void* request, int* done, int* size) {
       NCCLCHECK(ncclSocketProgress(r->op, r->ctrlSock, msg, msgSize, &offset));
       if (offset == 0) return ncclSuccess; /* not ready yet*/
     }
-    // done exchanging sizes, r->size now contains the actual size
+    // 已完成 exchanging sizes, r->大小 now contains the actual 大小
     r->used = 2;
     r->offset = ncclNetSocketInlineSize(r->size);
     int chunkOffset = r->offset, i = 0;
     if (r->comm->nSocks > 0) {
-      // each request can be divided up to nSocks tasks, we use the size left to transfer
+      // 每个 请求 可以 divided 多达 nSocks tasks, we 使用 the 大小 左 to transfer
       int taskSize = std::max((int)ncclParamSocketMinTaskSize(), DIVUP(r->size - r->offset, r->comm->nSocks));
       while (chunkOffset < r->size) {
         int chunkSize = std::min(taskSize, r->size - chunkOffset);
@@ -671,7 +678,7 @@ ncclResult_t ncclNetSocketTest(void* request, int* done, int* size) {
     r->nSubs = i;
   }
   if (r->used == 2) {
-    // already exchanged size
+    // 已经 exchanged 大小
     if (r->nSubs > 0) {
       int nCompleted = 0;
       for (int i = 0; i < r->nSubs; i++) {
@@ -689,7 +696,7 @@ ncclResult_t ncclNetSocketTest(void* request, int* done, int* size) {
         }
       }
     } else {
-      // progress request using main thread
+      // progress 请求 使用 main 线程
 #ifdef NCCL_ENABLE_NET_PROFILING
       if (!r->pInfo.eHandle) {
         ncclProfilerNetSockDescr_v1_t data;
@@ -730,7 +737,7 @@ ncclResult_t ncclNetSocketIsend(void* sendComm, void* data, size_t size, int tag
   struct ncclNetSocketComm* comm = (struct ncclNetSocketComm*)sendComm;
   NCCLCHECK(ncclNetSocketGetRequest(comm, NCCL_SOCKET_SEND, data, (int)size, (struct ncclNetSocketRequest**)request));
 #ifdef NCCL_ENABLE_NET_PROFILING
-  // NCCL core profiler callback
+  // NCCL core 剖析器 回调函数
   struct ncclNetSocketRequest* req = *(struct ncclNetSocketRequest**)request;
   req->pInfo.pHandle = phandle;
 #endif
@@ -744,7 +751,7 @@ ncclResult_t ncclNetSocketIrecv(void* recvComm, int n, void** data, size_t* size
   NCCLCHECK(ncclNetSocketGetRequest(comm, NCCL_SOCKET_RECV, data[0], (int)sizes[0],
                                     (struct ncclNetSocketRequest**)request));
 #ifdef NCCL_ENABLE_NET_PROFILING
-  // NCCL core profiler callback
+  // NCCL core 剖析器 回调函数
   struct ncclNetSocketRequest* req = *(struct ncclNetSocketRequest**)request;
   if (phandles) req->pInfo.pHandle = phandles[0];
 #endif
@@ -752,7 +759,7 @@ ncclResult_t ncclNetSocketIrecv(void* recvComm, int n, void** data, size_t* size
 }
 
 ncclResult_t ncclNetSocketIflush(void* recvComm, int n, void** data, int* sizes, void** mhandles, void** request) {
-  // We don't support CUDA pointers, so we don't need a flush operation
+  // We don't 支持 CUDA 指针, 所以 we don't 需要 a 刷写 操作
   return ncclInternalError;
 }
 

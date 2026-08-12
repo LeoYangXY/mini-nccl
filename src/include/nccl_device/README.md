@@ -16,17 +16,17 @@ to be more specific as to which module it pulls in it should include "impl/foo__
 One of the nasty reasons this was required is because of C++ defaulted function parameters:
 
 ```
-// +++ in foo.h +++
+// +++ 入 foo.h +++
 struct Foo; // defined in some __types.h
 
-// +++ in "impl/foo__types.h" +++
+// +++ 入 "impl/foo__types.h" +++
 struct Foo { int x; };
 
-// +++ in "bar.h" +++
-// Prototype function where default value is default construction of Foo. Since
-// Foo would be incomplete if just including "foo.h" the compiler errors because
-// it can't reason about the {}.
-// I was able to solve this by including "impl/foo__types.h" instead.
+// +++ 入 "bar.h" +++
+// Prototype 函数 何処 默认 值 is 默认 construction of Foo. 自
+// Foo 将会 incomplete 若 仅 including "foo.h" the 编译器 错误 因为
+// it can't 原因 about the {}.
+// I was able to solve 此 by including "impl/foo__types.h" 改为.
 #include "impl/foo__types.h"
 void bar(Foo arg = {});
 ```

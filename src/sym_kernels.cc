@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/sym_kernels.cc — symmetric(对称) kernel 实现
+ * ----------------------------------------------------------------------------
+ * 实现“对称内存”kernel 的 host 侧逻辑：在多个 rank 以相同布局分配/访问内存并协作
+ * 执行 kernel（用于 AllGatherV 等需要对称视图的集合）。配合 src/scheduler/。
+ */
+
 #include "sym_kernels.h"
 #include "comm.h"
 #include "device.h"
@@ -14,7 +21,7 @@
 #include <cfloat>
 
 constexpr char const* kernelName[] = {
-  // Must align with enum ncclSymkKernelId definition in src/include/sym_kernels.h
+  // 必须与 源/包含/sym_kernels.h 中的 枚举 ncclSymkKernelId 定义保持一致
   "AllReduce_AGxLL_R",
   "AllReduce_AGxLLMC_R",
   "AllReduce_RSxTmaLD_AGxTmaST",
@@ -107,8 +114,8 @@ static uint32_t kernelMask_user() {
   static uint32_t cache = -1u;
   uint32_t got = COMPILER_ATOMIC_LOAD(&cache, std::memory_order_relaxed);
   if (got == -1u) {
-    // TODO: Enhance this to be a pattern match. I like regex's but we also have
-    // the parseList() used by NCCL_ALGO/PROTO.
+    // 待办：增强为模式匹配。我偏好用正则，但我们也有
+    // NCCL_ALGO/PROTO 所用的 parseList() 可用。
     char const* name = ncclGetEnv("NCCL_SYM_KERNEL");
     if (name == nullptr || strcmp(name, "^") == 0) {
       static_assert((int)ncclSymkKernelId_Count < 32, "Use more than 32 bits");
@@ -149,12 +156,12 @@ static uint32_t ncclSymkRsGinAccumBytesPerBlock() {
 }
 
 static double softmin(double x, double ceiling, double softness) {
-  // looks like a smooth version of: min(x, ceiling)
+  // 看起来像 最小值(x, ceiling) 的平滑版本
   return ceiling - softness * std::log1p((std::exp(ceiling / softness) - 1) * std::exp(-x / softness));
 }
 
 static double softplus(double x, double softness) {
-  // looks like a smooth version of: max(0, x)
+  // 看起来像 最大值(0, x) 的平滑版本
   double z = x / softness;
   return 100.0 <= z ? x : softness * std::log1p(std::exp(z));
 }
@@ -164,9 +171,9 @@ static double model(double busBytes, double baseLat, int nSMs, double smBw, doub
   return baseLat + softplus(busBytes / bw - 1, 1);
 }
 
-// Given the kernel and bytes, return the minimum number of blocks to run on such that
-// perf is 99% of running at max blocks, and return the estimate runtime for that
-// block count.
+// 给定 内核 与字节数，返回需要运行的最小 块 数，使得
+// 性能达到最大 块 数时的 99%，并返回该 块 数下的预估运行时间，
+// 
 static void queryModel_gin(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes, float* timeUs, int* nBlocks);
 static void queryModel_lsa(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes, float* timeUs, int* nBlocks);
 
@@ -182,7 +189,7 @@ static void queryModel(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes,
 #define NCCL_NVLINK_BW_IDX_BLACKWELL 1
 #define NCCL_NVLINK_BW_IDX_NUM 2
 
-// NVLS max bws NCCL can achieve
+// NCCL 能达成的 NVLS 最大带宽
 static const float nvlinkBws[NCCL_NVLINK_BW_IDX_NUM] = {
   360.0f, // Hopper
   720.0f, // Blackwell
@@ -201,28 +208,28 @@ static double getGinBw(struct ncclComm* comm) {
   return (/*byte/sec*/ 1.e9) * comm->minNetBw;
 }
 
-// Bus multipliers count number of times data is sent through that widget.
+// 总线乘数统计数据经过某个部件(部件=widget)的次数。
 static void getBusMul_ReduceScatter_RailA2A(struct ncclComm* comm, bool ldmc,
-    // Bus multipliers per bottleneck
+    // 每个瓶颈处的总线乘数
                                             double* out_smMul, double* out_lsaMul, double* out_ginMul) {
   int lsaRanks = ncclTeamLsa(comm).nRanks;
   int railRanks = ncclTeamRail(comm).nRanks;
-  // LSA
+  // LSA(同节点对称地址可直连的本地集合)
   *out_lsaMul = std::max(
     /*inbound*/ (ldmc ? lsaRanks : lsaRanks - 1) * railRanks,
     /*outbound*/ (lsaRanks - 1) * railRanks);
-  // GIN
+  // GIN(由 GPU 发起的网络)
   *out_ginMul = railRanks - 1; // inbound == outbound
-  // SM. Inbound (reads) only because it dominates outbound (writes).
+  // SM。只考虑入站(读)，因为它主导出站(写)。
   *out_smMul =
     /*stage 0*/ (lsaRanks == 1 ? 0 : (ldmc ? 1 : lsaRanks) * (railRanks - 1)) +
     /*stage 1*/ (ldmc ? 1 : lsaRanks) + (railRanks - 1);
 }
 
 static double getSmBw_ReduceScatter_RailA2A(struct ncclComm* comm, bool ldmc) {
-  // Empirically calculated as effbw/nctas where effbw is reported by TUNING
-  // debug logging (from getRequirements_gin()) and nctas is the number of ctas
-  // that appear to saturate bandwidth.
+  // 通过实验得出：effbw/nctas，其中 effbw 来自 TUNING
+  // 调试日志(由 getRequirements_gin() 输出)，nctas 是
+  // 看似能让带宽饱和的 cta 数量。
   if (100 <= comm->minCompCap) {
     return ldmc ? 8.44e9 : 26.6e9;
   } else {
@@ -231,21 +238,21 @@ static double getSmBw_ReduceScatter_RailA2A(struct ncclComm* comm, bool ldmc) {
 }
 
 static double getSmLat_ReduceScatter_RailA2A(struct ncclComm* comm, bool ldmc) {
-  // Processing delay. Larger value means bigger network buffers.
+  // 处理延迟。值越大意味着网络缓冲区越大。
   return 10.e-6;
 }
 
-// Calculate saturation block count:
+// 计算饱和 块 数：
 static int calcSatBlocks_ReduceScatter_RailA2A(struct ncclComm* comm, bool ldmc) {
   double lsaBw = getLsaBw(comm);
   double ginBw = getGinBw(comm);
   double smBw = getSmBw_ReduceScatter_RailA2A(comm, ldmc);
   double smMul, lsaMul, ginMul;
   getBusMul_ReduceScatter_RailA2A(comm, ldmc, &smMul, &lsaMul, &ginMul);
-  // Effective Bandwidth: EffBw = Bw/Mul
-  // Let smsEffBw = smEffBw*nBlocks
-  // Set smsEffBw = min(lsaEffBw, ginEffBw)
-  // Solve for nBlocks:
+  // 有效带宽：EffBw = Bw/Mul
+  // 令 smsEffBw = smEffBw*nBlocks
+  // 令 smsEffBw = 最小值(lsaEffBw, ginEffBw)
+  // 解出 nBlocks：
   double minLsaGinEffBw = std::min(lsaBw / lsaMul, ginBw / ginMul);
   return std::ceil(std::min(double(1 << 30), minLsaGinEffBw / (smBw / smMul)));
 }
@@ -260,7 +267,7 @@ static void getRequirements_gin(struct ncclComm* comm, int* out_nBlocks, size_t*
     double smLat = getSmLat_ReduceScatter_RailA2A(comm, ldmc);
     double smMul, lsaMul, ginMul;
     getBusMul_ReduceScatter_RailA2A(comm, ldmc, &smMul, &lsaMul, &ginMul);
-    // GIN could be throttled by LSA work
+    // GIN 可能受 LSA 工作的节流影响
     double ginBwRenorm = std::min(lsaBw / lsaMul, ginBw / ginMul) * ginMul;
     size_t bufSize = ginBwRenorm * (ginLat + smLat);
     int nBlocks = calcSatBlocks_ReduceScatter_RailA2A(comm, ldmc);
@@ -276,8 +283,8 @@ static void getRequirements_gin(struct ncclComm* comm, int* out_nBlocks, size_t*
 
 static void queryModel_gin(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes, float* timeUs, int* nBlocks) {
   struct ncclSymkState* symk = &comm->symkState;
-  // ncclTeam world = ncclTeamWorld(comm);
-  // ncclTeam lsa = ncclTeamLsa(comm);
+  // ncclTeam world = ncclTeamWorld(通信域);
+  // ncclTeam lsa = ncclTeamLsa(通信域);
   ncclTeam rail = ncclTeamRail(comm);
   double lsaBw = getLsaBw(comm);
   double ginLat = getGinLat(comm);
@@ -317,15 +324,15 @@ static void queryModel_gin(struct ncclComm* comm, ncclSymkKernelId k, size_t nBy
       double smMul, lsaMul, ginMul;
       getBusMul_ReduceScatter_RailA2A(comm, ldmc, &smMul, &lsaMul, &ginMul);
       *nBlocks = (int)divUp(nBytes, chunkSize);
-      // max against nMinBlocks last since we may have nMaxBlocks < nMinBlocks
+      // 最后才与 nMinBlocks 取最大值，因为可能出现 nMaxBlocks < nMinBlocks 的情况
       *nBlocks = std::max(nMinBlocks, std::min(nMaxBlocks, *nBlocks));
       double effBw = (*nBlocks) * (smBw / smMul);
       effBw = std::min(effBw, lsaBw / lsaMul);
       effBw = std::min(effBw, ginBw / ginMul);
       double time = nBytes / effBw;
-      // Delayed by LSA processing of first chunk.
+      // 受首块 LSA 处理延迟的影响。
       time += std::min(nBytes, chunkSize * (size_t)(*nBlocks)) * (lsaMul / lsaBw + ginMul / ginBw);
-      // Delay by GIN latency of first chunk.
+      // 受首块 GIN 延迟的影响。
       time += ginLat;
       *timeUs = (/*usec/sec=*/1.e6) * time;
     }
@@ -420,7 +427,7 @@ static void queryModel_lsa(struct ncclComm* comm, ncclSymkKernelId k, size_t nBy
   }
   *nBlocks = nMaxBlocks;
   *timeUs = model(busBytes, baseLat, nMaxBlocks, smBw, busMultiplier, peakBw);
-  // Use least number of blocks that puts us within a tolerance of peak performance.
+  // 使用能让性能达到峰值容忍范围内的最小 块 数。
   for (int bn = nMinBlocks; bn < nMaxBlocks; bn++) {
     double time = model(busBytes, baseLat, bn, smBw, busMultiplier, peakBw);
     if (time <= 1.025 * (*timeUs)) {
@@ -432,14 +439,14 @@ static void queryModel_lsa(struct ncclComm* comm, ncclSymkKernelId k, size_t nBy
 }
 
 ncclResult_t ncclSymkInitOnce(struct ncclComm* comm) {
-  // ncclTeamLsa() below calls this internally but drops the error code so we do it here.
+  // ncclTeamLsa() 下方 调用 此 internally 但 drops the 错误 代码 所以 we 执行 it here.
   NCCLCHECK(ncclDevrInitOnce(comm));
 
   struct ncclSymkState* symk = &comm->symkState;
   if (!symk->initialized) {
     symk->initialized = true;
     struct ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-    // Disable LSA multicast for cross-clique since NVLS isn't available across cliques
+    // 对跨 clique 禁用 LSA 多播，因为 clique 之间 NVLS 不可用
     symk->hasLsaMultimem = comm->nvlsSupport && ncclTeamLsa(comm).nRanks > 2 && !comm->p2pCrossClique;
     reqs.lsaMultimem = symk->hasLsaMultimem;
     reqs.lsaBarrierCount = ncclSymkMaxBlocks;
@@ -572,10 +579,10 @@ static uint32_t ncclSymkMask(struct ncclComm* comm, ncclFunc_t coll, int /*ncclD
 
   size_t nBytes = nElts * ncclTypeSize(ty);
   size_t nBusBytes = (coll == ncclFuncAllReduce ? 1 : comm->nRanks) * nBytes;
-  // LL kernels use 32-bit ints to track element counts and indices.
+  // LL 内核 用 32 位整数来跟踪元素计数与索引。
   if (nBusBytes >= (size_t(2) << 30)) kmask &= ~kernelMask_LL;
-  // Any kernel might use 32-bit int to track unrolled loop chunks (which are going
-  // to be at least 32 bytes per chunk)
+  // 任意 内核 都可能用 32 位整数来跟踪展开后的循环块(每块至少
+  // 32 字节)
   if (nBusBytes >= 32 * (size_t(2) << 30)) kmask = 0;
 
   bool hasTma = comm->minCompCap >= 100 && ncclParamSymTmaEnable();
@@ -603,7 +610,7 @@ ncclResult_t ncclSymkPickKernel(struct ncclComm* comm, ncclFunc_t coll, int /*nc
   uint32_t kmask = ncclSymkMask(comm, coll, red, ty, nEltsMax);
 
   *forced = !(kernelMask_user() == (1 << (int)ncclSymkKernelId_Count) - 1);
-  // We currently don't support grouping for LL kernels.
+  // 目前 LL 内核 不支持分组(grouping)。
   if (nWorks > 1) kmask &= ~kernelMask_LL;
 
   if (coll == ncclFuncAllReduce) {
@@ -679,7 +686,7 @@ ncclResult_t ncclGetSymRegType(struct ncclDevrWindow* sendWin, struct ncclDevrWi
   bool isRecvSymmReg = false;
   if (sendWin && (sendWin->winFlags & NCCL_WIN_COLL_SYMMETRIC)) isSendSymmReg = true;
   if (recvWin && (recvWin->winFlags & NCCL_WIN_COLL_SYMMETRIC)) isRecvSymmReg = true;
-  // determine the registration type
+  // 确定注册类型
   if (!isSendSymmReg && !isRecvSymmReg) {
     *winRegType = ncclSymSendNonregRecvNonreg;
   } else if (isSendSymmReg && !isRecvSymmReg) {

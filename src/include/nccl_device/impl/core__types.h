@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/core__types.h — nccl_device core 类型定义
+ * ----------------------------------------------------------------------------
+ * 定义 nccl_device 框架核心 API 所用的设备侧类型（handle/comm 结构），被
+ * core__funcs.h 引用。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_CORE__TYPES_H_
 #define _NCCL_DEVICE_CORE__TYPES_H_
 #include "../core.h"
@@ -37,9 +44,9 @@ struct ncclWindow_vidmem {
   int numSegments;
 };
 
-// Inlined resource-window. A subset of ncclWindow_vidmem with only the fields used
-// for resource-buffer addressing. lsaFlatBase / stride4G / mcOffset4K stay at the same
-// offsets they have inside ncclWindow_vidmem for byte-level compatibility.
+// Inlined resource-window. A subset of ncclWindow_vidmem with 仅 the 字段 已使用
+// for resource-缓冲区 addressing. lsaFlatBase / stride4G / mcOffset4K stay at 相同
+// 偏移 they have inside ncclWindow_vidmem for 字节-层级 compatibility.
 typedef struct ncclResourceWindow_vidmem {
   char reserved1[8];
   char* lsaFlatBase;

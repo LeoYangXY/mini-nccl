@@ -5,6 +5,18 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * device/primitives.h — NCCL device 端“搬运原语(Primitives)”框架
+ *
+ * 这是 GPU kernel 里所有集合通信的底层数据搬运抽象。三种协议（SIMPLE / LL / LL128）
+ * 各自实现一套 Primitives 模板，对外提供 send / recv / sendRecv / wait 等原语，
+ * 并由算法代码（all_reduce.h 等）以“协议无关”的方式调用。
+ *   - ProtoSimple / ProtoLL / ProtoLL128：描述每种协议的步进/切片/粒度等常量
+ *   - FanAsymmetric / FanSymmetric：描述每个 channel 收/发的邻居数量
+ *   - Primitives<...>：核心原语类（在各 prims_*.h 中按协议特化）
+ * 本文件只定义协议常量类、Fan 类，以及 Primitives 基类的接口骨架。
+ */
+
 #ifndef NCCL_PRIMITIVES_H_
 #define NCCL_PRIMITIVES_H_
 
@@ -32,45 +44,45 @@ struct ProtoSimple {
   static constexpr int MultimemSrcs = MultimemSrcs_1;
   static constexpr int MultimemDsts = MultimemDsts_1;
 
-  // Data bytes (no flags etc) in one step of the fifo queue.
+  // 数据 字节 (无 标志 etc) 入 one 步骤 的 fifo 队列.
   __device__ static int calcBytePerStep() {
     return ncclShmem.comm.buffSizes[NCCL_PROTO_SIMPLE] / NCCL_STEPS;
   }
-  // Granularity of data bytes transferred per thread.
+  // Granularity of 数据 字节 transferred 每个 线程.
   __device__ static int calcBytePerGrain() {
     return sizeof(uint64_t); // Bogus value? Nobody queries this metric for simple.
   }
-  // Group width is how many consecutive group values a subchannel occupies.
+  // 组 width is 如何 许多 consecutive 组 值 a subchannel occupies.
   static constexpr int MaxGroupWidth = 2;
 };
 
 struct ProtoLL {
   static constexpr int Id = NCCL_PROTO_LL;
 
-  // Data bytes (no flags etc) in one step of the fifo queue.
+  // 数据 字节 (无 标志 etc) 入 one 步骤 的 fifo 队列.
   __device__ static int calcBytePerStep() {
     return ncclShmem.comm.buffSizes[NCCL_PROTO_LL] / NCCL_STEPS / 2; // Half is data
   }
-  // Granularity of data bytes transferred per thread.
+  // Granularity of 数据 字节 transferred 每个 线程.
   __device__ static int calcBytePerGrain() {
     return sizeof(uint64_t); // One 16-byte line has 8-bytes of data
   }
-  // Group width is how many consecutive group values a subchannel occupies.
+  // 组 width is 如何 许多 consecutive 组 值 a subchannel occupies.
   static constexpr int MaxGroupWidth = 1;
 };
 
 struct ProtoLL128 {
   static constexpr int Id = NCCL_PROTO_LL128;
 
-  // Data bytes (no flags etc) in one step of the fifo queue.
+  // 数据 字节 (无 标志 etc) 入 one 步骤 的 fifo 队列.
   __device__ static int calcBytePerStep() {
     return (ncclShmem.comm.buffSizes[NCCL_PROTO_LL128] / NCCL_STEPS) * NCCL_LL128_DATAELEMS / NCCL_LL128_LINEELEMS;
   }
-  // Granularity of data bytes transferred per thread.
+  // Granularity of 数据 字节 transferred 每个 线程.
   __device__ static int calcBytePerGrain() {
     return NCCL_LL128_SHMEM_ELEMS_PER_THREAD * NCCL_LL128_DATAELEMS * sizeof(uint64_t) / NCCL_LL128_LINEELEMS;
   }
-  // Group width is how many consecutive group values a subchannel occupies.
+  // 组 width is 如何 许多 consecutive 组 值 a subchannel occupies.
   static constexpr int MaxGroupWidth = 1;
 };
 
@@ -86,7 +98,7 @@ struct FanAsymmetric {
   int nr, ns;
   FanAsymmetric() = default;
   __device__ FanAsymmetric(int nrecv, int nsend) : nr(nrecv), ns(nsend) {
-    // assert(nrecv <= MaxRecv && nsend <= MaxSend);
+    // 断言(nrecv <= MaxRecv && nsend <= MaxSend);
   }
   __device__ int nrecv() const {
     return MaxRecv ? nr : 0;
@@ -102,7 +114,7 @@ struct FanSymmetric {
   int n;
   FanSymmetric() = default;
   __device__ FanSymmetric(int nrecv, int nsend) : n(nrecv) {
-    // assert(nrecv == nsend && nrecv <= MaxArity);
+    // 断言(nrecv == nsend && nrecv <= MaxArity);
   }
   __device__ int nrecv() const {
     return n;
@@ -112,11 +124,12 @@ struct FanSymmetric {
   }
 };
 
-// The primitives class. Specialized per protocol in the other headers.
+// The primitives 类. Specialized 每个 protocol 在 ... 中 其他 头文件.
 template <typename T, typename RedOp, typename Fan, int Direct, typename Proto, int P2p, bool isNetOffload = false>
 class Primitives;
 
-// Used by LL & LL128 to implement direct members in the naive way.
+// LL 与 LL128 协议用这个辅助类以“朴素方式”实现 direct（直连）相关成员函数，
+// 即把 direct* 系列调用简单转发给基类 发送/接收，不做额外的零拷贝优化。
 template <typename RealPrimitives>
 struct PrimitivesWithoutDirect {
   __device__ void directSend(intptr_t inpIx, intptr_t outIx, int eltN) {
@@ -138,7 +151,7 @@ struct PrimitivesWithoutDirect {
     return;
   }
   __device__ void recvReduceCopyDirectSend(intptr_t inpIx, intptr_t outIx, int eltN, bool postOp = false) {
-    // Direct is only for the send part
+    // Direct is 仅 为了 发送 part
     static_cast<RealPrimitives*>(this)->recvReduceCopySend(inpIx, outIx, eltN, postOp);
   }
   __device__ __forceinline__ void directRecvReduceDirectSend(intptr_t inpIx, intptr_t outIx, ssize_t eltN,

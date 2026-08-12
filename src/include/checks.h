@@ -5,12 +5,20 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/checks.h — 断言与错误检查宏
+ * ----------------------------------------------------------------------------
+ * 定义 INFO/WARN/ERROR 日志宏，以及 ASSERT/CHECK 系列断言（运行时校验，失败抛
+ * ncclInternalError）。NCCL 代码大量使用这些宏做参数与状态校验，是排查问题的
+ * 主要日志来源。
+ */
+
 #ifndef NCCL_CHECKS_H_
 #define NCCL_CHECKS_H_
 
 #include "debug.h"
 
-// Check CUDA RT calls
+// 检查 CUDA RT 调用
 #define CUDACHECK(cmd) \
   do { \
     cudaError_t err = cmd; \
@@ -32,7 +40,7 @@
     } \
   } while (false)
 
-// Report failure but clear error and continue
+// 报告 失败 但 clear 错误 并且 continue
 #define CUDACHECKIGNORE(cmd) \
   do { \
     cudaError_t err = cmd; \
@@ -42,19 +50,19 @@
     } \
   } while (false)
 
-// Use inline function to clear CUDA error inside expressions
+// 使用 内联 函数 to clear CUDA 错误 inside expressions
 static inline cudaError_t cuda_clear(cudaError_t err) {
   if (err != cudaSuccess) (void)cudaGetLastError();
   return err;
 }
 
-// Check if cudaSuccess & clear CUDA error
+// 检查 若 cudaSuccess & clear CUDA 错误
 #define CUDASUCCESS(cmd) cuda_clear(cmd) == cudaSuccess
-// Clear CUDA error, return CUDA return code
+// Clear CUDA 错误, 返回 CUDA 返回 代码
 #define CUDACLEARERROR(cmd) cuda_clear(cmd)
 
 #include <errno.h>
-// Check system calls
+// 检查 系统 调用
 #define SYSCHECK(statement, name) \
   do { \
     int retval; \
@@ -86,7 +94,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     } \
   } while (0)
 
-// Pthread calls don't set errno and never return EINTR.
+// Pthread 调用 don't 设置 errno 并且 never 返回 EINTR.
 #define PTHREADCHECK(statement, name) \
   do { \
     int retval = (statement); \
@@ -144,7 +152,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     } \
   } while (0)
 
-// Propagate errors up
+// Propagate 错误 up
 #define NCCLCHECK(call) \
   do { \
     ncclResult_t RES = call; \
@@ -165,8 +173,8 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     } \
   } while (0)
 
-// Report failure but continue - useful for cleanup paths where we want to
-// attempt all cleanup steps. Preserves the first error in RES.
+// 报告 失败 但 continue - useful for cleanup 路径 w这里 希望
+// 尝试 所有 cleanup 步骤. Preserves 第一个 错误 入 RES.
 #define NCCLCHECKIGNORE(call, RES) \
   do { \
     ncclResult_t TMPRES = call; \
@@ -233,7 +241,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     } \
   } while (0)
 
-// Common thread creation implementation with error handling
+// 通用 线程 creation 实现 with 错误 handling
 #define STDTHREADCREATE_IMPL(var, func, error_action, ...) \
   do { \
     try { \

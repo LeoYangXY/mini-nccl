@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/misc/param.cc — 参数(param)系统实现
+ * ----------------------------------------------------------------------------
+ * 实现 NCCL_PARAM 系列宏背后的解析/注册逻辑：把 NCCL_* 环境变量映射为可查询参数，
+ * 支持整数/字符串类型与默认值，被各模块通过 ncclParamXxx() 读取。
+ */
+
 #include "param.h"
 #include "param/param.h"
 #include "debug.h"
@@ -79,14 +86,14 @@ int64_t ncclLoadParam(char const* env, int64_t deftVal, int64_t uninitialized, i
   static std::mutex mutex;
   std::lock_guard<std::mutex> lock(mutex);
 
-  // noCache is only load/stored within the mutex, no need for atomic
+  // noCache is 仅 加载/stored with在 ... 中 互斥锁, 无 需要 for 原子
   if (*noCache == /*uninitialized*/ -1) ncclGetCachePolicy(env, noCache);
 
   if (COMPILER_ATOMIC_LOAD(cache, std::memory_order_relaxed) != uninitialized) {
     return COMPILER_ATOMIC_LOAD(cache, std::memory_order_relaxed);
   }
 
-  // Read the environment variable
+  // 读取 environment 变量
   const char* str = ncclGetEnv(env);
   int64_t value = deftVal;
 

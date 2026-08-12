@@ -5,6 +5,12 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/plugin/nccl_env.h — 环境变量插件接口聚合头 [NVIDIA 插件接口/第三方]
+ * ----------------------------------------------------------------------------
+ * 汇总环境变量插件的各版本接口(env_v1/v2)。
+ */
+
 #ifndef NCCL_ENV_H_
 #define NCCL_ENV_H_
 

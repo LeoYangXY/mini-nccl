@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/gin/gin_host.h — GIN 主机端头 [GIN 相关/第三方]
+ * ----------------------------------------------------------------------------
+ * 定义 GIN(GPU 内部网络)在主机端的类型与接口，供 host 侧初始化/管理 GIN 使用。
+ * 属于第三方 GIN 代码，mini-nccl 中多为占位实现。
+ */
+
 #ifndef _NCCL_GIN_HOST_H_
 #define _NCCL_GIN_HOST_H_
 
@@ -49,12 +56,12 @@ struct ncclGinState {
 
 extern int64_t ncclParamGinType();
 
-// Get the GIN type from comm. ginType is set to the GIN type that can be used
-// by the comm to communicate with other nodes.
+// 获取 GIN 类型 from 通信域. ginType 被设为 到 GIN 类型 那个 可以 已使用
+// 由 通信域 to communicate with 其他 节点.
 ncclResult_t ncclGetGinType(struct ncclComm* comm, ncclGinType_t* ginType);
 ncclResult_t ncclGetRailedGinType(struct ncclComm* comm, ncclGinType_t* ginType);
 
-// FIXME change to ncclGinState instead of ncclComm, no need to pass comm
+// 待修复 change to ncclGinState 而非 ncclComm, 无 需要 pass 通信域
 ncclResult_t ncclGinConnectOnce(struct ncclComm* comm);
 ncclResult_t ncclGinHostFinalize(struct ncclComm* comm);
 ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequirements const* reqs,

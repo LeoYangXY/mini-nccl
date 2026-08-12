@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/gdrwrap.h — GPU Direct RDMA 包装
+ * ----------------------------------------------------------------------------
+ * 通过 dlopen 动态加载 cuGPUDirectRDMA / libcuda 相关符号，封装 GDR(GPU Direct
+ * 访问)能力，使 NCCL 在无 GDR 环境下也能编译（运行时按需解析）。
+ */
+
 #ifndef NCCL_GDRWRAP_H_
 #define NCCL_GDRWRAP_H_
 
@@ -15,7 +22,7 @@
 #include <stdlib.h>
 #include <mutex>
 
-// These can be used if the GDR library isn't thread safe
+// 这些 可以 已使用 若 GDR 库 isn't 线程 safe
 std::mutex& getGdrMutex();
 #define GDRLOCKCALL(cmd, ret) do {                      \
     std::lock_guard<std::mutex> lock(getGdrMutex());   \
@@ -32,7 +39,7 @@ std::mutex& getGdrMutex();
     }                                                   \
 } while(false)
 
-// This is required as the GDR memory is mapped WC
+// 此 需要 as the GDR 内存 is mapped WC
 #if !defined(__NVCC__)
 #if defined(__PPC__)
 static inline void wc_store_fence(void) { asm volatile("sync" : : : "memory"); }
@@ -50,10 +57,10 @@ static inline void wc_store_fence(void) { atomic_thread_fence(memory_order_relea
 #endif
 #endif
 
-//#define GDR_DIRECT 1
+//#定义 GDR_DIRECT 1
 #ifdef GDR_DIRECT
-// Call the GDR API library code directly rather than via
-// dlopen() wrappers
+// 调用 the GDR API 库 代码 directly rather than via
+// dlopen() 包装函数
 #include <gdrapi.h>
 
 static ncclResult_t wrap_gdr_symbols(void) { return ncclSuccess; }
@@ -113,7 +120,7 @@ static ncclResult_t wrap_gdr_copy_from_mapping(gdr_mh_t handle, void *h_ptr, con
 }
 
 #else
-// Dynamically handle dependency the GDR API library
+// Dynamically 句柄 dependency the GDR API 库
 
 /* Extracted from gdrapi.h (v2.1 Nov 2020) */
 /* Exception: gdr_pin_flags / GDR_PIN_FLAG_FORCE_PCIE extracted from gdrapi.h (v2.5) */
@@ -166,7 +173,7 @@ ncclResult_t wrap_gdr_copy_from_mapping(gdr_mh_t handle, void *h_ptr, const void
 
 #endif // GDR_DIRECT
 
-// Global GDR driver handle; set once during NCCL init.
+// 全局的 GDR driver 句柄; 设置 一旦 期间 NCCL 初始化.
 extern gdr_t ncclGdrCopy;
 
 #include "alloc.h"
@@ -182,20 +189,20 @@ typedef struct gdr_mem_desc {
 static gdr_t ncclGdrInit() {
   int libMajor, libMinor, drvMajor, drvMinor;
   gdr_t handle = NULL;
-  // Dynamically load the GDRAPI library symbols
+  // Dynamically 加载 GDRAPI 库 symbols
   if (wrap_gdr_symbols() == ncclSuccess) {
     handle = wrap_gdr_open();
 
     if (handle != NULL) {
       ncclResult_t res;
 
-      // Query the version of libgdrapi
+      // Query the 版本 of libgdrapi
       NCCLCHECKGOTO(wrap_gdr_runtime_get_version(&libMajor, &libMinor), res, error);
 
-      // Query the version of gdrdrv driver
+      // Query the 版本 of gdrdrv driver
       NCCLCHECKGOTO(wrap_gdr_driver_get_version(handle, &drvMajor, &drvMinor), res, error);
 
-      // Only support GDRAPI 2.1 and later
+      // 仅 支持 GDRAPI 2.1 并且 later
       if (libMajor < 2 || (libMajor == 2 && libMinor < 1) || drvMajor < 2 || (drvMajor == 2 && drvMinor < 1)) {
         goto error;
       }
@@ -219,27 +226,27 @@ static ncclResult_t ncclGdrCudaCalloc(T** ptr, T** devPtr, size_t nelem, void** 
 
   mapSize = ncclSizeOfT<T>()*nelem;
 
-  // GDRCOPY Pinned buffer has to be a minimum of a GPU_PAGE_SIZE
+  // GDRCOPY Pinned 缓冲区 has to be a 最小 of a GPU_PAGE_SIZE
   ALIGN_SIZE(mapSize, GPU_PAGE_SIZE);
-  // GDRCOPY Pinned buffer has to be GPU_PAGE_SIZE aligned too
+  // GDRCOPY Pinned 缓冲区 has to be GPU_PAGE_SIZE 已对齐 too
   NCCLCHECK(ncclCudaCalloc(&devMem, mapSize+GPU_PAGE_SIZE-1, manager));
   uint64_t alignedAddr = (((uint64_t) devMem) + GPU_PAGE_OFFSET) & GPU_PAGE_MASK;
   size_t align = alignedAddr - (uint64_t)devMem;
 
   if (ncclGdrPinV2Available() || pinFlags == GDR_PIN_FLAG_FORCE_PCIE) {
-    // If pingFlags is set to FORCE_PCIE, we will error out if we can't honnor it.
+    // 若 pingFlags 被设为 to FORCE_PCIE, 我们会 错误 出 若 我们可以't honnor it.
     NCCLCHECK(wrap_gdr_pin_buffer_v2(ncclGdrCopy, alignedAddr, mapSize, pinFlags, &mh));
   } else {
-    // TRACE(NCCL_INIT, "GDRCOPY: Pin buffer 0x%lx (%p) align %zu size %zu", alignedAddr, devMem, align, mapSize);
+    // 追踪(NCCL_INIT, "GDRCOPY: Pin 缓冲区 0x%lx (%p) align %zu 大小 %zu", alignedAddr, devMem, align, mapSize);
     NCCLCHECK(wrap_gdr_pin_buffer(ncclGdrCopy, alignedAddr, mapSize, 0, 0, &mh));
   }
 
   NCCLCHECK(wrap_gdr_map(ncclGdrCopy, mh, &gdrMap, mapSize));
-  //TRACE(NCCL_INIT, "GDRCOPY : mapped %p (0x%lx) at %p", devMem, alignedAddr, gdrMap);
+  //追踪(NCCL_INIT, "GDRCOPY : mapped %p (0x%lx) at %p", devMem, alignedAddr, gdrMap);
 
   NCCLCHECK(wrap_gdr_get_info(ncclGdrCopy, mh, &info));
 
-  // Will offset ever be non zero ?
+  // Will 偏移 ever be non zero ?
   ssize_t off = info.va - alignedAddr;
 
   gdr_mem_desc_t* md;
@@ -282,7 +289,7 @@ static ncclResult_t ncclGdrCudaFree(void* gdrHandle, struct ncclMemManager* mana
   return ncclSuccess;
 }
 
-// Helper: Allocate memory accessible from CPU (either GDR or host memory)
+// 辅助: 分配 内存 accessible from CPU (二者之一 GDR 或者 主机 内存)
 template <typename T>
 static ncclResult_t allocMemCPUAccessible(T **ptr, T **devPtr, size_t nelem, int host_flags,
                                           void **gdrHandle, struct ncclMemManager* manager, bool forceHost = false) {
@@ -297,14 +304,14 @@ static ncclResult_t allocMemCPUAccessible(T **ptr, T **devPtr, size_t nelem, int
   return ncclSuccess;
 }
 
-// Helper: Free memory allocated by allocMemCPUAccessible
+// 辅助: 释放 内存 已分配 by allocMemCPUAccessible
 template <typename T>
 static ncclResult_t freeMemCPUAccessible(T *ptr, void *gdrHandle, struct ncclMemManager* manager) {
   if (gdrHandle != NULL) {
-    // If a GDR handle exists, it was GDR memory
+    // 若 a GDR 句柄 exists, it was GDR 内存
     NCCLCHECK(ncclGdrCudaFree(gdrHandle, manager));
   } else {
-    // Otherwise, it was host memory (or GDR was off)
+    // 否则, it was 主机 内存 (或者 GDR was off)
     NCCLCHECK(ncclCuMemHostFree(ptr));
   }
   return ncclSuccess;

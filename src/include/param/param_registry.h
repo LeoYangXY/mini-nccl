@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/param/param_registry.h — 参数注册表
+ * ----------------------------------------------------------------------------
+ * 维护进程内所有已注册参数的集合（名字 -> 参数对象），并提供
+ * C 链接的单例访问器 ncclParamRegistryInstance()，保证跨 DSO 共享同一份状态。
+ */
+
 #ifndef PARAM_REGISTRY_H_INCLUDED
 #define PARAM_REGISTRY_H_INCLUDED
 
@@ -16,32 +23,32 @@
 #include <unordered_map>
 #include <mutex>
 
-// C-linkage singleton accessor — exported as "ncclParamRegistryInstance"
-// Returns a process-wide RegistryState so map and mutex share identity across DSOs.
+// C 链接的单例访问器 — 导出为 "ncclParamRegistryInstance"
+// 返回 a 处理-wide RegistryState 所以 映射 并且 互斥锁 share identity across DSOs.
 extern "C" void* ncclParamRegistryInstance();
 
-// ncclParamRegistry is a global singleton list of all parameters. Parameters
-// defined through the DEFINE_NCCL_PARAM macro are automatically registered here
-// at program init (before main()). This also works for DEFINE_NCCL_PARAM in
-// external .so files, where the parameter is registered when the .so is loaded
-// and initialized, or at dlopen().
+// ncclParamRegistry is a 全局的 singleton 列表 of 所有 参数. 参数
+// 已定义 through the DEFINE_NCCL_PARAM 宏 are automatically 已注册 here
+// at program 初始化 (之前 main()). 此 也 works for DEFINE_NCCL_PARAM 入
+// 外部 .所以 文件, 何処 the 参数 is 已注册 当 ... 时 .所以 is loaded
+// 并且 已初始化, 或者 at dlopen().
 //
-// Each entry is a map of (key -> { ncclParamInfo_t info, ncclParamInterface* param }),
-// which are all the information for public APIs to check and query parameters.
+// 每个 entry is a 映射 of (key -> { ncclParamInfo_t 信息, ncclParamInterface* param }),
+// 该 are 所有 the information for 公有 APIs to 检查 并且 query 参数.
 //
-// The underlying state (RegistryState) is held behind a C-linkage accessor
-// (ncclParamRegistryInstance) so that all DSOs in the process share a single
-// map and mutex, even when NCCL is statically linked into multiple libraries.
+// The underlying 状态 (RegistryState) is 已持有 behind a C-linkage accessor
+// (ncclParamRegistryInstance) 所以 那个 所有 DSOs 在 ... 中 处理 share a 单个
+// 映射 并且 互斥锁, 甚至 当 NCCL is statically 已链接 into 多个 库.
 //
-// Thread safety: all public methods (add, find, remove) acquire the internal
-// mutex. Registration during static initialization is safe because each
-// ncclParam constructor calls add() independently with the lock held.
+// 线程 safety: 所有 公有 方法 (add, 查找, remove) 获取 the 内部
+// 互斥锁. 注册 期间 静态 初始化 is safe 因为 每个
+// ncclParam constructor 调用 add() independently 带有 锁 已持有.
 //
-// The class is non-instantiable (deleted constructor); all access is through
-// static methods: add() to register, find() to look up by key, and remove()
-// to unregister. The C API (c_api.cc) uses find() to resolve handles and then
-// calls virtual methods on the ncclParamInterface* pointer (toString, dump,
-// getRawData) to service queries.
+// The 类 is non-instantiable (deleted constructor); 所有 access is through
+// 静态 方法: add() to 寄存器, 查找() to look up by key, 并且 remove()
+// to unregister. The C API (c_api.cc) 使用 查找() to resolve 句柄 以及n
+// 调用 虚 方法 在 ... 上 ncclParamInterface* 指针 (toString, 转储,
+// getRawData) 用于处理查询。
 class ncclParamRegistry {
 public:
   struct mapEntry {
@@ -67,16 +74,16 @@ public:
     return state().mtx;
   }
 
-  // Register a parameter; returns ncclInternalError on duplicate key.
+  // 寄存器 a 参数; 返回 ncclInternalError on duplicate key.
   static ncclResult_t add(std::string key, ncclParamInfo_t info, ncclParamInterface* param);
 
-  // Find a parameter by key; returns nullptr if not found.
+  // 查找 a 参数 by key; 返回 nullptr 否则 已找到.
   static mapEntry* find(std::string key);
 
-  // Unregister a parameter by key.
+  // Unregister a 参数 by key.
   static ncclResult_t remove(std::string key);
 
-  // Prevent instantiation
+  // 防止 instantiation
   ncclParamRegistry() = delete;
 };
 

@@ -5,6 +5,20 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/init.cc — communicator(ncclComm)初始化核心
+ * ----------------------------------------------------------------------------
+ * 一次 ncclCommInitRank 的“主流程”都在此：
+ *   1) bootstrap 引导，让所有 rank 互通；
+ *   2) ncclTopoGetSystem 探测/载入硬件拓扑；
+ *   3) ncclTopoComputePaths 计算节点间路径带宽；
+ *   4) 为每种算法(ring/tree/collnet/nvls)调用 ncclTopoCompute 搜索出 channel 图；
+ *   5) ncclTopoPreset 把图翻译成 topoRanks(每 rank 的 ring/tree 邻居)；
+ *   6) dupChannels 按需翻倍 channel；
+ *   7) 建立 P2P / transport 连接。
+ * 是理解“comm 从无到有”的关键文件（后续会做详细逐行注释）。
+ */
+
 #include "nccl.h"
 #include "channel.h"
 #include "nvmlwrap.h"
@@ -83,7 +97,7 @@ static void getEnvCtaPolicyOnce() {
   const char* env = ncclGetEnv("NCCL_CTA_POLICY");
   if (env == NULL) return;
 
-  // support the old CTA Policy assignment (only valid for 0-9)
+  // 兼容旧版 CTA 策略的赋值方式(仅 0-9 有效)
   if (isdigit(env[0])) {
     switch (env[0]) {
     case '0':
@@ -100,7 +114,7 @@ static void getEnvCtaPolicyOnce() {
                      "1 (EFFICIENCY), or 2 (ZERO). Using DEFAULT instead.");
     };
   } else {
-    // newer way allows the user to combine the modes
+    // 新方式允许用户按位组合多种模式
     char* str = strdup(env);
     char* token = strtok(str, "|");
     while (token) {
@@ -126,12 +140,12 @@ static void getEnvCtaPolicyOnce() {
 
 static ncclResult_t commReclaim(struct ncclAsyncJob* job_);
 
-// GDRCOPY support: Off by default
+// GDRCOPY 支持：默认关闭
 NCCL_PARAM(GdrCopyEnable, "GDRCOPY_ENABLE", 0);
 NCCL_PARAM(IgnoreNetMismatch, "IGNORE_NET_MISMATCH", 1);
 NCCL_PARAM(IgnoreCollNetMismatch, "IGNORE_COLLNET_MISMATCH", 0);
 
-// GDRCOPY support
+// GDRCOPY 支持
 gdr_t ncclGdrCopy = NULL;
 
 ncclResult_t initGdrCopy() {
@@ -147,7 +161,7 @@ static std::once_flag initOnceFlag;
 static void initOnceFunc() {
   NCCLCHECKGOTO(ncclOsInitialize(), initResult, exit);
   initGdrCopy();
-  // Always initialize bootstrap network
+  // 总是先初始化 bootstrap 网络
   NCCLCHECKGOTO(bootstrapNetInit(), initResult, exit);
 
   initNvtxRegisteredEnums();
@@ -186,16 +200,16 @@ ncclResult_t ncclGetUniqueId(ncclUniqueId* out) {
   NCCLCHECK(PtrCheck(out, "GetUniqueId", "out"));
   struct ncclBootstrapHandle handle;
   NCCLCHECK(bootstrapGetUniqueId(&handle, NULL));
-  // ncclUniqueId and bootstrapHandle don't have the same size and alignment
-  // reset to 0 to avoid undefined data
+  // ncclUniqueId 与 bootstrapHandle 的大小和对齐方式并不相同
+  // 先清零，避免残留未定义数据
   memset(out, 0, sizeof(*out));
-  // copy to avoid alignment mismatch
+  // 用内存拷贝方式赋值，规避对齐不一致的问题
   memcpy(out, &handle, sizeof(handle));
   TRACE_CALL("ncclGetUniqueId(0x%llx)", (unsigned long long)getHash(out->internal, NCCL_UNIQUE_ID_BYTES));
   return ncclSuccess;
 }
 
-// Prevent compiler from optimizing out these operations
+// 阻止编译器把这些操作优化掉
 #if defined(_MSC_VER)
 #define NCCL_NO_OPTIMIZE
 #elif defined(__clang__)
@@ -205,7 +219,7 @@ ncclResult_t ncclGetUniqueId(ncclUniqueId* out) {
 #endif
 
 void NCCL_NO_OPTIMIZE commPoison(ncclComm_t comm) {
-  // Important that this does not trash intraComm0.
+  // 重要：此处不能破坏 intraComm0 的内容。
   comm->rank = comm->cudaDev = comm->busId = comm->nRanks = -1;
   comm->startMagic = comm->endMagic = 0;
 }
@@ -284,12 +298,12 @@ static ncclResult_t commFree(ncclComm_t comm) {
   if (comm->proxyState && comm->proxyRefCountOld == 0 && comm->proxyState->thread.joinable()) {
     comm->proxyState->thread.join();
     if (comm->proxyState->threadUDS.joinable()) {
-      // UDS support
+      // UDS 支持
       comm->proxyState->threadUDS.join();
     }
   }
 
-  // Free any pending suspend/resume tasks
+  // 释放所有待处理的挂起/恢复任务
   while (!ncclIntruQueueEmpty(&comm->suspendTaskQueue)) {
     struct ncclMemManagerTask* task = ncclIntruQueueDequeue(&comm->suspendTaskQueue);
     free(task);
@@ -298,7 +312,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
     struct ncclMemManagerTask* task = ncclIntruQueueDequeue(&comm->resumeTaskQueue);
     free(task);
   }
-  // Destroy dynamic memory manager only after all proxy threads have been joined
+  // 只有在所有 代理 线程都 join 完毕之后，才销毁动态内存管理器
   NCCLCHECK(ncclMemManagerDestroy(comm));
 
   if (comm->memPool) CUDACHECK(cudaMemPoolDestroy(comm->memPool));
@@ -325,7 +339,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
     NCCLCHECK(freeChannel(comm->channels + channel, comm->nRanks, 1, comm->localRanks, comm));
   }
 
-  // GIN may use proxy. We need to finalize it before destroying the proxy.
+  // GIN 可能会用到 代理，因此必须在销毁 代理 之前先完成 GIN 的收尾工作。
   NCCLCHECK(ncclGinHostFinalize(comm));
   NCCLCHECK(ncclRmaProxyFinalize(comm));
 
@@ -389,7 +403,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
 }
 
 NCCL_PARAM(DisableGraphHelper, "GRAPH_HELPER_DISABLE", 0);
-// GDRCOPY support: FIFO_ENABLE when enabled locates a workFifo in CUDA memory
+// GDRCOPY 支持：FIFO_ENABLE 启用时会把 workFifo 放在 CUDA 显存中
 NCCL_PARAM(GdrCopyFifoEnable, "GDRCOPY_FIFO_ENABLE", 1);
 #define NCCL_WORK_FIFO_BYTES_DEFAULT (1 << 20)
 NCCL_PARAM(WorkFifoBytes, "WORK_FIFO_BYTES", NCCL_WORK_FIFO_BYTES_DEFAULT);
@@ -398,7 +412,7 @@ enum ncclLaunchMode ncclParamLaunchMode;
 
 NCCL_PARAM(DmaBufEnable, "DMABUF_ENABLE", 1);
 
-// Detect DMA-BUF support
+// 检测 DMA-BUF 支持情况
 static ncclResult_t dmaBufSupported(struct ncclComm* comm) {
   if (ncclParamDmaBufEnable() == 0 || comm->ncclNet->regMrDmaBuf == NULL || ncclCudaLibraryInit() != ncclSuccess) {
     return ncclInternalError;
@@ -410,7 +424,7 @@ static ncclResult_t dmaBufSupported(struct ncclComm* comm) {
   CUDACHECK(cudaDriverGetVersion(&cudaDriverVersion));
   if (CUPFN(cuDeviceGet) == NULL || cudaDriverVersion < 11070) return ncclInternalError;
   CUCHECK(cuDeviceGet(&dev, comm->cudaDev));
-  // Query device to see if DMA-BUF support is available
+  // 查询设备是否支持 DMA-BUF
   (void)CUPFN(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED, dev));
   if (flag == 0) return ncclInternalError;
   INFO(NCCL_INIT, "DMA-BUF is available on GPU device %d", comm->cudaDev);
@@ -454,8 +468,8 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   comm->rank = rank;
   comm->nRanks = ndev;
 
-  // Try to create a CUDA object right away. If there is something wrong with
-  // the device we're on (failure cause #1) , better know it early.
+  // 立刻尝试创建一个 CUDA 对象。如果当前设备存在问题
+  // (这是最常见的失败原因)，尽早发现比后面才报错要好。
   CUDACHECK(cudaGetDevice(&comm->cudaDev));
   comm->compCap = ncclCudaCompCap();
 
@@ -493,14 +507,14 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
     }
   }
 
-  // Initialize memory manager
+  // 初始化内存管理器
   if (parent && parent->shareResources && parent->memManager) {
-    // Share parent's memory manager
+    // 复用父通信域的内存管理器
     comm->memManager = parent->memManager;
     ncclAtomicRefCountIncrement(&comm->memManager->refCount);
     INFO(NCCL_INIT, "MemManager: Shared from parent, refCount=%d", comm->memManager->refCount);
   } else {
-    // Create new memory manager
+    // 创建新的内存管理器
     NCCLCHECK(ncclMemManagerInit(comm));
   }
 
@@ -535,9 +549,9 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   NCCLCHECK(ncclCalloc(&comm->connectSend, comm->nRanks));
   NCCLCHECK(ncclCalloc(&comm->connectRecv, comm->nRanks));
 
-  // Mark channels as non initialized.
+  // 把各 通道 标记为未初始化。
   for (int c = 0; c < MAXCHANNELS; c++) comm->channels[c].id = -1;
-  // for bcast: init the ringTasks and min/max bcast peer
+  // 针对广播场景：初始化 ringTasks 以及广播对端的最小/最大范围
   comm->ringTasks = ncclMemoryStackAlloc<void*>(&comm->memPermanent, comm->nRanks);
   comm->planner.bcast_info.minBcastPeer = INT_MAX;
   comm->planner.bcast_info.maxBcastPeer = INT_MIN;
@@ -629,13 +643,13 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   }
 
   if (ncclGdrCopy != NULL && ncclParamGdrCopyFifoEnable() == 1 && comm->workFifoBytes > 0) {
-    // The workFifoBuf lives in GDR mapped CUDA memory.
+    // workFifoBuf 位于经 GDR 映射的 CUDA 显存中。
     NCCLCHECKGOTO(ncclGdrCudaCalloc(&comm->workFifoBuf, &comm->workFifoBufDev, comm->workFifoBytes,
                                     &comm->workFifoBufGdrHandle, comm->memManager),
                   ret, fail);
     ncclCommPushCudaGdrFree(comm, comm->workFifoBufGdrHandle);
   } else {
-    // The workFifoBuf lives in cudaHost memory.
+    // workFifoBuf 位于 cudaHost(锁页主机)内存中。
     comm->workFifoBufGdrHandle = nullptr;
     NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->workFifoBuf, comm->workFifoBytes), ret, fail);
     ncclCommPushCudaHostFree(comm, comm->workFifoBuf);
@@ -646,7 +660,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   comm->workFifoProducedLastRecorded = 0;
   comm->workFifoConsumed = 0;
 
-  // Alloc profiler counters for the kernel
+  // 为 内核 分配性能分析计数器
   NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->profiler.workStarted, MAXCHANNELS), ret, fail);
   NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->profiler.workCompleted, MAXCHANNELS), ret, fail);
   tmpCommAndChans.comm.workStarted = comm->profiler.workStarted;
@@ -690,7 +704,7 @@ fail:
   goto exit;
 }
 
-// Pre-process the string so that running "strings" on the lib can quickly reveal the version.
+// 预处理该字符串，使得对库文件执行 strings 命令时能够快速看到版本号。
 #define VERSION_STRING \
   "NCCL version " STR(NCCL_MAJOR) "." STR(NCCL_MINOR) "." STR(NCCL_PATCH) NCCL_SUFFIX \
     "+cuda" STR(CUDA_MAJOR) "." STR(CUDA_MINOR)
@@ -722,12 +736,12 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
   const char* mlopartStr = strstr(prop.name, "MLOPart");
   info->mloPart = mlopartStr ? atoi(mlopartStr + strlen("MLOPart")) : NCCL_TOPO_UNDEF;
 
-  // Get the device MAJOR:MINOR of /dev/shm so we can use that
-  // information to decide whether we can use SHM for inter-process
-  // communication in a container environment
+  // 获取 /dev/shm 的设备主/次设备号，以便据此判断
+  // 能否使用共享内存(SHM)进行进程间通信
+  // 容器环境下的通信
 #if defined(NCCL_OS_WINDOWS)
-  // On Windows, shared memory uses file mapping objects, not /dev/shm
-  // Set shmDev to 0 as it's not applicable on Windows
+  // 在 Windows 上，共享内存用的是文件映射对象，而非 /dev/shm
+  // Windows 上不适用，故将 shmDev 置为 0
   info->shmDev = 0;
 #elif defined(NCCL_OS_LINUX)
   struct stat statbuf;
@@ -741,9 +755,9 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
   info->comm = comm;
   info->cudaCompCap = comm->minCompCap = comm->maxCompCap = comm->compCap;
 
-  // MNNVL support
+  // MNNVL 支持
   {
-    // MNNVL: Request the fabric UUID and partition info
+    // MNNVL：请求 fabric 的 UUID 与分区信息
     char busId[NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];
     nvmlDevice_t nvmlDev;
     NCCLCHECK(int64ToBusId(info->busId, busId));
@@ -767,7 +781,7 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
         INFO(NCCL_INIT, "MNNVL rack serial %s slot %d tray %d hostId %d peerType %d moduleId %d",
              platformInfo.chassisSerialNumber, platformInfo.slotNumber, platformInfo.trayIndex, platformInfo.hostId,
              platformInfo.peerType, platformInfo.moduleId);
-        // Use a hash of the Rack serial number to partition the NVLD clique
+        // 用机架序列号的哈希值来划分 NVLD clique(可直连分组)
         info->fabricInfo.cliqueId = getHash(platformInfo.chassisSerialNumber, sizeof(platformInfo.chassisSerialNumber));
       } else if (ncclParamMNNVLCliqueId() != -1) {
         info->fabricInfo.cliqueId = ncclParamMNNVLCliqueId();
@@ -793,7 +807,7 @@ static ncclResult_t setupChannel(struct ncclComm* comm, int channelId, int rank,
   NCCLCHECK(initChannel(comm, channelId));
 
   struct ncclRing* ring = &comm->channels[channelId].ring;
-  // Find our ring-distance from rank zero and reorganize ranks to start with rank.
+  // 计算本 rank 与 rank 0 在环上的距离，并重排 rank 顺序使其从本 rank 开始。
   int ixZero = 0, ixRank = 0;
   for (int i = 0; i < nranks; i++) {
     if (ringRanks[i] == 0) ixZero = i;
@@ -828,8 +842,8 @@ static ncclResult_t computeBuffSizes(struct ncclComm* comm) {
   }
 
   if (comm->nNodes > 1) {
-    // GBx platforms only have 4 GPUs per host, which reduces the aggregation factor.
-    // Increase the ratio by a factor of 2 to compensate.
+    // GBx 平台每台主机只有 4 张 GPU，这会降低聚合因子。
+    // 因此把比例放大 2 倍作为补偿。
     int ratio = (comm->cpuArch == NCCL_TOPO_CPU_ARCH_ARM && comm->minCompCap >= 100) ? 2 : 1;
     comm->p2pChunkSize = ratio * ncclParamP2pNetChunkSize();
   } else if (comm->isAllNvlink) {
@@ -838,7 +852,7 @@ static ncclResult_t computeBuffSizes(struct ncclComm* comm) {
     comm->p2pChunkSize = ncclParamP2pPciChunkSize();
   }
 
-  // Make sure P2P chunksize is not larger than coll chunksize.
+  // 确保 P2P 的 块 大小不超过集合通信的 块 大小。
   if (comm->p2pChunkSize * NCCL_STEPS > comm->buffSizes[NCCL_PROTO_SIMPLE])
     comm->p2pChunkSize = comm->buffSizes[NCCL_PROTO_SIMPLE] / NCCL_STEPS;
 
@@ -858,7 +872,7 @@ NCCL_PARAM(CollNetNodeThreshold, "COLLNET_NODE_THRESHOLD", 2);
 NCCL_PARAM(NvbPreconnect, "NVB_PRECONNECT", 1);
 NCCL_PARAM(AllocP2pNetLLBuffers, "ALLOC_P2P_NET_LL_BUFFERS", 0);
 
-// MNNVL: Flag to indicate whether to enable Multi-Node NVLink
+// MNNVL：标记是否启用跨节点 NVLink(Multi-节点 NVLink)
 NCCL_PARAM(MNNVLEnable, "MNNVL_ENABLE", 2);
 
 #define TIMER_INIT_TOTAL 0
@@ -874,7 +888,7 @@ NCCL_PARAM(MNNVLEnable, "MNNVL_ENABLE", 2);
 extern int64_t ncclParamWinStride();
 
 static ncclResult_t initNvlDomainInfo(struct ncclComm* comm) {
-  // Initialize NVLink domain info
+  // 初始化 NVLink 域信息
   comm->nvlDomainInfo.nNvlDomains = comm->nNodes;
   comm->nvlDomainInfo.minRanksPerNvlDomain = comm->minLocalRanks;
   comm->nvlDomainInfo.maxRanksPerNvlDomain = comm->maxLocalRanks;
@@ -889,8 +903,8 @@ NCCL_PARAM(GroupSize, "P2P_SCHEDULE_GROUP_SIZE", NCCL_MAX_DEV_WORK_P2P_PER_BATCH
 
 static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
   struct ncclNodeRanks* nodeRanks = comm->nodeRanks;
-  // For MNNVL systems, we need to split the nodes into different groups to guarantee the proper PXN
-  // aggregation factor.
+  // 对于 MNNVL 系统，需要把节点划分为不同的组，以保证 PXN 能正确工作
+  // 聚合因子。
   int groupSize = (comm->nNodes > 1) ? ncclParamGroupSize() : comm->maxLocalRanks;
   for (int node = 0; node < comm->nNodes; node++) {
     int localRanks = nodeRanks[node].localRanks;
@@ -929,17 +943,30 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
 
   uint32_t groupRound = 0, groupDelta = 0;
   int round = 0;
-  // When enumerating peer deltas we use the quadratic formula (x*x+x)/2 mod N.
-  // Since that formula only produces valid permutations when N is a pow of 2,
-  // we let N = pow2Up(n) and filter out results greater-eq to n.
-  // Example sequence for 16 ranks: 0, 1, 3, 6, 10, 15, 5, 12, 4, 13, 7, 2, 14, 11, 9, 8
+  /* 生成 P2P 通信的调度顺序表。
+   *
+   * 为什么不能简单地按 0,1,2,3... 顺序两两通信？
+   *   因为那样所有 rank 会在同一时刻都去找同一个方向的邻居，导致某几条链路
+   *   瞬间被打满而其它链路空闲，形成热点拥塞。
+   *
+   * 解法：用二次公式 (x*x+x)/2 mod N 生成一个“跳跃式”的访问序列，
+   *   让各 rank 在每一轮里访问的对端尽量分散到不同链路上。
+   *   该公式仅当 N 为 2 的幂时才能生成完整排列(不重不漏)，
+   *   因此取 N = pow2Up(n) 向上取到 2 的幂，再把 >= n 的无效结果过滤掉。
+   *
+   * 16 个 rank 时的实际序列为：0, 1, 3, 6, 10, 15, 5, 12, 4, 13, 7, 2, 14, 11, 9, 8
+   * 可以看到相邻两轮的 delta 差距很大，从而有效打散了链路争用。
+   */
   do {
     if (groupDelta < nGroups) {
-      // Filter nonsensical group deltas
-      int sendGroup = (group + groupDelta) % nGroups;
-      int recvGroup = (group - groupDelta + nGroups) % nGroups;
+      // 过滤掉无意义的 组 delta(即 pow2Up 补齐出来的、超出实际组数的那些值)
+      int sendGroup = (group + groupDelta) % nGroups;                 // 本轮我发给谁(顺时针)
+      int recvGroup = (group - groupDelta + nGroups) % nGroups;       // 本轮我从谁收(逆时针)
       int sendNode = groupToNode[sendGroup];
       int recvNode = groupToNode[recvGroup];
+      // 组间确定之后，再在组内做一次同样的“错位配对”：
+      // 收发方向相反(一个 +delta 一个 -delta)保证了任意时刻每个 rank
+      // 都恰好有一个发送目标和一个接收来源，不会出现多打一的冲突。
       for (int delta = 0; delta < groupSize; delta++) {
         int sendLocal = groupToLocal[sendGroup] + (local + delta) % groupSize;
         int recvLocal = groupToLocal[recvGroup] + (local - delta + groupSize) % groupSize;
@@ -949,7 +976,9 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
       }
     }
     groupRound += 1;
-    groupDelta = (groupDelta + groupRound) & (nGroupsPow2 - 1); // Quadratic update
+    // 二次递推：delta += round 等价于 delta = (x*x+x)/2，
+    // 用 & (nGroupsPow2-1) 代替取模，因为 nGroupsPow2 是 2 的幂，位运算更快。
+    groupDelta = (groupDelta + groupRound) & (nGroupsPow2 - 1); // 二次公式的增量更新
   } while (groupRound != nGroupsPow2);
 
   free(groupToNode);
@@ -964,9 +993,9 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
 
 static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* parent,
                                        uint64_t timers[TIMERS_INIT_COUNT]) {
-  // We use 2 AllGathers
-  // 1. { peerInfo, comm, compCap}
-  // 2. { nChannels, graphInfo, topoRanks }
+  // 我们使用 2 次 全收集
+  // 1. { peerInfo, 通信域, compCap }(对端信息、通信域、计算能力)
+  // 2. { nChannels, graphInfo, topoRanks }(通道 数、拓扑图信息、拓扑 rank)
   ncclResult_t ret = ncclSuccess;
   int rank = comm->rank;
   int nranks = comm->nRanks;
@@ -1031,7 +1060,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   int maxLocalCollNetCount = 0;
 
   timers[TIMER_INIT_ALLGATHER] = clockNano();
-  // AllGather1 - begin
+  // AllGather1 —— 开始
   NCCLCHECKGOTO(ncclCalloc(&comm->peerInfo, nranks + 1), ret, fail); // Extra rank to represent CollNet root
   NCCLCHECKGOTO(fillInfo(comm, comm->peerInfo + rank, comm->commHash), ret, fail);
   NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, comm->peerInfo, sizeof(struct ncclPeerInfo)), ret, fail);
@@ -1049,7 +1078,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     if (!comm->peerInfo[i].cuMemSupport) comm->cuMemSupport = 0;
     if (comm->peerInfo[i].mloPart != -1) comm->hasMloPart = true;
     for (int j = 0; j < i; j++) {
-      // NVML device is agnostic to MloPart being used. With MloPart, each partition has a different GPU UUID.
+      // NVML 设备号与是否使用 MloPart 无关。启用 MloPart 后，每个分区拥有不同的 GPU UUID。
       comm->hasMultiRankNvml = (comm->peerInfo[i].hostHash == comm->peerInfo[j].hostHash) &&
                                (comm->peerInfo[i].nvmlDev == comm->peerInfo[j].nvmlDev);
       if (!ncclParamMultiRankGpuEnable() && (comm->peerInfo[i].hostHash == comm->peerInfo[j].hostHash) &&
@@ -1064,17 +1093,17 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     globalRmaPluginSupport &= comm->peerInfo[i].rmaPluginAvailable;
     globalCuMemGdrSupport &= comm->peerInfo[i].cuMemGdrSupport;
   }
-  // AllGather1 - end
+  // AllGather1 —— 结束
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
-  // Check for MNNVL support
+  // 检查是否支持 MNNVL
   NCCLCHECKGOTO(ncclGetUserP2pLevel(&p2pLevel), ret, fail);
   if ((nNodes > 1 && ncclParamMNNVLEnable() != 0 && p2pLevel != 0) || ncclParamMNNVLEnable() == 1) {
     NCCLCHECKGOTO(ncclMnnvlCheck(comm), ret, fail);
   }
 
   do {
-    // Compute intra-process ranks
+    // 计算进程内的 rank
     int intraProcRank0 = -1, intraProcRank = -1, intraProcRanks = 0;
 
     comm->nvlsRegSupport = 1;
@@ -1083,7 +1112,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
       comm->maxCompCap = std::max(comm->maxCompCap, comm->peerInfo[i].cudaCompCap);
       if ((comm->peerInfo[i].hostHash == comm->peerInfo[rank].hostHash) &&
           (comm->peerInfo[i].pidHash == comm->peerInfo[rank].pidHash)) {
-        // Rank is in same process
+        // 该 rank 与本 rank 处于同一进程内
         if (intraProcRanks == 0) intraProcRank0 = i;
         if (i == rank) intraProcRank = intraProcRanks;
         intraProcRanks++;
@@ -1104,7 +1133,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
       }
     }
 
-    // Buffer Registration is not supported with MNNVL
+    // MNNVL 场景下不支持缓冲区注册
     if (comm->MNNVL) comm->nvlsRegSupport = 0;
     else if (ncclParamSingleProcMemRegEnable()) comm->nvlsRegSupport = 1;
 
@@ -1130,38 +1159,38 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   timers[TIMER_INIT_TOPO] = clockNano();
 
-  // Dump XML if requested by user
+  // 若用户请求，导出拓扑 XML
   const char* dumpXmlFile;
   dumpXmlFile = ncclGetEnv("NCCL_TOPO_DUMP_FILE");
   if (dumpXmlFile) {
     NCCLCHECKGOTO(ncclTopoGetSystem(comm, NULL, dumpXmlFile), ret, fail);
   }
 
-  // Topo detection / System graph creation
+  // 拓扑检测 / 系统图创建
   NCCLCHECKGOTO(ncclTopoGetSystem(comm, &comm->topo), ret, fail);
-  // Compute paths between GPUs and NICs
+  // 计算 GPU 与网卡之间的连接路径
   NCCLCHECKGOTO(ncclTopoComputePaths(comm->topo, comm), ret, fail);
-  // Remove inaccessible GPUs and unused NICs
+  // 剔除不可访问的 GPU 与未使用的网卡
   NCCLCHECKGOTO(ncclTopoTrimSystem(comm->topo, comm), ret, fail);
-  // Recompute paths after trimming
+  // 裁剪掉不可达设备后，重新计算路径
   NCCLCHECKGOTO(ncclTopoComputePaths(comm->topo, comm), ret, fail);
-  // Init search
+  // 初始化拓扑搜索
   NCCLCHECKGOTO(ncclTopoSearchInit(comm->topo), ret, fail);
-  // Decide on comm's CPU architecture.
+  // 确定通信域所在 CPU 的架构(用于后续拓扑判定)。
   NCCLCHECKGOTO(ncclTopoComputeCommCPU(comm), ret, fail);
-  // Print final topology
+  // 打印最终拓扑
   NCCLCHECKGOTO(ncclTopoPrint(comm->topo), ret, fail);
   timers[TIMER_INIT_TOPO] = clockNano() - timers[TIMER_INIT_TOPO];
 
-  // Set Affinity to a CPU local the our GPU, so that all memory we allocate
-  // on the host is local.
+  // 把 CPU 亲和性绑定到与本 GPU 同 NUMA 节点的 CPU 上，这样后续在主机侧
+  // 分配的内存都是本地内存(避免跨 NUMA 访问的性能损失)。
   NCCLCHECKGOTO(ncclTopoGetCpuAffinity(comm->topo, comm->rank, &comm->cpuAffinity), ret, fail);
   if (ncclOsCpuCount(comm->cpuAffinity)) {
     NCCLCHECKGOTO(ncclOsGetAffinity(&affinitySave), ret, fail);
     NCCLCHECKGOTO(ncclOsSetAffinity(comm->cpuAffinity), ret, fail);
   }
 
-  // Determine local CollNet support
+  // 确定本节点的 CollNet 支持情况
   if (!collNetSupport(comm)) {
     comm->config.collnetEnable = 0;
   }
@@ -1169,7 +1198,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   NCCLCHECK(ncclNvlsInit(comm));
 
   timers[TIMER_INIT_GRAPHS] = clockNano();
-  // Get rings and trees
+  // 获取环(环)与树(树)拓扑
   memset(ringGraph, 0, sizeof(struct ncclTopoGraph));
   ringGraph->id = 0;
   ringGraph->pattern = NCCL_TOPO_PATTERN_RING;
@@ -1217,7 +1246,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   }
   timers[TIMER_INIT_GRAPHS] = clockNano() - timers[TIMER_INIT_GRAPHS];
 
-  // Initialize num P2P LL buffers for this communicator
+  // 为本通信域初始化 P2P LL 缓冲区的数量
   comm->allocP2pNetLLBuffers = ncclParamAllocP2pNetLLBuffers() == 1;
 
   if (comm->rank == ncclParamGraphDumpFileRank()) {
@@ -1225,19 +1254,19 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     NCCLCHECKGOTO(ncclTopoDumpGraphs(comm->topo, 5, dumpGraphs), ret, fail);
   }
 
-  // Cap maxP2pPeers to nRanks
+  // 把 maxP2pPeers 限制在 nRanks 以内
   if (comm->config.maxP2pPeers != NCCL_CONFIG_UNDEF_INT && comm->config.maxP2pPeers > comm->nRanks) {
     INFO(NCCL_INIT, "Max P2P Peers %d is too high, capping to communicator size %d", comm->config.maxP2pPeers,
          comm->nRanks);
     comm->config.maxP2pPeers = comm->nRanks;
   }
-  // Compute nChannels per peer for p2p
+  // 计算 P2P 场景下每个对端分配的 通道 数
   NCCLCHECKGOTO(ncclTopoComputeP2pChannelsPerPeer(comm), ret, fail);
 
-  // Because timers[[TIMER_INIT_ALLGATHER] already contains the timing of the first allgather,
-  // we temporarily store the start time of the subsequent one in an as-of-yet unused CONNECT timer.
+  // 由于 timers[TIMER_INIT_ALLGATHER] 已经记录了第一次 全收集 的耗时，
+  // 这里先把后续那次的起始时间临时存放在尚未使用的 CONNECT 计时器中。
   timers[TIMER_INIT_CONNECT] = clockNano();
-  // AllGather3 - begin
+  // AllGather3 —— 开始
   NCCLCHECKGOTO(ncclCalloc(&allGather3Data, nranks), ret, fail);
 
   if (comm->ncclNet && comm->ncclNet->devices) {
@@ -1282,7 +1311,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, allGather3Data, sizeof(*allGather3Data)), ret, fail);
 
-  // Determine nNodes, firstRanks, ...
+  // 确定节点数 nNodes、各节点首个 rank(firstRanks)等
   NCCLCHECKGOTO(ncclCalloc(&nodesFirstRank, nranks), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&nodesTreePatterns, nranks), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&comm->rankToNode, comm->nRanks), ret, fail);
@@ -1295,7 +1324,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     if (node == comm->nNodes) {
       comm->nNodes++;
       nodesFirstRank[node] = firstRank;
-      // Record tree pattern of each node as they can be different depending on sm arch
+      // 记录每个节点的树形拓扑模式：不同 SM 架构下该模式可能不同
       nodesTreePatterns[node] = allGather3Data[r].graphInfo[NCCL_ALGO_TREE].pattern;
     }
     comm->rankToNode[r] = node;
@@ -1320,16 +1349,16 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     INFO(NCCL_INIT, "Local CollNet device counts across ranks: min %d max %d", minLocalCollNetCount,
          maxLocalCollNetCount);
 
-    // Check Net device count mismatch
+    // 检查各 rank 网卡数量是否不一致
     if (minLocalNetCount != maxLocalNetCount) {
-      // Log mismatched ranks first
+      // 先记录不一致的 rank
       for (int r = 0; r < nranks; r++) {
         if (allGather3Data[r].localNetDeviceCount < maxLocalNetCount) {
           INFO(NCCL_INIT, "Rank %d has %d local Net devices (max %d).", r, allGather3Data[r].localNetDeviceCount,
                maxLocalNetCount);
         }
       }
-      // Then warn or error based on env var
+      // 再根据环境变量决定是告警还是报错
       if (ncclParamIgnoreNetMismatch()) {
         INFO(NCCL_INIT,
              "Detected mixed local Net device counts across ranks (min %d, max %d). Ignoring due to "
@@ -1343,16 +1372,16 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
       }
     }
 
-    // Check CollNet device count mismatch
+    // 检查各 rank 的 CollNet 设备数量是否不一致
     if (minLocalCollNetCount != maxLocalCollNetCount) {
-      // Log mismatched ranks first
+      // 先记录不一致的 rank
       for (int r = 0; r < nranks; r++) {
         if (allGather3Data[r].localCollNetCount < maxLocalCollNetCount) {
           INFO(NCCL_INIT, "Rank %d has %d local CollNet devices (max %d).", r, allGather3Data[r].localCollNetCount,
                maxLocalCollNetCount);
         }
       }
-      // Then warn or error based on env var
+      // 再根据环境变量决定是告警还是报错
       if (ncclParamIgnoreCollNetMismatch()) {
         INFO(NCCL_INIT,
              "Detected mixed local CollNet device counts across ranks (min %d, max %d). Ignoring due to "
@@ -1366,12 +1395,12 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
       }
     }
 
-    // Abort on Net/CollNet mismatches
+    // 若网卡/CollNet 数量不一致则中止初始化
     if (ret != ncclSuccess) goto fail;
   }
 
-  // Alert the user to the presence of mixed CPUs. In the past this has caused
-  // locks in some collective routines. This may help debug issues in the future.
+  // 提醒用户当前混用了不同型号的 CPU。历史上这曾在部分集合通信例程中
+  // 引发死锁。提示此信息有助于将来排查问题。
   if (rank == 0) {
     if (comm->cpuArch == NCCL_TOPO_CPU_ARCH_MIXED) {
       INFO(NCCL_GRAPH, "CPUs with mixed architecture were detected.");
@@ -1381,7 +1410,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     }
   }
 
-  // Now that we know nNodes, alloc nodeRanks and compute localRanks for each node
+  // 既然已知道 nNodes，就分配 nodeRanks 并为每个节点计算 localRanks
   NCCLCHECKGOTO(ncclCalloc(&comm->nodeRanks, comm->nNodes), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&comm->rankToLocalRank, comm->nRanks), ret, fail);
   for (int r = 0; r < comm->nRanks; r++) {
@@ -1390,14 +1419,14 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     comm->nodeRanks[node].localRanks++;
   }
   comm->minLocalRanks = INT_MAX;
-  // Allocate ranks arrays for each node
+  // 为每个节点分配 rank 数组
   for (int n = 0; n < comm->nNodes; n++) {
     NCCLCHECKGOTO(ncclCalloc(&comm->nodeRanks[n].localRankToRank, comm->nodeRanks[n].localRanks), ret, fail);
     comm->maxLocalRanks = std::max(comm->maxLocalRanks, comm->nodeRanks[n].localRanks);
     comm->minLocalRanks = std::min(comm->minLocalRanks, comm->nodeRanks[n].localRanks);
     comm->nodeRanks[n].localRanks = 0;
   }
-  // And fill the ranks arrays
+  // 并填充这些 rank 数组
   for (int r = 0; r < comm->nRanks; r++) {
     int node = comm->rankToNode[r];
     comm->nodeRanks[node].localRankToRank[comm->nodeRanks[node].localRanks++] = r;
@@ -1422,8 +1451,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   INFO(NCCL_INIT, "comm %p rank %d nRanks %d nNodes %d localRanks %d localRank %d MNNVL %d", comm, rank, comm->nRanks,
        comm->nNodes, comm->localRanks, comm->localRank, comm->MNNVL);
 
-  // Enable cross-clique P2P when MNNVL is active, parameter allows it, and there
-  // are actually multiple cliques in the NVL domain (nvlDomainSize > clique size).
+  // 当 MNNVL 处于激活、参数允许、且
+  // NVL 域内确实有多个 clique(即 nvlDomainSize > clique 大小)时，启用跨 clique 的 P2P。
   comm->p2pCrossClique = comm->MNNVL && ncclParamMNNVLCrossClique() && comm->nvlDomainSize > comm->clique.size;
   if (comm->p2pCrossClique) {
     INFO(NCCL_INIT, "Cross-clique P2P enabled: nvlDomainSize=%d cliqueSize=%d", comm->nvlDomainSize, comm->clique.size);
@@ -1434,7 +1463,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   NCCLCHECKGOTO(ncclCalloc(&allTopoRanks, comm->nRanks), ret, fail);
   for (int i = 0; i < nranks; i++) {
     allTopoRanks[i] = &allGather3Data[i].topoRanks;
-    // Make sure we align all ranks so that the tuning is consistent across ranks
+    // 确保所有 rank 的步调一致，使各 rank 的调优结果保持统一(避免不一致导致性能差异)
     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
       graphs[a]->nChannels = std::min(allGather3Data[i].graphInfo[a].nChannels, graphs[a]->nChannels);
       graphs[a]->sameChannels = std::min(allGather3Data[i].graphInfo[a].sameChannels, graphs[a]->sameChannels);
@@ -1458,14 +1487,14 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   comm->nChannels = treeGraph->nChannels = ringGraph->nChannels = std::min(treeGraph->nChannels, ringGraph->nChannels);
   if (comm->nChannels < nChannelsOrig) {
-    // We started duplicating channels during Preset(), so we need to move the
-    // duplicated channels since we have removed some.
+    // 我们在 Preset() 阶段开始复制 通道，因此现在需要把
+    // 被删除的 通道 之后、那些被复制出来的 通道 也一并移动。
     for (int i = 0; i < comm->nChannels; i++) {
       memcpy(comm->channels + comm->nChannels + i, comm->channels + nChannelsOrig + i, sizeof(struct ncclChannel));
     }
   }
 
-  // Determine CollNet support after all-gather now that we know nNodes and each node localRanks
+  // 在 所有-收集 之后、已知 nNodes 与每个节点的 localRanks 时，再确定 CollNet 支持
   if (comm->config.collnetEnable == 1) {
     int collNetNodeThreshold = ncclParamCollNetNodeThreshold();
     if (comm->nNodes < collNetNodeThreshold) {
@@ -1479,7 +1508,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   NCCLCHECKGOTO(ncclCalloc(&rings, nranks * MAXCHANNELS), ret, fail);
   NCCLCHECKGOTO(ncclTopoPostset(comm, nodesFirstRank, nodesTreePatterns, allTopoRanks, rings, graphs, parent), ret,
                 fail);
-  // AllGather3 - end
+  // AllGather3 —— 结束
   timers[TIMER_INIT_ALLGATHER] += clockNano() - timers[TIMER_INIT_CONNECT];
 
   TRACE(NCCL_INIT, "rank %d nranks %d - BUILT %d TREES/RINGS", rank, nranks, comm->nChannels);
@@ -1516,12 +1545,12 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   }
   comm->topParentLocalRanks = topParentLocalRanks;
 
-  // Profiler plugin context has to be initialized before proxy thread
+  // 性能分析插件上下文必须在 代理 线程启动前初始化
   NCCLCHECK(ncclProfilerPluginInit(comm));
 
   NCCLCHECKGOTO(ncclTransportCheckP2pType(comm, &comm->isAllDirectP2p, &comm->directMode, &comm->isAllCudaP2p), ret,
                 fail);
-  // Launch proxy service thread, after this, the proxy calls can be used.
+  // 启动 代理 服务线程；此后 代理 调用才可使用。
   if (parent && parent->shareResources) {
     comm->proxyState = parent->sharedRes->proxyState;
     ncclAtomicRefCountIncrement(&parent->sharedRes->proxyState->refCount);
@@ -1531,11 +1560,11 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   NCCLCHECKGOTO(ncclCalloc(&comm->gproxyConn, comm->nRanks), ret, fail);
 
   timers[TIMER_INIT_CONNECT] = clockNano();
-  // Build p2p schedule
+  // 构建 P2P 调度表
   comm->p2pSchedule = ncclMemoryStackAlloc<ncclComm::P2pSchedulePair>(&comm->memPermanent, comm->nRanks);
   comm->planner.peers = ncclMemoryStackAlloc<ncclKernelPlanner::Peer>(&comm->memPermanent, comm->nRanks);
   NCCLCHECK(ncclP2pSchedule(comm));
-  // initialize non-zero fields.
+  // 初始化非零字段。
   comm->planner.bcast_info.minBcastPeer = INT_MAX;
   comm->planner.bcast_info.maxBcastPeer = INT_MIN;
 
@@ -1554,9 +1583,9 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     for (int c = 0; c < comm->nChannels; c++) {
       NCCLCHECKGOTO(setupChannel(comm, c, rank, nranks, rings + c * nranks), ret, fail);
     }
-    // Attempt to setup NVLS
+    // 尝试建立 NVLS
     NCCLCHECKGOTO(ncclNvlsSetup(comm, parent), ret, fail);
-    // Check if we can setup CollNet
+    // 检查能否建立 CollNet
     if (comm->config.collnetEnable) ncclCollNetSetup(comm, parent, graphs);
   } else {
     for (int c = 0; c < comm->nChannels; c++) {
@@ -1564,20 +1593,20 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     }
     NCCLCHECKGOTO(ncclTransportRingConnect(comm), ret, fail);
 
-    // Connect Trees
+    // 建立 树(树)连接
     NCCLCHECKGOTO(ncclTransportTreeConnect(comm), ret, fail);
 
-    // Connect PAT only for communicators with 1 GPU per node
+    // 仅对“每节点 1 张 GPU”的通信域建立 PAT 连接
     if (comm->maxLocalRanks == 1) NCCLCHECKGOTO(ncclTransportPatConnect(comm), ret, fail);
 
-    // Attempt to setup NVLS
+    // 尝试建立 NVLS
     NCCLCHECKGOTO(ncclNvlsSetup(comm, parent), ret, fail);
     NCCLCHECKGOTO(ncclNvlsBufferSetup(comm), ret, fail);
 
-    // And NVLS trees if needed
+    // 并在需要时建立 NVLS 树
     NCCLCHECKGOTO(ncclNvlsTreeConnect(comm), ret, fail);
 
-    // Check if we can setup CollNet
+    // 检查能否建立 CollNet
     if (comm->config.collnetEnable) {
       ncclCollNetSetup(comm, parent, graphs);
       NCCLCHECKGOTO(ncclCollNetChainBufferSetup(comm), ret, fail);
@@ -1586,13 +1615,13 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
       }
     }
 
-    // Connect to local net proxy
+    // 连接到本地的网络 代理
     NCCLCHECKGOTO(ncclProxyConnect(comm, TRANSPORT_NET, 1, comm->rank, &proxyConn), ret, fail);
     NCCLCHECKGOTO(ncclProxyCallBlocking(comm, &proxyConn, ncclProxyMsgSharedInit, &comm->p2pnChannels, sizeof(int),
                                         NULL, 0),
                   ret, fail);
 
-    // Then to remote ones when using PXN
+    // 当使用 PXN 时，再连接到远端 代理
     if (ncclPxnDisable(comm) == 0) {
       int nranks;
       NCCLCHECKGOTO(ncclTopoGetPxnRanks(comm, &pxnPeers, &nranks), ret, fail);
@@ -1605,7 +1634,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     }
 
     if (ncclParamNvbPreconnect()) {
-      // Connect p2p when using NVB path
+      // 当走 NVB 路径时，建立 P2P 连接
       int nvbNpeers;
       NCCLCHECKGOTO(ncclTopoGetNvbGpus(comm->topo, comm->rank, &nvbNpeers, &nvbPeers), ret, fail);
       for (int r = 0; r < nvbNpeers; r++) {
@@ -1634,7 +1663,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   TRACE(NCCL_INIT, "rank %d nranks %d - CONNECTED %d RINGS AND TREES", rank, nranks, comm->nChannels);
 
-  // Compute time models for algorithm and protocol combinations
+  // 为“算法 × 协议”各组合计算时间模型
   NCCLCHECKGOTO(ncclTopoInitTunerConstants(comm), ret, fail);
   NCCLCHECKGOTO(ncclTunerPluginLoad(comm), ret, fail);
   if (comm->tuner) {
@@ -1647,7 +1676,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
        comm->nChannels, comm->nChannels, comm->nvlsChannels, comm->p2pnChannels, comm->p2pnChannelsPerPeer);
 
   if (comm->intraRank == 0) {
-    // Load ncclParamLaunchMode
+    // 加载 ncclParamLaunchMode 参数
     const char* str = ncclGetEnv("NCCL_LAUNCH_MODE");
     enum ncclLaunchMode mode, modeOld;
     if (str && strcasecmp(str, "GROUP") == 0) {
@@ -1655,8 +1684,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     } else {
       mode = ncclLaunchModeParallel;
     }
-    // In theory we could be racing with other communicators not associated with
-    // this one if the user is connecting to multiple ncclUniqueId's concurrently.
+    // 理论上，如果用户在并发连接多个 ncclUniqueId，我们可能与
+    // 其它不相关的通信域发生竞态。
     modeOld = COMPILER_ATOMIC_EXCHANGE(&ncclParamLaunchMode, mode, std::memory_order_relaxed);
     if (modeOld == ncclLaunchModeInvalid && str && str[0] != '\0') {
       INFO(NCCL_ENV, "NCCL_LAUNCH_MODE set by environment to %s",
@@ -1685,8 +1714,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   comm->ceColl.baseUCSymReadyPtr = NULL;
   comm->ceColl.baseUCSymComplPtr = NULL;
 
-  // Call devCommSetup before the last barrier, making sure we don't have a thread running in front and starting to
-  // launch NCCL kernels before all cuda mem allocation is complete. That could cause a deadlock.
+  // 在最后一个屏障之前调用 devCommSetup，确保所有 CUDA 显存分配都完成后，
+  // 线程才去启动 NCCL 内核；否则可能在分配未完成时就启动 内核 而引发死锁。
   NCCLCHECKGOTO(devCommSetup(comm), ret, fail);
 
   timers[TIMER_INIT_CONNECT] = clockNano() - timers[TIMER_INIT_CONNECT];
@@ -1695,8 +1724,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
                                           comm->localRankToRank[0]),
                 ret, fail);
 
-  // We should have allocated all buffers, collective fifos, ... we can
-  // restore the affinity.
+  // 此时应当已经分配好所有缓冲区、集合通信 fifo 等，可以
+  // 恢复 CPU 亲和性了。
   TRACE(NCCL_INIT, "rank %d nranks %d - DONE", rank, nranks);
 
 exit:
@@ -1721,7 +1750,7 @@ fail:
 
 NCCL_PARAM(SetStackSize, "SET_STACK_SIZE", 0);
 NCCL_PARAM(CGAClusterSize, "CGA_CLUSTER_SIZE", NCCL_CONFIG_UNDEF_INT);
-// Match config max/minCTAs
+// 匹配配置中的最大/最小 CTA 数
 NCCL_PARAM(MaxCTAs, "MAX_CTAS", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(MinCTAs, "MIN_CTAS", NCCL_CONFIG_UNDEF_INT);
 #define NCCL_MAX_CGA_CLUSTER_SIZE 8
@@ -1736,19 +1765,19 @@ struct ncclCommInitRankAsyncJob {
   struct ncclComm* comm;
   struct ncclComm** newcomm;
   int cudaDev;
-  // For ncclCommInitRank
+  // 针对 ncclCommInitRank
   int nranks, myrank, nId;
   ncclUniqueId* commId;
-  // for ncclCommSplit
+  // 针对 ncclCommSplit
   struct ncclComm* parent;
   int color, key;
   int childCount;
-  // For Shrink
+  // 针对 Shrink(缩容)
   int* excludeRanksList;
   int excludeRanksCount;
-  // name of the function calling
+  // 调用本函数的函数名
   char funcName[NCCL_COMMINIT_FUNCNAME_LEN];
-  // For grow operations
+  // 针对 grow(扩容)操作
   bool isGrow;
 };
 
@@ -1777,23 +1806,23 @@ static ncclResult_t commGetSplitInfo(struct ncclComm* comm, struct ncclComm* par
   commSplitInfo* info = NULL;
   NCCLCHECKGOTO(ncclCalloc(&info, parent->nRanks), ret, fail);
 
-  // Compute nRanks, my rank and the ranks (of the original comm) before and after me
+  // 计算 nRanks、我的 rank，以及原通信域中位于我前/后的 rank
   info[parent->rank].color = color;
   info[parent->rank].key = key;
   NCCLCHECKGOTO(bootstrapAllGather(parent->bootstrap, info, sizeof(commSplitInfo)), ret, fail);
 
-  // Negative color does not create a new comm. Return now.
+  // color 为负表示不创建新通信域，直接返回。
   if (color == NCCL_SPLIT_NOCOLOR) goto exit;
 
   memset(parentRanksRet, 0xff, sizeof(int) * parent->nRanks);
   for (int i = 0; i < parent->nRanks; i++) {
     if (info[i].color != color) continue;
-    // Find where to insert this rank
+    // 找到插入本 rank 的位置
     int insert = 0;
     while (insert < nRanks && info[parentRanksRet[insert]].key <= info[i].key) insert++;
-    // Shift ranks by one after insert
+    // 插入后，后续 rank 序号整体后移一位
     for (int r = nRanks; r > insert; r--) parentRanksRet[r] = parentRanksRet[r - 1];
-    // Insert our rank
+    // 插入我们自己的 rank
     parentRanksRet[insert] = i;
     nRanks++;
   }
@@ -1816,7 +1845,7 @@ static ncclResult_t getParentRanks(int parentRanks, int parentRank, int* exclude
                                    int* nRanksRet, int* myRankRet, int* parentRanksRet) {
   int count = 0, j = 0;
   for (int i = 0; i < parentRanks; i++) {
-    // we assume excludeRanksList is sorted
+    // 我们假设 excludeRanksList 已排序
     if (j < excludeRanksCount && excludeRanksList[j] == i) {
       j++;
       continue;
@@ -1851,8 +1880,8 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
 
   timers[TIMER_INIT_KERNELS] = clockNano();
   NCCLCHECK(ncclInitKernelsForDevice(cudaArch, maxSharedMem, &maxLocalSizeBytes));
-  // Set the maximum kernel stack size of all kernels to avoid
-  // a CUDA memory reconfig on load (c.f. NVSHMEM issue)
+  // 把所有 内核 的最大栈大小设为固定值，以避免
+  // 加载时触发 CUDA 显存重配置(参见 NVSHMEM 的相关问题)
   if (maxLocalSizeBytes > 0 && ncclParamSetStackSize() == 1) {
     TRACE(NCCL_INIT, "Setting cudaLimitStackSize to %zu", maxLocalSizeBytes);
     CUDACHECKIGNORE(cudaDeviceSetLimit(cudaLimitStackSize, maxLocalSizeBytes));
@@ -1860,7 +1889,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   timers[TIMER_INIT_KERNELS] = clockNano() - timers[TIMER_INIT_KERNELS];
 
   if (job->parent && !job->isGrow) {
-    // SPLIT/SHRINK: use bootstrapSplit
+    // SPLIT/SHRINK(拆分/缩容)场景：使用 bootstrapSplit
     NCCLCHECKGOTO(ncclCalloc(&parentRanks, job->parent->nRanks), res, fail);
     if (job->excludeRanksCount) {
       NCCLCHECKGOTO(getParentRanks(job->parent->nRanks, job->parent->rank, job->excludeRanksList,
@@ -1869,10 +1898,10 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     } else {
       NCCLCHECKGOTO(commGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks),
                     res, fail);
-      // Negative color does not create a new comm object. We needed to take part in the allgather, but we're done now.
+      // color 为负不创建新通信域对象。我们需要参与 全收集，但到此已完成。
       if (job->color == NCCL_SPLIT_NOCOLOR) goto exit;
     }
-    // child hash obtained from (parent hash, split count, color)
+    // 子通信域的哈希由(父哈希, 拆分计数, color)派生
     uint64_t hacc[2] = {1, 1};
     eatHash(hacc, &job->parent->commHash);
     eatHash(hacc, &job->childCount);
@@ -1890,10 +1919,10 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     timers[TIMER_INIT_BOOTSTRAP] = clockNano();
     NCCLCHECKGOTO(bootstrapSplit(comm->commHash, comm, job->parent, job->color, job->key, parentRanks), res, fail);
     timers[TIMER_INIT_BOOTSTRAP] = clockNano() - timers[TIMER_INIT_BOOTSTRAP];
-    // debug info, no commId was used
+    // 调试信息：本次未使用 commId
     commIdHash = 0;
   } else {
-    // GROW or NORMAL INIT: use bootstrapInit
+    // GROW(扩容)或正常初始化：使用 bootstrapInit
     if (job->isGrow) {
       struct ncclBootstrapHandle* growHandle = (struct ncclBootstrapHandle*)job->commId;
       uint64_t baseMagic = growHandle ? growHandle->magic : hashCombine(job->parent->magic, job->parent->childCount);
@@ -1901,7 +1930,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
       INFO(NCCL_INIT, "Rank %d: Generated commHash 0x%lx from baseMagic 0x%lx and newNRanks %d", job->myrank,
            comm->commHash, baseMagic, job->nranks);
     } else {
-      // obtain a unique hash using the first commId
+      // 用第一个 commId 获取一个唯一哈希
       comm->commHash = commIdHash = getHash(job->commId->internal, NCCL_UNIQUE_ID_BYTES);
     }
     timers[TIMER_INIT_ALLOC] = clockNano();
@@ -1920,11 +1949,11 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
 
   NCCLCHECKGOTO(initTransportsRank(comm, job->parent, timers), res, fail);
 
-  // update communicator state
+  // 更新通信域状态
   comm->initState = ncclSuccess;
   timers[TIMER_INIT_TOTAL] = clockNano() - timers[TIMER_INIT_TOTAL];
 
-  // Trace this call for replay tool
+  // 为 replay 工具记录本次调用轨迹
   if (job->parent) {
     /* unlink child abort flag. */
     COMPILER_ATOMIC_STORE(&job->parent->childAbortFlag, static_cast<uint32_t*>(nullptr), std::memory_order_release);
@@ -1940,7 +1969,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
          job->funcName, comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, job->parent,
          job->childCount, job->color, job->key);
   } else {
-    // the name for the replay tool is ncclCommInitRank for all the variations
+    // 对于所有变体，replay 工具记录的入口名都是 ncclCommInitRank
     TRACE_CALL("ncclCommInitRank(%p, %d, 0x%llx, %d, %d)", comm, comm->nRanks, commIdHash, comm->rank, comm->cudaDev);
     INFO(NCCL_INIT, "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%llx - Init COMPLETE",
          job->funcName, comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, commIdHash);
@@ -2143,8 +2172,8 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
     comm->config.shrinkShare = shrinkShareEnv;
   }
 
-  // NCCL_COLLNET_ENABLE needs to be reloaded each time for comm init
-  // since users might change the env on the fly to enable/disable collnet
+  // NCCL_COLLNET_ENABLE 每次初始化都需要重新读取，
+  // 因为用户可能在运行时修改环境变量来开/关 collnet
   collnetEnableEnv = ncclGetEnv("NCCL_COLLNET_ENABLE");
   if (collnetEnableEnv != NULL) {
     int collnetEnableInt = (int)strtol(collnetEnableEnv, NULL, 0);
@@ -2214,7 +2243,7 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
     comm->config.nvlsCTAs = NCCL_CONFIG_UNDEF_INT;
   }
 
-  // If POLICY_ZERO and POLICY_EFFICIENCY are set in CTAPolicy, unset POLICY_EFFICIENCY.
+  // 若 CTAPolicy 中同时设了 POLICY_ZERO 与 POLICY_EFFICIENCY，则取消 POLICY_EFFICIENCY。
   if ((comm->config.CTAPolicy & NCCL_CTA_POLICY_ZERO) && (comm->config.CTAPolicy & NCCL_CTA_POLICY_EFFICIENCY)) {
     WARN("Both NCCL_CTA_POLICY_ZERO and NCCL_CTA_POLICY_EFFICIENCY are set in CTAPolicy (%d). Unsetting "
          "POLICY_EFFICIENCY.",
@@ -2222,10 +2251,10 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
     comm->config.CTAPolicy &= ~NCCL_CTA_POLICY_EFFICIENCY;
   }
 
-  // read non-config env settings
+  // 读取非配置类的环境变量设置
   comm->checkMode = ncclCheckModeDefault;
   if (ncclParamCheckPointers() == 1) {
-    // @deprecated: use NCCL_CHECK_MODE instead
+    // @deprecated：请改用 NCCL_CHECK_MODE
     comm->checkMode = ncclCheckModeDebugLocal;
   }
 
@@ -2452,10 +2481,10 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
   comm->config.graphStreamOrdering = internalConfigPtr->graphStreamOrdering;
   NCCLCHECKGOTO(envConfigOverride(comm), ret, fail);
 
-  // Resolve to system default (serialize) if neither user config nor env var set it.
+  // 若用户配置与环境变量都未设置，则回退到系统默认(串行)。
   if (comm->config.graphStreamOrdering == NCCL_CONFIG_UNDEF_INT) comm->config.graphStreamOrdering = 1;
 
-  // Warn and fall back when graphStreamOrdering=0 is combined with graphUsageMode=2 (unsupported).
+  // 当 graphStreamOrdering=0 与 graphUsageMode=2 组合(不支持)时，告警并回退。
   if (comm->config.graphStreamOrdering == 0 && comm->config.graphUsageMode == 2) {
     WARN("graphStreamOrdering=0 with graphUsageMode=2 (graph mixing) is not supported; "
          "falling back to graphStreamOrdering=1 for this communicator");
@@ -2485,14 +2514,14 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   ncclComm_t comm = NULL;
   struct ncclCommInitRankAsyncJob* job = NULL;
   bool launchedJob = false;
-  // first call ncclInit, this will setup the environment
+  // 先调用 ncclInit 完成环境初始化
   NCCLCHECKGOTO(ncclInit(), res, fail);
 
   if (ncclDebugLevel > NCCL_LOG_WARN || (ncclDebugLevel != NCCL_LOG_NONE && myrank == 0)) {
     static std::once_flag once;
     std::call_once(once, showVersion);
   }
-  // Make sure the CUDA runtime is initialized.
+  // 确保 CUDA 运行时已初始化。
   CUDACHECKGOTO(cudaFree(NULL), res, fail);
 
   NCCLCHECKGOTO(PtrCheck(newcomm, "CommInitRank", "newcomm"), res, fail);
@@ -2521,12 +2550,12 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   job->myrank = myrank;
   job->cudaDev = cudaDev;
   snprintf(job->funcName, NCCL_COMMINIT_FUNCNAME_LEN, "%s", funcName);
-  // need to copy the commIds to allow async commInit and to avoid alignement issues when casting from
-  // ncclUNiqueId and ncclBootstrapHandle
-  // ncclUniqueIds and ncclBootstrapHandle don't have the same alignment requirements.
-  // Therefore the array of Ids coming from the user might not be properly aligned to be cast into a
-  // ncclBootstrapHandle
-  // copying into allocated memory guarantees that the memory is properly aligned for any objects, removing that issue
+  // 需要拷贝 commIds，以支持异步 commInit，并避免在从
+  // ncclUNiqueId 并且 ncclBootstrapHandle
+  // ncclUniqueId 与 ncclBootstrapHandle 的对齐要求不同。
+  // 因此用户传入的 Id 数组可能未正确对齐，无法直接
+  // 转换为 ncclBootstrapHandle
+  // 拷贝到我们分配的内存中可以保证对任意对象都正确对齐，从而消除该问题
   NCCLCHECKGOTO(ncclCalloc(&job->commId, nId), res, fail);
   memcpy(job->commId, commId, nId * NCCL_UNIQUE_ID_BYTES);
 
@@ -2537,7 +2566,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
       INFO(NCCL_INIT | NCCL_ENV, "NCCL_COMM_ID cannot be used with more than one ncclUniqueId");
       job->nId = 1;
     }
-    // start the bootstrap root before bootstrapping, use only the first handle
+    // 在 bootstrap 之前先启动 bootstrap 根，仅用第一个 句柄
     NCCLCHECKGOTO(bootstrapCreateRoot((struct ncclBootstrapHandle*)&job->commId[0], true), res, fail);
   }
   launchedJob = true;
@@ -2562,7 +2591,7 @@ NCCL_API(ncclResult_t, ncclCommInitRank, ncclComm_t* newcomm, int nranks, ncclUn
 ncclResult_t ncclCommInitRank(ncclComm_t* newcomm, int nranks, ncclUniqueId commId, int myrank) {
   NCCLCHECK(ncclInitEnv());
   NVTX3_RANGE(NcclNvtxParamsCommInitRank)
-  // Load the CUDA driver and dlsym hooks (can fail on old drivers)
+  // 加载 CUDA 驱动并挂上 dlsym 钩子(在老驱动上可能失败)
   (void)ncclCudaLibraryInit();
 
   int cudaDev;
@@ -2587,7 +2616,7 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
 
   NVTX3_RANGE(NcclNvtxParamsCommInitAll);
 
-  // Load the CUDA driver and dlsym hooks (can fail on old drivers)
+  // 加载 CUDA 驱动并挂上 dlsym 钩子(在老驱动上可能失败)
   (void)ncclCudaLibraryInit();
 
   CUDACHECK(cudaGetDevice(&oldDev));
@@ -2625,7 +2654,7 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
   NCCLCHECKGOTO(ncclGetUniqueId(&uniqueId), ret, fail);
   NCCLCHECKGOTO(ncclGroupStartInternal(), ret, fail);
   for (int i = 0; i < ndev; i++) {
-    // Ignore return codes .. we need to call ncclGroupEnd to clean up anyway
+    // 忽略返回值……因为无论如何都需要调用 ncclGroupEnd 来清理
     int dev = devlist ? devlist[i] : i;
     CUDACHECKGOTO(cudaSetDevice(dev), ret, fail);
     ncclCommInitRankDev(comms + i, ndev, 1, &uniqueId, i, dev, &config, __func__);
@@ -2747,7 +2776,7 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
 
     NCCLCHECKGOTO(ncclCommPollEventCallbacks(comm, true), ret, fail);
     NCCLCHECKGOTO(ncclCommPollCallbacks(comm, false), ret, fail);
-    // And keep polling until all graphs referencing us die.
+    // 持续轮询，直到所有引用本通信域的 CUDA 图 都被销毁。
     while (comm->localPersistentRefs != 0) {
       NCCLCHECKGOTO(ncclCommPollCallbacks(comm, /*waitSome=*/true), ret, fail);
     }
@@ -2864,7 +2893,7 @@ static ncclResult_t commReclaim(struct ncclAsyncJob* job_) {
         nextIntraComm = nextIntraComm->intraNext;
 
         if ((ret = commCleanup(curIntraComm)) != ncclSuccess) {
-          // We pass a freed pointer, but we don't dereference; we merely print its value, so it's OK.
+          // 我们传入的是一个已释放的指针，但不解引用，只打印其值，因此无妨。
           // coverity[pass_freed_arg]
           WARN("commReclaim: cleanup comm %p rank %d failed in destroy/abort, error %d", curIntraComm, curRank, ret);
         }
@@ -2890,7 +2919,7 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
 
   TRACE(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx", comm, rank, nranks, cudaDev, comm->busId);
   NCCLCHECK(ncclGroupStartInternal());
-  // Try and prevent a double free of the comm struct (user error)
+  // 尝试防止通信域结构体被二次释放(用户误用)
   if (comm->rank == -1 || comm->nRanks == -1 || comm->cudaDev == -1 || comm->busId == -1) {
     WARN("comm %p has already been destroyed", comm);
     return ncclInvalidArgument;
@@ -2913,7 +2942,7 @@ fail:
 }
 
 static ncclResult_t setCommAbortFlags(ncclComm_t comm, int value) {
-  // Set abort flags
+  // 设置中止标志
   uint32_t uval = static_cast<uint32_t>(value);
   if (comm->childAbortFlag != nullptr) {
     COMPILER_ATOMIC_STORE(comm->childAbortFlag, uval, std::memory_order_release);
@@ -2950,7 +2979,7 @@ static ncclResult_t commRevokeAsync(struct ncclAsyncJob* job_) {
     if (comm->proxyState && comm->proxyRefCountOld == 0 && comm->proxyState->thread.joinable()) {
       comm->proxyState->thread.join();
       if (comm->proxyState->threadUDS.joinable()) {
-        // UDS support
+        // UDS 支持
         comm->proxyState->threadUDS.join();
       }
     }
@@ -2968,15 +2997,15 @@ ncclResult_t ncclCommRevoke(ncclComm_t comm, int revokeFlags) {
   if (comm == NULL) {
     return ncclSuccess;
   }
-  // For now only NCCL_REVOKE_DEFAULT (0) is supported
+  // 目前仅支持 NCCL_REVOKE_DEFAULT(0)
   if (revokeFlags != NCCL_REVOKE_DEFAULT) {
     return ncclInvalidArgument;
   }
-  // Disallow revoke if destroy/finalize in progress
+  // 若销毁/finalize 正在进行，则禁止 revoke
   if (comm->destroyFlag || comm->finalizeCalled) {
     return ncclInvalidArgument;
   }
-  // Disallow revoke if revoke in progress
+  // 若 revoke 正在进行，则禁止再次 revoke
   if (comm->revokedFlag) {
     return ncclInvalidArgument;
   }
@@ -3033,14 +3062,14 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
        comm->cudaDev, comm->busId);
 
   NCCLCHECK(ncclGroupStartInternal());
-  // Ask anything that might still be running on the device to quit
+  // 要求设备上可能仍在运行的一切任务退出
   NCCLCHECK(setCommAbortFlags(comm, 1));
   comm->destroyFlag = 1;
   /* init thread must be joined before we destroy the comm,
    * and we should ignore the init error here. */
   (void)ncclCommEnsureReady(comm);
 
-  // once the comm is ready, we can access ranks etc
+  // 一旦通信域就绪，就可以访问 ranks 等信息了
   int rank = comm->rank, nranks = comm->nRanks, cudaDev = comm->cudaDev;
   struct ncclCommFinalizeAsyncJob* job = NULL;
   ncclResult_t res = ncclSuccess;
@@ -3069,7 +3098,7 @@ static void childCommCleanupJob(void* job) {
   delete initJob;
 }
 
-// initializing a child communicator (for both split and shrink)
+// 正在初始化一个子通信域(split 与 shrink 都适用)
 static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, bool isShrink, int flags, int color,
                                           int key, int* excludeRanksList, int excludeRanksCount, ncclConfig_t* config,
                                           const char* caller) {
@@ -3084,9 +3113,9 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
   if (isShrink) {
     NCCLCHECKGOTO(PtrCheck(excludeRanksList, caller, "excludeRanksList"), res, exit);
     NCCLCHECKGOTO(excludeRanksCount > 0 ? ncclSuccess : ncclInvalidArgument, res, exit);
-    // excludeRanksList may not be sorted, need to sort it
+    // excludeRanksList 可能未排序，需要先排序
     qsort(excludeRanksList, excludeRanksCount, sizeof(int), compareInts);
-    // ranks in excludeRanksList should not call into this function
+    // excludeRanksList 中的 rank 不应调用本函数
     NCCLCHECKGOTO(bsearch(&comm->rank, excludeRanksList, excludeRanksCount, sizeof(int), compareInts) ?
                     ncclInvalidArgument :
                     ncclSuccess,
@@ -3103,9 +3132,9 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
     NCCLCHECKGOTO(ncclCalloc(&childComm, 1), res, fail);
     childComm->startMagic = childComm->endMagic = NCCL_MAGIC;
 
-    // Set the shareResource field, this is used throughout the init and must be reset every time.
-    // Never share resources if the parent communicator has been revoked.
-    // If we shrink, we only reuse resources in default mode.
+    // 设置 shareResource 字段，该字段贯穿整个初始化流程，每次都必须重置。
+    // 若父通信域已被撤销(revoked)，则绝不共享资源。
+    // 如果是 shrink(缩容)，仅在默认模式下复用资源。
     comm->shareResources =
       !comm->revokedFlag &&
       (isShrink ? (!(flags & NCCL_SHRINK_ABORT) && comm->config.shrinkShare) : comm->config.splitShare);
@@ -3141,12 +3170,12 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
   job->color = color;
   job->key = key;
   if (excludeRanksList) {
-    // need to copy the list of ranks to exclude because the job is async
+    // 需要拷贝要排除的 rank 列表，因为这是异步任务
     job->excludeRanksCount = excludeRanksCount;
     NCCLCHECKGOTO(ncclCalloc(&job->excludeRanksList, excludeRanksCount), res, fail);
     memcpy(job->excludeRanksList, excludeRanksList, excludeRanksCount * sizeof(int));
   } else {
-    // each split has to lead to a unique comm, so increment the childCount
+    // 每次 split 都必须产出唯一的 通信域，因此递增 childCount
     job->childCount = ++comm->childCount;
     job->excludeRanksList = NULL;
   }
@@ -3179,8 +3208,8 @@ ncclResult_t ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeR
   NVTX3_RANGE(NcclNvtxParamsCommShrink)
   ncclResult_t res = ncclSuccess;
   NCCLCHECK(ncclGroupStartInternal());
-  // Handle error mode by setting abort flags and waiting for kernels to complete and unset the flags
-  // to avoid bootstrap issues
+  // 处理错误模式：设置中止标志、等待 内核 完成后再清除标志，以避免 bootstrap 出问题
+  // 
   if (shrinkFlags & NCCL_SHRINK_ABORT) {
     NCCLCHECKGOTO(setCommAbortFlags(comm, 1), res, exit);
     NCCLCHECKGOTO(ncclStrongStreamSynchronize(&comm->sharedRes->deviceStream), res, exit);
@@ -3211,7 +3240,7 @@ ncclResult_t ncclCommGetUniqueId(ncclComm_t comm, ncclUniqueId* uniqueId) {
   struct ncclBootstrapHandle growHandle;
   NCCLCHECK(bootstrapGetUniqueId(&growHandle, comm));
 
-  // Broadcast the grow handle to boundary ranks (rank 0 and N-1)
+  // 把 grow(扩容)句柄广播给边界 rank(0 号与 N-1 号)
   NCCLCHECK(bcastGrowHandle(&growHandle, comm, /*isRoot=*/true));
 
   memset(uniqueId, 0, sizeof(ncclUniqueId));
@@ -3254,14 +3283,14 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
       goto exit;
     }
 
-    // each grow/shrink/split has to lead to a unique comm->magic value, increment before using to be
-    // consistent with ncclCommInitChildComm
+    // 每次 grow/shrink/split 都必须产生唯一的 通信域->magic 值，在使用前递增以保证
+    // 与 ncclCommInitChildComm 的语义一致
     ++comm->childCount;
 
-    // Only boundary ranks (0 and N-1) receive grow handle from coordinator
+    // 只有边界 rank(0 与 N-1)会从协调者处收到 grow 句柄
     if ((comm->nRanks > 1) && (comm->rank == 0 || comm->rank == comm->nRanks - 1)) {
       NCCLCHECKGOTO(bcastGrowHandle(&recvHandle, comm, /*isRoot=*/false), res, exit);
-      // verify the magic is the same as the one computed by the root
+      // 验证 magic 与 根 计算出的相同
       if (recvHandle.magic != hashCombine(comm->magic, comm->childCount)) {
         WARN("ncclCommGrow: magic mismatch computed by the root, got %lx expected %lx", recvHandle.magic,
              hashCombine(comm->magic, comm->childCount));
@@ -3271,7 +3300,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
       uniqueId = (const ncclUniqueId*)&recvHandle;
     }
   } else {
-    // New ranks: validate parameters
+    // 新加入的 rank：校验参数
     if (rank < 0) {
       WARN("ncclCommGrow: new ranks must pass valid rank >= 0, got %d", rank);
       res = ncclInvalidArgument;
@@ -3288,7 +3317,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
       goto exit;
     }
 
-    // Initialize NCCL and CUDA for new ranks (same sequence as ncclCommInitRank)
+    // 为新 rank 初始化 NCCL 与 CUDA(流程与 ncclCommInitRank 一致)
     NCCLCHECKGOTO(ncclInitEnv(), res, exit); // Environment plugins
     (void)ncclCudaLibraryInit(); // CUDA driver and dlsym hooks
     NCCLCHECKGOTO(ncclInit(), res, exit); // Bootstrap network, CPU stack, GDR
@@ -3302,17 +3331,17 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   INFO(NCCL_INIT, "ncclCommGrow: %s rank creating new communicator with %d total ranks",
        isExistingRank ? "existing" : "new", nRanks);
 
-  // All ranks allocate a NEW comm structure for the grown communicator
+  // 所有 rank 为扩容后的通信域分配全新的 通信域 结构体
   NCCLCHECKGOTO(ncclCalloc(&newComm, 1), res, fail);
   newComm->startMagic = newComm->endMagic = NCCL_MAGIC;
 
-  // All ranks allocate fresh resources for grown communicator
+  // 所有 rank 为扩容后的通信域分配全新资源
   NCCLCHECKGOTO(ncclCalloc(&newComm->abortFlag, 1), res, fail);
   NCCLCHECKGOTO(ncclCudaHostCalloc(&newComm->abortFlagDev, 1), res, fail);
   NCCLCHECKGOTO(ncclCalloc(&newComm->abortFlagRefCount, 1), res, fail);
   *newComm->abortFlagRefCount = 1;
 
-  // Configure the new communicator
+  // 配置新的通信域
   if (isExistingRank && config == NULL) {
     NCCLCHECKGOTO(copyCommConfig(newComm, comm), res, fail);
   } else {
@@ -3330,12 +3359,12 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   snprintf(job->funcName, NCCL_COMMINIT_FUNCNAME_LEN, "ncclCommGrow");
 
   if (isExistingRank) {
-    // Existing rank: new comm, parent is old comm
+    // 已有的 rank：新 通信域，父通信域是旧 通信域
     job->parent = comm;
     job->cudaDev = comm->cudaDev;
     job->myrank = comm->rank; // Keep same rank in expanded comm
   } else {
-    // New rank: new comm, no parent
+    // 新加入的 rank：新 通信域，无父通信域
     int device;
     CUDACHECK(cudaGetDevice(&device));
     job->parent = NULL;
@@ -3343,7 +3372,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
     job->myrank = rank;
   }
 
-  // All ranks use the newly allocated comm
+  // 所有 rank 都使用新分配的 通信域
   job->comm = newComm;
 
   if (job->nId == 1) memcpy(job->commId, uniqueId, sizeof(ncclUniqueId));
@@ -3374,9 +3403,9 @@ fail:
     }
     delete job;
   }
-  // Clean up newly allocated comm on failure
+  // 失败时清理新分配的 通信域
   if (newComm) {
-    // Only free abort resources if we allocated them (not shared)
+    // 仅在资源是我们自己分配(非共享)时才释放中止相关资源
     if (!isExistingRank || !comm->shareResources) {
       free(newComm->abortFlag);
       if (newComm->abortFlagDev) (void)ncclCudaHostFree((void*)newComm->abortFlagDev);
@@ -3458,11 +3487,11 @@ ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t* asyncError) {
   /* Check gin status */
   if (*asyncError == ncclSuccess && comm->sharedRes && comm->sharedRes->ginState.connected) {
     struct ncclGinState* ginState = &comm->sharedRes->ginState;
-    // Gin progress thread status
+    // GIN 进度线程的状态
     if (ginState->needsProxyProgress) {
       *asyncError = COMPILER_ATOMIC_LOAD(&comm->sharedRes->ginState.asyncResult, std::memory_order_acquire);
     }
-    // Gin side errors, also works when we have no GIN progress thread.
+    // GIN 侧的错误，即使没有 GIN 进度线程也可用。
     if (*asyncError == ncclSuccess) {
       bool ginError;
       NCCLCHECK(ncclGinQueryLastError(&comm->sharedRes->ginState, &ginError));

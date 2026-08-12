@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/channel.cc — channel(通信通道)结构创建与管理
+ * ----------------------------------------------------------------------------
+ * 实现 initChannel / freeChannel 等：创建 ncclChannel、分配其 ring/tree/nvls 的
+ * 邻居与 conn 数组、绑定设备资源。一个 channel 对应 device 端一个线程块的数据
+ * 搬运任务。与 init.cc 密切配合完成 communicator 建连。
+ */
+
 #include "channel.h"
 #include "param.h"
 #include "gdrwrap.h"
@@ -26,9 +34,9 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
                                     /*concurrent=*/false, &deviceStream));
 
   if (channel->peers == NULL) {
-    // The extra on nRanks+1 is for collnet root (i.e. network)
-    // Allocate everything related to sharedRes with ncclCalloc as this can be
-    // shared between communicators hence should not be tied to comm.
+    // nRanks+1 里的 +1 是给 collnet 根节点（即网络侧）预留的
+    // 与 sharedRes 相关的内存统一用 ncclCalloc 分配，因为它们可能
+    // 在多个 通信器 之间共享，因此不应绑定到单个 通信域。
     if (sharedRes->peers[channelId] == NULL) {
       NCCLCHECK(ncclCalloc(sharedRes->peers + channelId, sharedRes->tpNRanks));
     }
@@ -60,7 +68,7 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
   NCCLCHECK(ncclCudaCallocAsync(&channel->devRingUserRanks, nRanks, deviceStream, comm->memManager, ncclMemOffload));
   ncclCommPushCudaFree(comm, channel->devRingUserRanks);
 
-  /* guarantee addr has been copied into channel->devPeers */
+  /* 确保 addr 已经被拷贝进 channel->devPeers */
   NCCLCHECK(ncclStrongStreamRelease(ncclCudaGraphNone(comm->config.graphUsageMode), &sharedRes->deviceStream,
                                     /*concurrent=*/false));
   NCCLCHECK(ncclStrongStreamSynchronize(&sharedRes->deviceStream));
@@ -154,13 +162,12 @@ ncclResult_t initCollnetChannel(struct ncclComm* comm, int channelId, struct ncc
 ncclResult_t freeChannel(struct ncclChannel* channel, int nRanks, int collnetNRanks, int nvlsNRanks,
                          struct ncclComm* comm) {
   int nPeers = nRanks + collnetNRanks + nvlsNRanks;
-  /* channel peers are only valid when async init thread completes commAlloc() and
-   * the channel is initialized with initChannel(); if either is not done, this channel
-   * should never be free. */
+  /* channel 的 peers 只有在异步初始化线程完成 commAlloc() 并且
+   * channel 已被 initChannel() 初始化后才有效；否则本 channel 不应被释放。 */
   if (channel->id == -1 || channel->peers == NULL) return ncclSuccess;
 
-  // Free transport proxy resources
-  // Note: free all send resources first due to CollNet arrangement
+  // 释放 transport 代理 resources
+  // 注意: 释放 所有 发送 resources 第一 由于 CollNet arrangement
   for (int r = 0; r < nPeers; r++) {
     struct ncclChannelPeer* peer = channel->peers[r];
     if (peer) {

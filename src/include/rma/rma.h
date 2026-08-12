@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/rma/rma.h — RMA(远程内存访问)主头
+ * ----------------------------------------------------------------------------
+ * 定义 RMA 通信所需的参数与任务结构（ncclRmaArgs 等），用于
+ * 在节点间直接读写远端显存/内存，是 CollNet/RDMA 类传输的基础。
+ */
+
 #ifndef _NCCL_RMA_H_
 #define _NCCL_RMA_H_
 
@@ -28,7 +35,7 @@ struct ncclRmaState {
   struct ncclRmaCeState rmaCeState;
 };
 
-// Main RMA function declarations
+// Main RMA 函数 declarations
 ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan* plan);
 ncclResult_t ncclLaunchRma(struct ncclComm* comm, struct ncclKernelPlan* plan);
 ncclResult_t ncclRmaWaitSignal(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream);

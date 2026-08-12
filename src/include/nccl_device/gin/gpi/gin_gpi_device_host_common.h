@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * include/nccl_device/gin/gpi/gin_gpi_device_host_common.h — [GIN 相关] GPI 设备/host 公共
+ * ----------------------------------------------------------------------------
+ * GPI(GPU Peer Interface)在设备侧与主机侧共用的公共定义。GPI 是 GIN 的底层传输
+ * 层，源自 NVIDIA。mini-nccl 精简版下多被 stub。
+ */
+
 #ifndef _NCCL_DEVICE_GIN_GPI_DEVICE_HOST_COMMON_H_
 #define _NCCL_DEVICE_GIN_GPI_DEVICE_HOST_COMMON_H_
 
@@ -42,9 +49,9 @@ typedef struct {
   uint64_t value;
 } __attribute__((aligned(64))) gpi_counter_t;
 
-// typedef struct {
-//  uint8_t value;
-//} __attribute__((aligned(64))) gpi_counter_pending_writeback_t;
+// typedef 结构体 {
+//  uint8_t 值;
+//} __attribute__((已对齐(64))) gpi_counter_pending_writeback_t;
 /* Bit used to indicate that this is a control vs. data operation. */
 #define GPI_GFD_OP_CTRL (1U << 7)
 

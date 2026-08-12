@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/scheduler/symmetric_sched.cc — 对称内存(symmetric)调度计划生成
+ * ----------------------------------------------------------------------------
+ * 针对“对称内存”集合操作生成调度计划：在多个 rank 以相同布局分配/访问内存，并
+ * 协作执行 kernel（如对称 AllGather）。配合 src/sym_kernels* 使用。
+ */
+
 #ifndef NCCL_SYMMETRIC_SCHED_H_
 #define NCCL_SYMMETRIC_SCHED_H_
 
@@ -30,7 +37,7 @@ ncclDevRedOp_t symkRedOp(ncclRedOp_t redOp, ncclDevRedOp_t devRedOp) {
 void convertCollTaskToSymmetricTask(struct ncclComm* comm, struct ncclTaskColl* task) {
   task->opDev.op = symkRedOp(task->opHost, task->opDev.op);
   if (task->opDev.op == ncclDevSumPostDiv) {
-    // LDMC uses the same accumulator type as data type. Do not re-pack the scalar.
+    // LDMC 使用 相同 accumulator 类型 as 数据 类型. 执行 不 re-打包 the 标量.
     if (task->devFuncId == (uint32_t)ncclSymkKernelId_ReduceScatter_LDMC) {
       return;
     }
@@ -42,7 +49,7 @@ void convertCollTaskToSymmetricTask(struct ncclComm* comm, struct ncclTaskColl* 
     };
     u64 = 0;
     switch (task->datatype) {
-      // 16-bit floats use float accumulator
+      // 16-位 floats 使用 浮点 accumulator
     case ncclFloat16:
 #if defined(__CUDA_BF16_TYPES_EXIST__)
     case ncclBfloat16:
@@ -111,10 +118,10 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
   if (remainTasksTail) remainTasksTail->next = nullptr;
   if (!foundSymm) goto exit;
 
-  // make sure kernel args space can hold at least a single work
+  // 确保 内核 args space can 持有 至少 a 单个 work
   assert(comm->workArgsBytes >= ncclSymkDevWorkArgs::calcArgsSize(MAXCHANNELS, 1));
 
-  // Determine symmetric tasks kernels
+  // Determine symmetric tasks 内核
   for (int cursor = 0; cursor < fnOpTySymCount; cursor++) {
     struct ncclTaskColl* task = tasksSymByFnOpTy[fnOpTySymIndices[cursor]];
     while (task != NULL) {
@@ -128,7 +135,7 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
       size_t cellCount = NCCL_SYM_KERNEL_CELL_SIZE / ncclTypeSize(headTask->datatype);
       bool forced = false;
       ncclDevRedOp_t symkOp = symkRedOp(task->opHost, task->opDev.op);
-      // For now we assume higher kernel id means a kernel for larger data size
+      // 目前 we 假设 higher 内核 id means a 内核 for larger 数据 大小
       while (task != nullptr) {
         size_t count;
         nWorks++;
@@ -148,13 +155,13 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
       bool isOneThreadMultiGpus = comm->intraRanks > 1 && !ncclParamSingleProcMemRegEnable();
       bool needFallback = false;
 
-      // Fallback logic for symmetric LL kernels:
-      // - If both src and dst are registered, we don't fall back if a symmetric kernel is available.
-      // - Otherwise, we have to fall back to a legacy kernel if running the selected symmetric LL kernel is
-      //   not possible (if the buffers are not registered and we manage multiple GPUs).
-      // - If the user forced a symmetric kernel via NCCL_SYM_KERNEL or requested preference for using
-      //   symmetric kernels even without symmetric buffers via NCCL_SYM_NOWIN_ENABLE, we respect that.
-      // - Otherwise, we query the legacy cost model and if it selects a non-LL proto, we pick that.
+      // Fallback logic for symmetric LL 内核:
+      // - 若 两者 源 并且 目标 are 已注册, we don't 回退 若 a symmetric 内核 可用.
+      // - 否则, we 必须 回退到 a legacy 内核 若 running the selected symmetric LL 内核 is
+      //   不 possible (若 该缓冲区s are 不 已注册 并且 we manage 多个 GPU).
+      // - 若 用户 forced a symmetric 内核 via NCCL_SYM_KERNEL 或者 requested preference for 使用
+      //   symmetric 内核 甚至 在没有 ... 的情况下 symmetric 缓冲区 via NCCL_SYM_NOWIN_ENABLE, we respect 那个.
+      // - 否则, we query the legacy 代价 model 并且 若 it selects a non-LL proto, we pick 那个.
       if (headTask->winRegType == ncclSymSendRegRecvReg || headTask->algorithm == NCCL_ALGO_UNDEF) {
         needFallback = false;
       } else if (isLLKernel) {
@@ -162,7 +169,7 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
         if (!needFallback && !forced) {
           needFallback = !ncclParamSymNoWinEnable() && headTask->winRegType == ncclSymSendNonregRecvNonreg;
           if (!needFallback) {
-            // First query legacy tuning
+            // 第一 query legacy tuning
             int collNetSupport = 0;
             int nvlsSupport = comm->nvlsSupport && (ncclNvlsSupported(task->opDev.op, headTask->datatype) ||
                                                     headTask->func == ncclFuncAllGather);
@@ -173,8 +180,8 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
         }
       }
 
-      // Override needFallback when buffers are registered but VAs contain sysmem segments.
-      // The below functions return false when the window is NULL, so this covers non-reg cases as well.
+      // Override needFallback 当 缓冲区 are 已注册 但 VAs contain sysmem 段.
+      // The 下方 函数 返回 假 当 ... 时 window is NULL, 所以 此 covers non-reg 情形 as well.
       if (!needFallback) {
         bool hasSysmemSegment =
           ncclDevrWindowHasSysmemSegment(headTask->sendWin) || ncclDevrWindowHasSysmemSegment(headTask->recvWin);
@@ -182,8 +189,8 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
       }
 
       if (kernelId == ncclSymkKernelId_Count || needFallback) {
-        // cannot find appropriate symmetric kernel for the tasks
-        // fallback to legacy kernels
+        // cannot 查找 appropriate symmetric 内核 为了 tasks
+        // fallback to legacy 内核
         while (task != nullptr) {
           struct ncclTaskColl* next = task->next;
           int isSymLast = task->isSymLast;
@@ -200,12 +207,12 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
         continue;
       }
 
-      // initialize symmetric objects for LL kernels
+      // 初始化 symmetric objects for LL 内核
       if (isLLKernel && headTask->winRegType == ncclSymSendNonregRecvNonreg) {
         NCCLCHECK(ncclSymkInitOnce(comm));
       }
 
-      // set all symmetric tasks to the same kernel
+      // 设置 所有 symmetric tasks to 相同 内核
       while (task != nullptr) {
         struct ncclTaskColl* next = task->next;
         int isSymLast = task->isSymLast;
@@ -292,20 +299,20 @@ ncclResult_t ncclSymmetricTaskScheduler(struct ncclComm* comm,
           devWork.sChannelId = curChannel;
           devWork.nChannels = 1;
         } else if (cellLeft <= remainCell) {
-          // the last segment of the task
+          // 最后一个 段 的 task
           assert(devWork.nChannels > 0);
-          // if the remaining cell is less than 1024 bytes, we can fuse the last channel
+          // 若 剩余的 cell is less than 1024 字节, 我们可以 fuse 最后一个 通道
           if ((remainCell - cellLeft) * NCCL_SYM_KERNEL_CELL_SIZE <= (1 << 10) || ncclIntruQueueEmpty(symTaskQueue)) {
             devWork.nChannels++;
           }
         } else {
-          // middle segment of the task
+          // 中间 段 的 task
           devWork.nChannels++;
         }
       } else {
         assert(cellLeft == taskCell);
         if (taskCell <= remainCell) {
-          // the first segment of the task is fully scheduled onto the channel
+          // 第一个 段 的 task is fully scheduled on到 通道
           devWork.sChannelId = curChannel;
           devWork.nChannels = 1;
         }
@@ -322,7 +329,7 @@ ncclResult_t ncclSymmetricTaskScheduler(struct ncclComm* comm,
         curChannelWork = 0;
         break;
       } else {
-        // cellLeft > remainCell; the task is partially scheduled onto the channel
+        // cellLeft > remainCell; the task is partially scheduled on到 通道
         cellLeft -= remainCell;
         workRangePtr[curChannel].fracHi = uint16_t(DIVUP(0x10000L * (taskCell - cellLeft), taskCell) - 1);
         remainCell = cellPerChannel;
@@ -333,7 +340,7 @@ ncclResult_t ncclSymmetricTaskScheduler(struct ncclComm* comm,
     memcpy(workBufPtr + workIndex, &devWork, sizeof(struct ncclSymkDevWork));
     workIndex++;
 
-    // Profiler
+    // 性能分析器(剖析器)相关处理
     plan->groupApiEventHandle = task->groupApiEventHandle;
 
     ncclMemoryPoolFree<struct ncclTaskColl>(&comm->memPool_ncclTaskColl, task);

@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/ipcsocket.h — IPC socket 接口声明
+ * ----------------------------------------------------------------------------
+ * 定义基于 socket 的 IPC 通道：用于同机/跨进程间的控制消息传递（如 bootstrap
+ * 引导、proxy 与主线程握手），是通信控制面的一部分。
+ */
+
 #ifndef NCCL_IPCSOCKET_H
 #define NCCL_IPCSOCKET_H
 

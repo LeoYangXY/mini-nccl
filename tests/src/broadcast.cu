@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/broadcast.cu — Broadcast 性能/功能测试
+ * ----------------------------------------------------------------------------
+ * 实现 broadcast_perf 基准：把一个 rank 的数据广播到所有 rank，演示 NCCL Broadcast
+ * API 用法与字节计数计算。取自 nccl-tests 并裁剪。
+ */
+
 #include "cuda_runtime.h"
 #include "common.h"
 

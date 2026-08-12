@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/timer.h — 计时器工具
+ * ----------------------------------------------------------------------------
+ * 提供 NCCL 内部的性能计时宏/函数（ENABLE_TIMER 控制），用于测量各阶段耗时以辅助
+ * 调试与性能分析。
+ */
+
 #ifndef NCCL_TIMER_H_
 #define NCCL_TIMER_H_
 #if ENABLE_TIMER

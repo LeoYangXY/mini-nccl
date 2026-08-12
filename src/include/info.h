@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/info.h — ncclInfo 等基础类型声明
+ * ----------------------------------------------------------------------------
+ * 定义 ncclInfo：把一次用户 collective 调用（op/数据类型/缓冲区/count/算法偏好等）
+ * 打包成的统一描述结构，是 collectives.cc → enqueue.cc 之间的“传票”。
+ */
+
 #ifndef NCCL_INFO_H_
 #define NCCL_INFO_H_
 
@@ -13,11 +20,11 @@
 #include "core.h"
 #include "utils.h"
 
-// Used to pass NCCL call information between functions
+// 用于 pass NCCL 调用 information 之间 函数
 struct ncclInfo {
   ncclFunc_t coll;
   const char* opName;
-  // NCCL Coll Args
+  // NCCL 集合通信参数
   const void* sendbuff;
   void* recvbuff;
   size_t count;
@@ -26,16 +33,16 @@ struct ncclInfo {
   int root; // peer for p2p operations
   ncclComm_t comm;
   cudaStream_t stream;
-  // Algorithm details
+  // 算法 细节
   int chunkSteps;
   int sliceSteps;
-  // One-sided ops
+  // 单边操作
   size_t peerWinOffset;
   ncclWindow_t peerWin;
   int sigIdx;
   int ctx;
   unsigned int flags;
-  // WaitSignal descriptors
+  // WaitSignal 描述符
   int nDesc;
   ncclWaitSignalDesc_t* signalDescs;
 };

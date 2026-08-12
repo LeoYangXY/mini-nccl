@@ -46,7 +46,7 @@
  *   1   3   5   7   9   11    13
  */
 // 生成单棵二叉树(btree)。基于二进制位操作快速确定父子关系：找到 rank 最低位的
-// 置位 bit，父节点 up = (rank ^ bit) | (bit<<1)（越界则回退），子节点 down0/down1
+// 置位 位，父节点 up = (rank ^ 位) | (位<<1)（越界则回退），子节点 down0/down1
 // 为 rank ± lowbit。每个节点只有一个 up（父）和最多两个 down（子）。
 //   u     : 输出父节点 rank（-1 表示是根）
 //   d0/d1 : 输出两个子节点 rank（-1 表示无该子节点）
@@ -61,23 +61,23 @@ ncclResult_t ncclGetBtree(int nranks, int rank, int* u, int* d0, int* d1, int* p
   if (rank == 0) {
     *u = -1;
     *d0 = -1;
-    // Child rank is > 0 so it has to be our child 1, not 0.
+    // 子 rank is > 0 所以 it has to be our 子 1, 不 0.
     *d1 = nranks > 1 ? bit >> 1 : -1;
     return ncclSuccess;
   }
 
   up = (rank ^ bit) | (bit << 1);
-  // if smaller than the parent, we are his first child, otherwise we're his second
+  // 若 smaller than the 父, we are his 第一 子, 否则 we're his 第二
   if (up >= nranks) up = (rank ^ bit);
   *parentChildType = (rank < up) ? 0 : 1;
   *u = up;
 
   int lowbit = bit >> 1;
-  // down0 is always within bounds
+  // down0 is always 之内 边界
   down0 = lowbit == 0 ? -1 : rank - lowbit;
 
   down1 = lowbit == 0 ? -1 : rank + lowbit;
-  // Make sure down1 is within bounds
+  // 确保 down1 is 之内 边界
   while (down1 >= nranks) {
     down1 = lowbit == 0 ? -1 : rank + lowbit;
     lowbit >>= 1;
@@ -109,17 +109,17 @@ ncclResult_t ncclGetBtree(int nranks, int rank, int* u, int* d0, int* d1, int* p
  *    / \     / \     /  \         / \     / \     /  \
  *   1   3   5   7   9   11       2   4   6   8  10   12
  */
-// 生成“双二叉树(double binary tree)”：第一棵树直接用 btree；第二棵树在 nranks 为偶数时
-// 取镜像树(rank 取反)，为奇数时整体平移 1 个 rank。双二叉树让 AllReduce 可在两棵树间
+// 生成“双二叉树(双精度 binary 树)”：第一棵树直接用 btree；第二棵树在 nranks 为偶数时
+// 取镜像树(rank 取反)，为奇数时整体平移 1 个 rank。双二叉树让 全规约 可在两棵树间
 // 交替，提升带宽与容错。
 //   第一组 s0/d0_0/d0_1/parentChildType0 对应第一棵树，s1/d1_0/d1_1/parentChildType1 对应第二棵。
 ncclResult_t ncclGetDtree(int nranks, int rank, int* s0, int* d0_0, int* d0_1, int* parentChildType0, int* s1,
                           int* d1_0, int* d1_1, int* parentChildType1) {
-  // First tree ... use a btree
+  // 第一 树 ... 使用 a btree
   ncclGetBtree(nranks, rank, s0, d0_0, d0_1, parentChildType0);
-  // Second tree ... mirror or shift
+  // 第二 树 ... mirror 或者 shift
   if (nranks % 2 == 1) {
-    // shift
+    // 移位
     int shiftrank = (rank - 1 + nranks) % nranks;
     int u, d0, d1;
     ncclGetBtree(nranks, shiftrank, &u, &d0, &d1, parentChildType1);
@@ -127,7 +127,7 @@ ncclResult_t ncclGetDtree(int nranks, int rank, int* s0, int* d0_0, int* d0_1, i
     *d1_0 = d0 == -1 ? -1 : (d0 + 1) % nranks;
     *d1_1 = d1 == -1 ? -1 : (d1 + 1) % nranks;
   } else {
-    // mirror
+    // 镜像
     int u, d0, d1;
     ncclGetBtree(nranks, nranks - 1 - rank, &u, &d0, &d1, parentChildType1);
     *s1 = u == -1 ? -1 : nranks - 1 - u;

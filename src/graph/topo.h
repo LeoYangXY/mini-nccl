@@ -43,8 +43,8 @@
 #define ARM_BW 6.0
 #define NET_BW 12.0           // 100Gbit
 
-// Intel CPU convert GPU P2P traffic into 64B PCI TLPs, so GPU
-// to GPU traffic consumes more PCI bandwidth.
+// Intel CPU convert GPU P2P traffic into 64B PCI TLPs, 所以 GPU
+// to GPU traffic consumes more PCI 带宽.
 #define INTEL_P2P_OVERHEAD(bw) (bw * 6 / 5)
 
 #define NCCL_TOPO_NODE_TYPES 10
@@ -60,7 +60,7 @@
 #define CXB 9 // C2C Cross-Bridge: shared C2C bus node for GPUs split with mlopart
 extern const char* topoNodeTypeStr[];
 
-// We want link types and path types to match as much as possible
+// We 想要 链路 类型 并且 路径 类型 to match as much as possible
 #define LINK_LOC 0
 #define LINK_NVL 1
 // Skipping 2 for PATH_NVB
@@ -82,7 +82,7 @@ struct ncclTopoLink {
   float bw;
   struct ncclTopoNode* remNode;
 };
-// Allows for up to 32 NICs per node on GB200-NVL72
+// Allows for 多达 32 NICs 每个 节点 on GB200-NVL72
 #define NCCL_TOPO_MAX_LINKS 576
 #define NCCL_TOPO_MAX_HOPS (NCCL_TOPO_MAX_NODES * NCCL_TOPO_NODE_TYPES)
 
@@ -112,7 +112,7 @@ struct ncclTopoLinkList {
 struct ncclTopoNode {
   int type;
   int64_t id;
-  // Type specific data
+  // 类型 特定的 数据
   union {
     struct {
       int dev; // NVML dev number
@@ -154,9 +154,9 @@ struct ncclTopoNode {
   };
   int nlinks;
   struct ncclTopoLink links[NCCL_TOPO_MAX_LINKS];
-  // Pre-computed paths to GPUs and NICs
+  // 前-computed 路径 to GPU 并且 NICs
   struct ncclTopoLinkList* paths[NCCL_TOPO_NODE_TYPES];
-  // Used during search
+  // 已使用 期间 search
   uint64_t used;
 };
 
@@ -196,18 +196,18 @@ struct ncclTopoNetInfo {
   bool gin;
   bool rma;
   bool net;
-  // communicator-specific information
+  // 通信器-特定的 information
   int netPluginIndex;
   int maxDevsPerNic;
   bool dmaBufSupport;
-  // NIC fusion
+  // NIC 融合
   int mergeLevel;
   int mergePolicy;
   const char* forceMerge;
-  // dev count tracking functions (not part of ncclNet)
+  // dev 计数 tracking 函数 (不 part of ncclNet)
   ncclResult_t (*getDevCount)(int, int*, int*);
   ncclResult_t (*setVirtDevCount)(int, int);
-  // ncclNet API functions
+  // ncclNet API 函数
   const char* name;
   ncclResult_t (*getProperties)(int, ncclNetProperties_t*);
   ncclResult_t (*makeVDevice)(int*, ncclNetVDeviceProps_t*);
@@ -254,7 +254,7 @@ static ncclResult_t ncclTopoRankToIndex(struct ncclTopoSystem* system, int rank,
 static ncclResult_t ncclTopoDevToRank(struct ncclTopoSystem* system, int systemId, int dev, bool warn, int* rank) {
   *rank = -1;
   for (int i = 0; i < system->nodes[GPU].count; i++) {
-    // Only consider GPUs on the given node
+    // 仅 考虑 GPU 在 ... 上 给定的 节点
     if (NCCL_TOPO_ID_SYSTEM_ID(system->nodes[GPU].nodes[i].id) != systemId) continue;
     if (system->nodes[GPU].nodes[i].gpu.dev == dev) {
       *rank = system->nodes[GPU].nodes[i].gpu.rank;
@@ -279,7 +279,7 @@ static ncclResult_t ncclTopoIdToNetDev(struct ncclTopoSystem* system, int64_t id
   return ncclInternalError;
 }
 
-// Returns NVLink bw in GB/s
+// 返回 NVLink bw 入 GB/s
 static float ncclTopoNVLinkBw(int cudaCompCap) {
   return cudaCompCap >= 100 ? SM100_NVLINK_BW :
          cudaCompCap >= 90  ? SM90_NVLINK_BW :
@@ -290,7 +290,7 @@ static float ncclTopoNVLinkBw(int cudaCompCap) {
                               SM80_NVLINK_BW;
 }
 
-// Mirror bits
+// Mirror 位
 static bool isPow2(int val) {
   return (val & (val - 1)) == 0;
 }

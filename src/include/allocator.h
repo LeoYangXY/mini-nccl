@@ -13,9 +13,9 @@
 #include <cuda_runtime.h>
 
 ////////////////////////////////////////////////////////////////////////////////
-// ncclSpace: Allocates contiguous segments of non-negative integers. Useful
-// as a memory allocator when we can't put allocator state within the memory
-// being allocated.
+// ncclSpace: Allocates 连续的 段 of non-negative integers. Useful
+// as a 内存 分配器 当 我们可以't 放置 分配器 状态 with在 ... 中 内存
+// being 已分配.
 
 struct ncclSpace {
   int count;
@@ -30,8 +30,8 @@ ncclResult_t ncclSpaceAlloc(struct ncclSpace* a, int64_t spaceLimit, int64_t obj
 ncclResult_t ncclSpaceFree(struct ncclSpace* a, int64_t objOffset, int64_t objSize);
 
 ////////////////////////////////////////////////////////////////////////////////
-// ncclShadowPool: Allocates device-side objects, their host-side shadows, and
-// maintains the device->host object address mapping.
+// ncclShadowPool: Allocates 设备-side objects, their 主机-side shadows, 并且
+// maintains 该设备->主机 object 地址 映射.
 
 struct ncclShadowObject;
 struct ncclShadowPage;

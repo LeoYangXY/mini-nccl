@@ -4,6 +4,14 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * src/include/nccl_device/gin/gpi/gin_gpi.h — GIN GPI 设备端接口 [GIN 相关/第三方]
+ * ----------------------------------------------------------------------------
+ * 这是 NVIDIA GIN(GPU 内部网络)的 GPI(通用管道接口)设备端头文件，
+ * 定义设备在 kernel 中使用的 GPI 原语与 DOCA Verbs 封装宏。
+ * 属于第三方 GIN 代码，mini-nccl 中大多被 stub；此处仅补中文说明，不改逻辑。
+ */
+
 #ifndef _NCCL_DEVICE_GIN_GPI_H_
 #define _NCCL_DEVICE_GIN_GPI_H_
 
@@ -156,12 +164,12 @@ __device__ static inline bool gpi_gpu_channel_is_signal_flags(gpi_gpu_channel_t*
 
 #ifdef GPI_USE_TMA_
 __device__ __inline__ uint32_t __as_ptr_smem(const void* __ptr) {
-  // Consider adding debug asserts here.
+  // 考虑 adding 调试 asserts here.
   return static_cast<uint32_t>(__cvta_generic_to_shared(__ptr));
 }
 
 __device__ __inline__ uint64_t __as_ptr_gmem(const void* __ptr) {
-  // Consider adding debug asserts here.
+  // 考虑 adding 调试 asserts here.
   return static_cast<uint64_t>(__cvta_generic_to_global(__ptr));
 }
 
@@ -209,7 +217,7 @@ __device__ static inline void gpi_gpu_channel_post_gfd_thread(gpi_gpu_channel_t*
   for (int i = 0; i < GPI_GFD_SEG_MAX; i += 2) {
     gpi_gfd_segment_t* segment = &gfd->segments[i];
     gpi_gfd_segment_t* queue_entry_segment = &queue_entry->segments[i];
-    // Manual PTX for MMIO 128-bit store (b128 needs CUDA 12.3+ / PTX 8.3)
+    // Manual PTX for MMIO 128-位 存储 (b128 needs CUDA 12.3+ / PTX 8.3)
     uint64_t val_lo = segment[0].raw;
     uint64_t val_hi = segment[1].raw;
 #if CUDART_VERSION >= 12030
@@ -371,7 +379,7 @@ NCCL_DEVICE_INLINE static void putImplMode(ncclGinCtx ctx, Coop coop, int peer, 
           gpi_gpu_channel_post_gfd<resource_sharing_mode, GPI_POST_MODE_THREAD>(gpi_ctx, gfd, optFlags);
         }
       }
-      // build signal gfd
+      // 构建 信号 gfd
       op = GPI_GFD_DATA_OP_AMO_ADD;
       gpi_gpu_build_inline_data_transfer_gfd(gfd, op, op_flags_signal, sizeof(uint64_t), peer, (uint64_t)signalVal_,
                                              signalId_, signalOffset_, counterId_, 0, 0);
@@ -437,7 +445,7 @@ NCCL_DEVICE_INLINE static void putValueImplMode(ncclGinCtx ctx, Coop coop, int p
       } else {
         gpi_gpu_channel_post_gfd<resource_sharing_mode, GPI_POST_MODE_THREAD>(gpi_ctx, gfd, optFlags);
       }
-      // build signal gfd
+      // 构建 信号 gfd
       op = GPI_GFD_DATA_OP_AMO_ADD;
       gpi_gpu_build_inline_data_transfer_gfd(gfd, op, 0, sizeof(uint64_t), peer, (uint64_t)signalVal_, signalId_,
                                              signalOffset_, 0, 0, 0);

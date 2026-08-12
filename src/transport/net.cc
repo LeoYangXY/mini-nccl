@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/transport/net.cc — 网络(net)传输实现
+ * ----------------------------------------------------------------------------
+ * 实现 NCCL 的“网络传输”：底层基于 socket(TCP) 或 RDMA，提供 send/recv 连接建立、
+ * 数据收发与进度查询，并支持 proxy 线程驱动。是跨节点通信的主要路径（单节点
+ * 2 卡的 mini-nccl 多走 P2P，但 net 接口保留）。
+ */
+
 #include "comm.h"
 #include "net.h"
 #include "graph.h"
@@ -75,10 +83,10 @@ struct connectMap {
   int sameProcess;
   int shared;
   int cudaDev;
-  // First 3 bits of offsets determine the mem bank. 001 is host mem, 011 is dev mem, 101 is shared host mem and 111
-  // is shared dev mem.
+  // 偏移量的低 3 位决定内存库(bank)：001 为主机内存，011 为设备显存，101 为共享主机内存，111 为共享设备显存。
+  // 
   struct connectMapMem mems[NCCL_NET_MAP_MEMS];
-  // Offsets. 3 MSBs indicate mem bank, 111 indicates NULL.
+  // 偏移量。高 3 位表示内存库，111 表示 NULL(空)。
   struct {
     uint32_t sendMem;
     uint32_t recvMem;
@@ -153,7 +161,7 @@ struct recvNetResources {
 struct netRegInfo {
   uintptr_t buffer;
   size_t size;
-  // Number of physical mapped segments that a buffer spans
+  // 一个缓冲区所跨越的物理映射段数量
   int numSegments;
 };
 
@@ -162,7 +170,7 @@ static ncclResult_t canConnect(int* ret, struct ncclComm* comm, struct ncclTopoG
                                struct ncclPeerInfo* info2) {
   *ret = 1;
   if (info1->hostHash == info2->hostHash) {
-    // If on the same host, check intra-node net is not disabled.
+    // 若在同一主机上，检查节点内网络(网)未被禁用。
     NCCLCHECK(ncclTopoCheckNet(comm->topo, info1->rank, info2->rank, ret));
   }
   return ncclSuccess;
@@ -189,7 +197,7 @@ NCCL_PARAM(NetOptionalRecvCompletion, "NET_OPTIONAL_RECV_COMPLETION", 1);
 static_assert(sizeof(ncclNetHandle_t) + sizeof(int) <= CONNECT_SIZE,
               "Not large enough ncclConnect to hold ncclNetHandle_t and useGdr flag");
 
-// Common function to initialize network attributes from a ncclComm
+// 从 ncclComm 初始化网络属性的通用函数
 static void populateCommNetAttrs(struct ncclComm* comm, struct ncclConnector* conn, ncclNetAttr_t* netAttr) {
   *netAttr = NCCL_NET_ATTR_INIT;
   netAttr->sendCommAttr.minConcurrentPeers = 1;
@@ -218,7 +226,7 @@ static void populateCommNetAttrs(struct ncclComm* comm, struct ncclConnector* co
   }
 }
 
-// Apply the netAttr to the netComm
+// 把 netAttr 应用到 netComm 上
 void setNetAttrs(struct ncclProxyState* proxyState, ncclNetAttr_t* netAttr) {
   if (proxyState->ncclNet->setNetAttr) {
     proxyState->ncclNet->setNetAttr(proxyState->netContext, netAttr);
@@ -246,7 +254,7 @@ void printNetAttrs(ncclNetAttr_t* netAttr, const char* task) {
         netAttr->recvCommAttr.minFlowsPerPeer, netAttr->recvCommAttr.maxFlowsPerPeer, opBuf, algoBuf, protoBuf);
 }
 
-// Set the netAttr for a transfer operation
+// 为一次传输操作设置 netAttr
 void setXferNetAttrs(struct ncclProxyState* proxyState, struct ncclProxyArgs* args, int send) {
   ncclNetAttr_t netAttr;
 
@@ -267,7 +275,7 @@ void setXferNetAttrs(struct ncclProxyState* proxyState, struct ncclProxyArgs* ar
   }
 
   netAttr.op = BIT(args->collAPI);
-  // algo/proto are undefined for p2p
+  // P2P 场景下 algo/proto 未定义
   if (args->collAPI < NCCL_NUM_FUNCTIONS) {
     netAttr.algo = BIT(args->algorithm);
     netAttr.proto = BIT(args->protocol);
@@ -279,14 +287,14 @@ void setXferNetAttrs(struct ncclProxyState* proxyState, struct ncclProxyArgs* ar
   }
 }
 
-// Forward declaration
+// 前向声明
 static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args);
 
-// Returns the flags to be used by a call to cuMemGetHandleForAddressRange.
+// 返回供 cuMemGetHandleForAddressRange 调用使用的标志位。
 static inline int getHandleForAddressRangeFlags(ncclTopoGdrMode useGdr) {
   int flags = 0;
 #if CUDA_VERSION >= 12080
-  // Force mapping on PCIe on systems with both PCI and C2C attachments.
+  // 在同时有 PCI 与 C2C 连接的系统上，强制走 PCIe 映射。
   if (useGdr == ncclTopoGdrModePci) flags = CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE;
 #endif
   return flags;
@@ -335,9 +343,9 @@ static ncclResult_t sendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph
   return ncclSuccess;
 }
 
-// GDRCOPY support: TAIL_ENABLE When enabled locates the RX proxy tail in CUDA memory
+// GDRCOPY 支持：TAIL_ENABLE 启用时，把接收端 代理 的 尾 放在 CUDA 显存中
 NCCL_PARAM(GdrCopySyncEnable, "GDRCOPY_SYNC_ENABLE", 1);
-// GDRCOPY support: FLUSH_ENABLE When enabled uses a PCI-E read to flush GDRDMA buffers
+// GDRCOPY 支持：FLUSH_ENABLE 启用时，用一次 PCI-E 读来刷新 GDRDMA 缓冲区
 NCCL_PARAM(GdrCopyFlushEnable, "GDRCOPY_FLUSH_ENABLE", 0);
 
 /* Setup recv connector */
@@ -352,7 +360,7 @@ static ncclResult_t recvSetup(struct ncclComm* comm, struct ncclTopoGraph* graph
   req.channelId = channelId;
   req.connIndex = connIndex;
 
-  // Use myInfo->rank for peerRank as receiver uses its own netdev
+  // 用 myInfo->rank 作为 peerRank，因为接收方使用自己的网卡
   int proxyRank;
   int64_t netId;
   NCCLCHECK(ncclTopoGetNetDev(comm, myInfo->rank, graph, channelId, /*peerRank=*/myInfo->rank, &netId, &req.netDev,
@@ -361,10 +369,10 @@ static ncclResult_t recvSetup(struct ncclComm* comm, struct ncclTopoGraph* graph
   recv->conn.flags |= req.useGdr ? NCCL_DIRECT_NIC : 0;
   if (!req.useGdr && connIndex == 0) comm->useGdr = 0;
 
-  // Determine whether we need to flush the GDR buffer on recv or not
+  // 判断在接收侧是否需要刷新 GDR 缓冲区
   if (req.useGdr) NCCLCHECK(ncclTopoNeedFlush(comm, netId, req.netDev, myInfo->rank, &req.needFlush));
 
-  // We don't support PXN on receive yet
+  // 目前接收侧尚不支持 PXN
   NCCLCHECK(ncclProxyConnect(comm, TRANSPORT_NET, 0, myInfo->rank, &recv->proxyConn));
 
   req.tpLocalRank = comm->topParentLocalRanks[comm->localRank];
@@ -437,9 +445,9 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
   memcpy(&recvUseGdr, (uint8_t*)connectInfo + sizeof(ncclNetHandle_t), sizeof(int));
   if (!recvUseGdr) send->conn.flags &= ~NCCL_DIRECT_NIC;
 
-  // map isn't allocated thus this op hasn't been submitted yet
+  // 映射尚未分配，说明该操作还未被提交
   if (!map) {
-    // Setup device pointers
+    // 设置设备端指针
     NCCLCHECK(ncclCalloc(&map, 1));
     send->transportResources = map;
     opId = send;
@@ -468,7 +476,7 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
 
   if (map->sameProcess && !ncclCuMemEnable()) {
     if (map->cudaDev != comm->cudaDev) {
-      // Enable P2P access for Legacy IPC
+      // 为传统 CUDA IPC 启用 P2P 访问
       cudaError_t err = cudaDeviceEnablePeerAccess(map->cudaDev, 0);
       if (err == cudaErrorPeerAccessAlreadyEnabled) {
         cudaGetLastError();
@@ -481,7 +489,7 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
     if (!map->sameProcess) NCCLCHECK(netMapShm(comm, &send->proxyConn, map->mems + NCCL_NET_MAP_HOSTMEM));
     if (map->mems[NCCL_NET_MAP_DEVMEM].size) {
       map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr = NULL;
-      // NET transport import: No ownerVA available, mark as Persist (do not release)
+      // 网络 传输的导入：没有 ownerVA，标记为 Persist(不释放)
       NCCLCHECK(ncclP2pImportShareableBuffer(comm, send->proxyConn.rank, map->mems[NCCL_NET_MAP_DEVMEM].size,
                                              &map->mems[NCCL_NET_MAP_DEVMEM].ipcDesc,
                                              (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr, nullptr, ncclMemPersist));
@@ -491,7 +499,7 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
       void** sharedDevMemPtr = comm->proxyState->sharedDevMems + send->proxyConn.tpLocalRank;
       if (*sharedDevMemPtr == NULL) {
         map->mems[NCCL_NET_MAP_SHARED_DEVMEM].gpuPtr = NULL;
-        // NET transport shared import: No ownerVA, mark as Persist (do not release)
+        // 网络 传输的共享导入：没有 ownerVA，标记为 Persist(不释放)
         NCCLCHECK(ncclP2pImportShareableBuffer(comm, send->proxyConn.rank, map->mems[NCCL_NET_MAP_SHARED_DEVMEM].size,
                                                &map->mems[NCCL_NET_MAP_SHARED_DEVMEM].ipcDesc, sharedDevMemPtr, nullptr,
                                                ncclMemPersist));
@@ -500,7 +508,7 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
       map->mems[NCCL_NET_MAP_SHARED_DEVMEM].cpuPtr = NULL;
     }
   }
-  // NCCLCHECK(netDumpMap(map));
+  // NCCLCHECK(netDumpMap(映射));
 
   struct ncclSendMem* sendMem = (struct ncclSendMem*)NCCL_NET_MAP_GET_POINTER(map, gpu, sendMem);
   void* gdcMem = map->mems[NCCL_NET_MAP_GDCMEM].gpuPtr;
@@ -510,7 +518,7 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
   send->conn.tail = &recvMem->tail;
   send->conn.stepSize = comm->buffSizes[NCCL_PROTO_SIMPLE] / NCCL_STEPS;
   send->conn.connFifo = recvMem->connFifo;
-  // Only fuse P2P buffers, continue to allocate dedicated buffers for ring/tree
+  // 只融合 P2P 缓冲区，继续为 环/树 分配专用缓冲区
   for (int i = 0; i < NCCL_STEPS; i++) {
     send->conn.connFifo[i].offset = -1;
     recvMem->connFifo[i].mode = map->shared ? NCCL_MODE_OFFSET : NCCL_MODE_NORMAL;
@@ -537,7 +545,7 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
   return ncclSuccess;
 }
 
-// Forward declare
+// 前向声明
 static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args);
 
 /* Connect to this peer */
@@ -553,7 +561,7 @@ static ncclResult_t recvConnect(struct ncclComm* comm, struct ncclConnect* conne
   if (!map) {
     NCCLCHECK(ncclCalloc(&map, 1));
     recv->transportResources = map;
-    // Use recv connector as unique identifier
+    // 用接收连接器作为唯一标识
     opId = recv;
     INFO(NCCL_PROXY, "recvConnect ncclProxyCallAsync opId=%p &recv->proxyConn=%p connectInfo=%p", opId,
          &recv->proxyConn, connectInfo);
@@ -578,7 +586,7 @@ static ncclResult_t recvConnect(struct ncclComm* comm, struct ncclConnect* conne
     return ret;
   }
   INFO(NCCL_PROXY, "recvConnect ncclPollProxyResponse opId=%p", opId);
-  // NCCLCHECK(netDumpMap(map));
+  // NCCLCHECK(netDumpMap(映射));
 
   struct ncclSendMem* sendMem = (struct ncclSendMem*)NCCL_NET_MAP_GET_POINTER(map, gpu, sendMem);
   recv->conn.head = &sendMem->head;
@@ -588,7 +596,7 @@ static ncclResult_t recvConnect(struct ncclComm* comm, struct ncclConnect* conne
   recv->conn.tail = gdcMem ? (uint64_t*)gdcMem : &recvMem->tail;
   recv->conn.stepSize = comm->buffSizes[NCCL_PROTO_SIMPLE] / NCCL_STEPS;
   recv->conn.connFifo = recvMem->connFifo;
-  // Only fuse P2P buffers, continue to allocate dedicated buffers for ring/tree
+  // 只融合 P2P 缓冲区，继续为 环/树 分配专用缓冲区
   for (int i = 0; i < NCCL_STEPS; i++) {
     recvMem->connFifo[i].mode = map->shared ? NCCL_MODE_OFFSET : NCCL_MODE_NORMAL;
   }
@@ -621,11 +629,11 @@ static ncclResult_t sendFree(struct ncclComm* comm, struct ncclConnector* send) 
     CUDACHECK(cudaGetDevice(&cudaDev));
     if (map->cudaDev != cudaDev && map->mems[NCCL_NET_MAP_DEVMEM].size) {
       if (ncclCuMemEnable()) {
-        // cuMem API support
+        // 是否支持 cuMem(CUDA 虚拟内存管理)API
         NCCLCHECK(ncclP2pFreeShareableBuffer(&map->mems[NCCL_NET_MAP_DEVMEM].ipcDesc));
         NCCLCHECK(ncclCuMemFree(map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr, comm->memManager));
       } else {
-        // Legacy CUDA IPC support
+        // 传统 CUDA IPC 支持
         CUDACHECK(cudaIpcCloseMemHandle(map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr));
       }
     }
@@ -686,7 +694,7 @@ static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int 
 
 static ncclResult_t sharedBuffersGet(struct ncclProxyState* proxyState, int channel, int slot, int* offset,
                                      size_t* size) {
-  // Use different pools for different channels and also separate send/recv.
+  // 为不同 通道 使用不同的池，并把发送/接收分开。
   int globalSlot = (channel * NCCL_SHARED_STEPS) + slot;
   *offset = proxyState->p2pChunkSize * globalSlot;
   if (size) *size = proxyState->p2pChunkSize;
@@ -717,7 +725,7 @@ static ncclResult_t sharedNetBuffersDestroy(struct ncclProxyState* proxyState, i
   for (int r = 0; r < proxyState->tpLocalnRanks; r++) {
     if (proxyState->progressState.localPeers[r]) return ncclSuccess;
   }
-  // All peers are freed, free array
+  // 所有对端都已释放，释放数组
   free(proxyState->progressState.localPeers);
   proxyState->progressState.localPeers = NULL;
   return ncclSuccess;
@@ -765,7 +773,7 @@ static ncclResult_t sendProxySetup(struct ncclProxyConnection* connection, struc
     return ncclInternalError;
   }
 
-  // We don't return any data
+  // 我们不返回任何数据
   if (respSize != 0) return ncclInternalError;
   *done = 1;
   return ncclSuccess;
@@ -813,7 +821,7 @@ static ncclResult_t recvProxySetup(struct ncclProxyConnection* connection, struc
   return ncclSuccess;
 }
 
-// This function embeds plugin-specific rules given the current versions
+// 本函数内嵌了基于当前版本的插件特定规则
 static ncclResult_t ncclNetGetDeviceHandle(ncclNetDeviceType type, int version, bool isRecv,
                                            ncclNetDeviceHandle_t** handle) {
   bool needsDeviceHandle = false;
@@ -824,7 +832,7 @@ static ncclResult_t ncclNetGetDeviceHandle(ncclNetDeviceType type, int version, 
     }
   }
 
-  // Don't re-alloc netDeviceHandles
+  // 不要重新分配 netDeviceHandles
   if (needsDeviceHandle && (*handle == NULL)) {
     NCCLCHECK(ncclCalloc(handle, 1));
     (*handle)->netDeviceType = type;
@@ -848,7 +856,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
   NCCLCHECK(ncclNetGetDeviceHandle(resources->netDeviceType, resources->netDeviceVersion, false /*isRecv*/,
                                    &resources->netDeviceHandle));
   if (resources->shared) {
-    // Shared buffers
+    // 共享缓冲区
     struct ncclProxyProgressState* progressState = &proxyState->progressState;
     if (progressState->localPeers == NULL) {
       NCCLCHECK(ncclCalloc(&progressState->localPeers, proxyState->tpLocalnRanks));
@@ -860,12 +868,12 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
     connection->proxyAppendPtr = localPeers[resources->tpLocalRank]->send.proxyAppend + resources->channelId;
 
     if (resources->maxRecvs > 1 && ncclParamNetSharedComms()) {
-      // Connect or reuse connection for a netdev/remote rank.
+      // 为某个网卡/远端 rank 建立或复用连接。
       if (progressState->netComms[resources->netDev] == NULL) {
         NCCLCHECK(ncclCalloc(progressState->netComms + resources->netDev, proxyState->tpnRanks));
       }
       struct ncclSharedNetComms* comms = progressState->netComms[resources->netDev] + resources->tpRemoteRank;
-      // let only one localrank connect to a tpRemoteRank to avoid duplicate connections
+      // 只允许一个 localRank 连到 tpRemoteRank，以避免重复连接
       if (comms->activeConnect[resources->channelId] == 0) {
         comms->activeConnect[resources->channelId] = (resources->tpLocalRank + 1);
       }
@@ -881,7 +889,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
                                          &resources->netSendComm, &resources->netDeviceHandle);
     }
   } else {
-    // Connect to remote peer
+    // 连接到远端对端
     ret = proxyState->ncclNet->connect(proxyState->netContext, resources->netDev, req->handle, &resources->netSendComm,
                                        &resources->netDeviceHandle);
     connection->proxyAppendPtr = &connection->proxyAppend;
@@ -905,21 +913,21 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
     connection->needsProxyProgress = 1;
   }
 
-  // Create structures
+  // 创建结构体
   struct connectMap* map = &resources->map;
   map->sameProcess = connection->sameProcess;
   map->shared = resources->shared;
   CUDACHECK(cudaGetDevice(&map->cudaDev));
 
   if (resources->shared == 0) {
-    // Only allocate dedicated buffers for ring/tree, not for p2p
+    // 只为 环/树 分配专用缓冲区，不为 P2P 分配
     for (int p = 0; p < NCCL_NUM_PROTOCOLS; p++) {
       NCCL_NET_MAP_ADD_POINTER(map, 0, p != NCCL_PROTO_LL && resources->useGdr ? 1 : 0, proxyState->buffSizes[p],
                                buffs[p]);
       resources->buffSizes[p] = proxyState->buffSizes[p];
     }
   } else {
-    // Get shared buffers
+    // 获取共享缓冲区
     int bank = resources->useGdr ? NCCL_NET_MAP_SHARED_DEVMEM : NCCL_NET_MAP_SHARED_HOSTMEM;
     struct connectMapMem* mapMem = map->mems + bank;
     NCCLCHECK(sharedNetBuffersInit(proxyState, resources->useGdr, resources->tpLocalRank, 0, map->sameProcess,
@@ -977,7 +985,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
   resources->sendMem = (struct ncclSendMem*)NCCL_NET_MAP_GET_POINTER(map, cpu, sendMem);
   resources->recvMem = (struct ncclRecvMem*)NCCL_NET_MAP_GET_POINTER(map, cpu, recvMem);
 
-  // Don't give credits yet in shared mode.
+  // 共享模式下暂时不发放信用(credit)。
   (resources->gdcSync ? *resources->gdcSync : resources->sendMem->head) = (map->shared ? -NCCL_STEPS : 0);
   for (int i = 0; i < NCCL_STEPS; i++) resources->recvMem->connFifo[i].size = -1;
 
@@ -1006,7 +1014,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
                                              &resources->mhandles[p]));
       }
 
-      // Copy the mhandle dptr, if implemented
+      // 拷贝 mhandle 的 dptr(若该操作已实现)
       if (resources->netDeviceHandle && proxyState->ncclNet->getDeviceMr) {
         NCCLCHECK(proxyState->ncclNet->getDeviceMr(resources->netSendComm, resources->mhandles[p],
                                                    &connection->mhandles[p]));
@@ -1014,7 +1022,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
     }
   }
 
-  // NCCLCHECK(netDumpMap(map));
+  // NCCLCHECK(netDumpMap(映射));
   if (respSize != sizeof(struct connectMap)) return ncclInternalError;
   memcpy(respBuff, map, sizeof(struct connectMap));
   return ncclSuccess;
@@ -1032,9 +1040,9 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
 
   NCCLCHECK(ncclNetGetDeviceHandle(resources->netDeviceType, resources->netDeviceVersion, true /*isRecv*/,
                                    &resources->netDeviceHandle));
-  // Finish connection establishment from remote peer
+  // 完成来自远端对端的连接建立
   if (resources->shared) {
-    // Shared buffers
+    // 共享缓冲区
     struct ncclProxyProgressState* progressState = &proxyState->progressState;
     if (progressState->localPeers == NULL) {
       NCCLCHECK(ncclCalloc(&progressState->localPeers, proxyState->tpLocalnRanks));
@@ -1046,16 +1054,16 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
     connection->proxyAppendPtr = localPeers[resources->tpLocalRank]->recv.proxyAppend + resources->channelId;
 
     if (resources->maxRecvs > 1 && ncclParamNetSharedComms()) {
-      // Connect or reuse connection for a netdev/remote rank.
+      // 为某个网卡/远端 rank 建立或复用连接。
       if (progressState->netComms[resources->netDev] == NULL) {
         NCCLCHECK(ncclCalloc(progressState->netComms + resources->netDev, proxyState->tpnRanks));
       }
       struct ncclSharedNetComms* comms = progressState->netComms[resources->netDev] + resources->tpRemoteProxyRank;
-      // reuse handle to for netdev/remote rank to avoid duplicate connections
+      // 复用句柄以避免重复连接
       if (comms->activeAccept[resources->channelId] == 0) {
         comms->activeAccept[resources->channelId] = (resources->tpLocalRank + 1);
       }
-      // try connecting while comm is null
+      // 尝试在 通信域 为 null 时进行连接
       if (comms->recvComm[resources->channelId] == NULL &&
           comms->activeAccept[resources->channelId] == (resources->tpLocalRank + 1)) {
         ret = proxyState->ncclNet->accept(resources->netListenComm, comms->recvComm + resources->channelId,
@@ -1067,7 +1075,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
       ret = proxyState->ncclNet->accept(resources->netListenComm, &resources->netRecvComm, &resources->netDeviceHandle);
     }
   } else {
-    // Connect to remote peer
+    // 连接到远端对端
     ret = proxyState->ncclNet->accept(resources->netListenComm, &resources->netRecvComm, &resources->netDeviceHandle);
     connection->proxyAppendPtr = &connection->proxyAppend;
   }
@@ -1089,20 +1097,20 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
 
   NCCLCHECK(proxyState->ncclNet->closeListen(resources->netListenComm));
 
-  // Create structures
+  // 创建结构体
   struct connectMap* map = &resources->map;
   map->sameProcess = connection->sameProcess;
   if (map->sameProcess == 0) return ncclInternalError; // We don't support remote proxy for recv
   map->shared = resources->shared;
 
   if (resources->shared == 0) {
-    // Only allocate dedicated buffers for ring/tree, not for p2p
+    // 只为 环/树 分配专用缓冲区，不为 P2P 分配
     for (int p = 0; p < NCCL_NUM_PROTOCOLS; p++) {
       NCCL_NET_MAP_ADD_POINTER(map, 0, resources->useGdr ? 1 : 0, proxyState->buffSizes[p], buffs[p]);
       resources->buffSizes[p] = proxyState->buffSizes[p];
     }
   } else {
-    // Get shared buffers
+    // 获取共享缓冲区
     int bank = resources->useGdr ? NCCL_NET_MAP_SHARED_DEVMEM : NCCL_NET_MAP_SHARED_HOSTMEM;
     struct connectMapMem* mapMem = map->mems + bank;
     NCCLCHECK(sharedNetBuffersInit(proxyState, resources->useGdr, resources->tpLocalRank, 1, 1,
@@ -1140,7 +1148,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
     NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 2, &resources->gdrDesc, proxyState->memManager, gdcFlag));
 
     if (ncclParamGdrCopySyncEnable()) {
-      // No flush needed if control flow is mapped on the PCIe instead of C2C
+      // 若控制流映射到 PCIe 而非 C2C，则无需刷新
       if (gdcFlag == GDR_PIN_FLAG_FORCE_PCIE) resources->needFlush = ncclTopoFlushNone;
       resources->gdcSync = cpuPtr;
       struct connectMapMem* gdcMem = map->mems + NCCL_NET_MAP_GDCMEM;
@@ -1179,7 +1187,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
                                              &resources->mhandles[p]));
       }
 
-      // Copy the mhandle dptr
+      // 拷贝 mhandle 的 dptr
       if (resources->netDeviceType != NCCL_NET_DEVICE_HOST && proxyState->ncclNet->getDeviceMr) {
         NCCLCHECK(proxyState->ncclNet->getDeviceMr(resources->netRecvComm, resources->mhandles[p],
                                                    &connection->mhandles[p]));
@@ -1187,7 +1195,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
     }
   }
 
-  // NCCLCHECK(netDumpMap(map));
+  // NCCLCHECK(netDumpMap(映射));
   if (respSize != sizeof(struct connectMap)) return ncclInternalError;
   memcpy(respBuff, map, sizeof(struct connectMap));
   return ncclSuccess;
@@ -1196,7 +1204,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
 static ncclResult_t sendProxyFree(struct ncclProxyConnection* connection, struct ncclProxyState* proxyState) {
   struct sendNetResources* resources = (struct sendNetResources*)(connection->transportResources);
   if (connection->state == connSharedInitialized) {
-    // NVB Preconnect
+    // NVB 预连接
     NCCLCHECK(sharedNetBuffersDestroy(proxyState, connection->tpLocalRank, 0, connection));
     return ncclSuccess;
   }
@@ -1221,7 +1229,7 @@ static ncclResult_t sendProxyFree(struct ncclProxyConnection* connection, struct
     }
     NCCLCHECK(ncclCudaFree(mems[NCCL_NET_MAP_DEVMEM].cpuPtr, proxyState->memManager));
     if (!resources->map.sameProcess || ncclCuMemEnable()) {
-      // cuMem API support
+      // 是否支持 cuMem(CUDA 虚拟内存管理)API
       if (mems[NCCL_NET_MAP_DEVMEM].size) {
         NCCLCHECK(ncclP2pFreeShareableBuffer(&mems[NCCL_NET_MAP_DEVMEM].ipcDesc));
       }
@@ -1251,7 +1259,7 @@ static ncclResult_t sendProxyFree(struct ncclProxyConnection* connection, struct
 static ncclResult_t recvProxyFree(struct ncclProxyConnection* connection, struct ncclProxyState* proxyState) {
   struct recvNetResources* resources = (struct recvNetResources*)(connection->transportResources);
   if (connection->state == connSharedInitialized) {
-    // NVB Preconnect
+    // NVB 预连接
     NCCLCHECK(sharedNetBuffersDestroy(proxyState, connection->tpLocalRank, 1, connection));
     return ncclSuccess;
   }
@@ -1272,7 +1280,7 @@ static ncclResult_t recvProxyFree(struct ncclProxyConnection* connection, struct
     NCCLCHECK(ncclCudaHostFree(mems[NCCL_NET_MAP_HOSTMEM].cpuPtr));
     NCCLCHECK(ncclCudaFree(mems[NCCL_NET_MAP_DEVMEM].cpuPtr, proxyState->memManager));
     if (!resources->map.sameProcess || ncclCuMemEnable()) {
-      // cuMem API support
+      // 是否支持 cuMem(CUDA 虚拟内存管理)API
       if (mems[NCCL_NET_MAP_DEVMEM].size) {
         NCCLCHECK(ncclP2pFreeShareableBuffer(&mems[NCCL_NET_MAP_DEVMEM].ipcDesc));
       }
@@ -1307,9 +1315,9 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
     for (int s = 0; s < args->nsubs; s++) {
       struct ncclProxySubArgs* sub = args->subs + s;
       struct sendNetResources* resources = (struct sendNetResources*)(sub->connection->transportResources);
-      // Round to next multiple of sliceSteps
+      // 向上取整到 sliceSteps 的整数倍
       sub->base = ROUNDUP(resources->step, args->chunkSteps);
-      // Set step base for next op
+      // 为下一个操作设置 步骤 基址
       resources->step = sub->base + sub->nsteps;
       sub->posted = sub->transmitted = sub->done = 0;
       ncclProfilerRecordProxyOpEventState(s, args, ncclProfilerProxyOpInProgress_v4);
@@ -1331,7 +1339,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
       volatile struct ncclConnFifo* connFifo = (volatile struct ncclConnFifo*)resources->recvMem->connFifo;
       int stepSize = resources->buffSizes[p] / NCCL_STEPS;
       char* localBuff = NCCL_NET_MAP_GET_POINTER(&resources->map, cpu, buffs[p]);
-      // Post buffers to the GPU
+      // 把缓冲区提交(后)给 GPU
       if (sub->posted < sub->nsteps && sub->posted < sub->done + maxDepth) {
         ncclProfilerStartSendProxyStepEvent(s, args, postedStepId);
         int buffSlot = (sub->base + sub->posted) % NCCL_STEPS;
@@ -1354,13 +1362,13 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
         args->idle = 0;
         continue;
       }
-      // Check whether we received data from the GPU and send it to the network
+      // 检查是否已从 GPU 收到数据并发送给网络
       if (sub->transmitted < sub->posted && sub->transmitted < sub->done + NCCL_STEPS) {
         int buffSlot = (sub->base + sub->transmitted) % NCCL_STEPS;
         volatile uint64_t* recvTail = &resources->recvMem->tail;
         uint64_t tail = sub->base + sub->transmitted;
         if (connFifo[buffSlot].size != -1 && (*recvTail > tail || p == NCCL_PROTO_LL)) {
-          // We have something to receive, let's check if it's completely ready.
+          // 有数据要接收，检查它是否已完全就绪。
           int size = connFifo[buffSlot].size;
           bool shared = (p == NCCL_PROTO_SIMPLE) && resources->shared;
           char* buff = shared ? localBuff + connFifo[buffSlot].offset : localBuff + buffSlot * stepSize;
@@ -1368,8 +1376,8 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
           if (p == NCCL_PROTO_LL128) {
             ready = resources->useGdr;
             if (!ready) {
-              // When data is in sysmem, we need to wait until all flags are correct since the GPU only
-              // called threadfence()
+              // 当数据在系统内存(sysmem)中时，必须等到所有标志位都正确，因为 GPU 只
+              // 调用了 threadfence()
               uint64_t flag = sub->base + sub->transmitted + 1;
               int nFifoLines = DIVUP(connFifo[buffSlot].size, sizeof(uint64_t) * NCCL_LL128_LINEELEMS);
               volatile uint64_t* lines = (volatile uint64_t*)buff;
@@ -1405,10 +1413,10 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
           }
           if (ready) {
             ncclProfilerRecordProxyStepEventState(s, args, transmittedStepId, ncclProfilerProxyStepSendPeerWait_v4);
-            // Data is ready, try to send.
-            // Coverity complains about the size here as pointing to an out-of-scope temporary.  Which is nonsense,
-            // since size is a plain integer.
-            // coverity[use_invalid:FALSE]
+            // 数据已就绪，尝试发送。
+            // Coverity 抱怨这里的 大小 指向一个超出作用域的临时对象，这毫无道理，
+            // 因为 大小 就是一个普通整数。
+            // coverity[use_invalid:假]
             void* phandle = &sub->pHandles[DIVUP(transmittedStepId, args->sliceSteps) % NCCL_STEPS];
             if (!checkedNetAttr++) setXferNetAttrs(proxyState, args, 1);
             NCCLCHECK(proxyState->ncclNet->isend(resources->netSendComm, buff, size, resources->tpRank,
@@ -1428,14 +1436,14 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
           }
         }
       }
-      // Check whether the network has completed some send operations.
+      // 检查网络是否已完成某些发送操作。
       if (sub->done < sub->transmitted) {
         int done;
         int size;
         int buffSlot = (sub->base + sub->done) % NCCL_STEPS;
         NCCLCHECK(proxyState->ncclNet->test(sub->requests[buffSlot], &done, &size));
         if (done) {
-          // Make sure size is reset to -1 before we update the head.
+          // 在更新 头 之前，确保 大小 已被重置为 -1。
           connFifo[buffSlot].size = -1;
           std::atomic_thread_fence(std::memory_order_seq_cst);
           TRACE(NCCL_NET, "sendProxy [%ld/%d/%d] request %p done", sub->done, buffSlot, sub->nsteps,
@@ -1470,7 +1478,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
 static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
   int checkedNetAttr = 0;
   if (args->state == ncclProxyOpReady) {
-    // Initialize subs and group them by same recvComm.
+    // 初始化各 sub 并按相同的 recvComm 分组。
     void* recvComm;
     int groupSize = 0;
     int maxRecvs = 1;
@@ -1479,7 +1487,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
       if (groupSize == maxRecvs) {
         groupSize = 0;
       } else if (s > 0) {
-        // Find next sub with the same recvComm
+        // 查找下一个具有相同 recvComm 的 sub
         int next;
         for (next = s; next < args->nsubs; next++) {
           struct recvNetResources* nextRes =
@@ -1487,10 +1495,10 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           if (nextRes->netRecvComm == recvComm) break;
         }
         if (next == args->nsubs) {
-          // Not found
+          // 未找到
           groupSize = 0;
         } else if (s != next) {
-          // We found a sub later with the same recvComm ; swap subs
+          // 我们在后面找到了具有相同 recvComm 的 sub；交换它们
           struct ncclProxySubArgs temp;
           memcpy(&temp, sub, sizeof(struct ncclProxySubArgs));
           memcpy(sub, args->subs + next, sizeof(struct ncclProxySubArgs));
@@ -1501,9 +1509,9 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
       struct recvNetResources* resources = (struct recvNetResources*)(sub->connection->transportResources);
       maxRecvs = resources->maxRecvs;
       recvComm = resources->netRecvComm;
-      // Round to next multiple of sliceSteps
+      // 向上取整到 sliceSteps 的整数倍
       sub->base = ROUNDUP(resources->step, args->chunkSteps);
-      // Set step base for next op
+      // 为下一个操作设置 步骤 基址
       resources->step = sub->base + sub->nsteps;
       sub->posted = sub->received = sub->transmitted = sub->done = 0;
       sub->regBufferReady = 0;
@@ -1542,7 +1550,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           if (p == NCCL_PROTO_SIMPLE) {
             if (resources->shared) {
               if (sub->reg) {
-                // Wait until CUDA kernel has started before we access the user buffer directly.
+                // 在直接访问用户缓冲区之前，等待 CUDA 内核 已启动。
                 if (!sub->regBufferReady && connFifo[sub->base % NCCL_STEPS].size == -1) continue;
                 sub->regBufferReady = 1;
                 ptrs[subCount] = sub->recvbuff + sub->posted * NCCL_MAX_NET_SIZE;
@@ -1571,7 +1579,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
             ptrs[subCount] = localBuff + buffSlot * stepSize;
             sizes[subCount] = stepSize * args->sliceSteps;
           }
-          // if (sub->nbytes < sizes[subCount]) sizes[subCount] = sub->nbytes;
+          // 若 (sub->nbytes < sizes[subCount]) sizes[subCount] = sub->nbytes;
           tags[subCount] = resources->tpRemoteRank;
           mhandles[subCount] = sub->recvMhandle;
           phandles[subCount] = &sub->pHandles[DIVUP(postedStepId, args->sliceSteps) % NCCL_STEPS];
@@ -1639,20 +1647,20 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           }
           subGroup->requests[step % NCCL_STEPS] = NULL;
           if (totalSize > 0 && p == NCCL_PROTO_SIMPLE && needFlush) {
-            // GDRCOPY support
+            // GDRCOPY 支持
             struct recvNetResources* resources = (struct recvNetResources*)(subGroup->connection->transportResources);
             if (resources->gdcFlush) {
 #if defined(__x86_64__)
-              // Order CQE-poll loads ahead of the flush load: prevents the WC
-              // read from being speculatively dispatched onto PCIe before the
-              // NIC's posted writes have entered the fabric.
+              // 让 CQE 轮询的 加载 排在 刷写 的 加载 之前：防止 WC(写合并)
+              // 读被投机地派发到 PCIe 上，早于
+              // 网卡的 posted 写进入 fabric(互联网络)。
               asm volatile("mfence" ::: "memory");
-              // Force a PCIe read from GPU memory: stalls the CPU until all prior
-              // PCIe posted writes (including NIC DMA) to this endpoint are committed.
+              // 强制从 GPU 显存做一次 PCIe 读：让 CPU 停顿，直到所有先前的
+              // PCIe posted 写(含网卡 DMA)都提交到该端点。
               asm volatile("mov (%0), %%eax" ::"l"(resources->gdcFlush) : "%eax", "memory");
 #else
-              // Portable equivalent. seq_cst fence keeps the load inside
-              // ncclGdrCudaRead from being reordered ahead of the CQE poll.
+              // 可移植的等价写法。seq_cst 内存栅栏阻止该 加载 被重排到
+              // ncclGdrCudaRead 内部、跑到 CQE 轮询之前。
               std::atomic_thread_fence(std::memory_order_seq_cst);
               uint64_t dummy;
               NCCLCHECK(ncclGdrCudaRead(resources->gdrDesc, &dummy, resources->gdcFlush, sizeof(dummy)));
@@ -1730,10 +1738,10 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           uint64_t done = *sendHead;
           while (
             done > sub->base + sub->done &&
-            // LL and LL128 can acknowledge 0-bytes send before they even happen. Don't go past what we transmitted.
+            // LL 与 LL128 可以在发送实际发生前就确认 0 字节的发送。不要越过我们实际传输的量。
             sub->transmitted > sub->done) {
             if (subGroup->recvRequestsCache[sub->done % NCCL_STEPS]) {
-              // the multirecv requests are only cached in the first sub.
+              // multirecv 请求只缓存在第一个 sub 中。
               if (proxyState->ncclNet->irecvConsumed) {
                 NCCLCHECK(proxyState->ncclNet->irecvConsumed(resources->netRecvComm, subGroup->recvRequestsSubCount,
                                                              subGroup->recvRequestsCache[sub->done % NCCL_STEPS]));
@@ -1924,7 +1932,7 @@ static ncclResult_t sendProxyRegBuffer(struct ncclProxyConnection* connection, s
   struct netRegInfo* info = (struct netRegInfo*)reqBuff;
   int numSegments = info->numSegments;
   struct sendNetResources* resources = (struct sendNetResources*)(connection->transportResources);
-  // The value of ret is ignored
+  // ret 的返回值被忽略
   ncclResult_t ret;
   bool needReg = true;
 
@@ -1950,7 +1958,7 @@ static ncclResult_t sendProxyRegBuffer(struct ncclProxyConnection* connection, s
 peermem:
 #endif
   if (needReg) {
-    // Non-dmabuf regMr does not support multiple physical segments
+    // 非 dmabuf 的 regMr 不支持多个物理段
     if (numSegments > 1) {
       INFO(NCCL_NET | NCCL_REG,
            "Buffer %p (size %zu, numSegments %d) not registered as DMABuf is not available. Non-DMABuf registration "
@@ -1985,7 +1993,7 @@ static ncclResult_t recvProxyRegBuffer(struct ncclProxyConnection* connection, s
   struct netRegInfo* info = (struct netRegInfo*)reqBuff;
   int numSegments = info->numSegments;
   struct recvNetResources* resources = (struct recvNetResources*)(connection->transportResources);
-  // The value of ret is ignored
+  // ret 的返回值被忽略
   ncclResult_t ret;
   bool needReg = true;
 
@@ -2011,7 +2019,7 @@ static ncclResult_t recvProxyRegBuffer(struct ncclProxyConnection* connection, s
 peermem:
 #endif
   if (needReg) {
-    // Non-dmabuf regMr does not support multiple physical segments
+    // 非 dmabuf 的 regMr 不支持多个物理段
     if (numSegments > 1) {
       INFO(NCCL_NET | NCCL_REG,
            "Buffer %p (size %zu, numSegments %d) not registered as DMABuf is not available. Non-DMABuf registration "

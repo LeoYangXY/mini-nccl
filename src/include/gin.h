@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/gin.h — [第三方] GIN(GPU 内部接口库)声明
+ * ----------------------------------------------------------------------------
+ * GIN 是源自 Meta 的 GPU 内部接口库（BSD-3），用于探测 GPU 内部拓扑/属性。NCCL
+ * 通过它获取底层硬件信息。第三方代码，非 mini-nccl 自有逻辑，不建议改动。
+ */
+
 #ifndef NCCL_INT_GIN_H_
 #define NCCL_INT_GIN_H_
 

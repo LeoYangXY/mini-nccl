@@ -1,3 +1,10 @@
+/*
+ * src/include/os/linux.h — Linux 平台 OS 抽象层头
+ * ----------------------------------------------------------------------------
+ * 集中包含 Linux 下所需的系统头（socket、pthread、mmap、dlfcn 等），
+ * 并定义跨平台代码在 Linux 上依赖的宏与类型别名。
+ */
+
 #ifndef NCCL_OS_LINUX_H_
 #define NCCL_OS_LINUX_H_
 

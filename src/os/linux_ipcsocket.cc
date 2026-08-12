@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/os/linux_ipcsocket.cc — IPC socket 的 Linux 实现
+ * ----------------------------------------------------------------------------
+ * 实现基于 socket 的 IPC 通道在 Linux 上的具体版本：用于同机/跨进程间的控制消息
+ * 传递（如 bootstrap 引导、proxy 与主线程握手）。
+ */
+
 #include "ipcsocket.h"
 #include "utils.h"
 #include "os.h"
@@ -44,7 +51,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket* handle, int rank, uint64_t hash, v
   memset(&cliaddr, 0, sizeof(cliaddr));
   cliaddr.sun_family = AF_UNIX;
 
-  // Create unique name for the socket.
+  // 创建 unique name 为了 套接字.
   int len = snprintf(temp, NCCL_IPC_SOCKNAME_LEN, NCCL_IPC_SOCKNAME_STR, rank, hash);
   if (len > (int)(sizeof(cliaddr.sun_path) - 1)) {
     WARN("UDS: Cannot bind provided name to socket. Name too large");
@@ -54,7 +61,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket* handle, int rank, uint64_t hash, v
 
   int useAbstractSocket = ncclParamIpcUseAbstractSocket();
   if (!useAbstractSocket) {
-    // For regular Unix domain sockets, unlink any existing socket file
+    // For regular Unix 域 套接字, unlink 任意 existing 套接字 文件
     (void)unlink(temp);
   }
 
@@ -74,7 +81,7 @@ ncclResult_t ncclIpcSocketInit(ncclIpcSocket* handle, int rank, uint64_t hash, v
   strcpy(handle->socketName, temp);
 
   handle->abortFlag = abortFlag;
-  // Mark socket as non-blocking
+  // Mark 套接字 as non-blocking
   if (handle->abortFlag) {
     int flags;
     SYSCHECK(flags = fcntl(fd, F_GETFL), "fcntl");
@@ -113,7 +120,7 @@ ncclResult_t ncclIpcSocketRecvMsg(ncclIpcSocket* handle, void* hdr, int hdrLen, 
   struct msghdr msg = {0, 0, 0, 0, 0, 0, 0};
   struct iovec iov[1];
 
-  // Union to guarantee alignment requirements for control array
+  // 联合体 to 保证 对齐 要求 for control 数组
   union {
     struct cmsghdr cm;
     char control[CMSG_SPACE(sizeof(int))];
@@ -183,7 +190,7 @@ ncclResult_t ncclIpcSocketSendMsg(ncclIpcSocket* handle, void* hdr, int hdrLen, 
   char dummy_buffer[1] = {'\0'};
   struct sockaddr_un cliaddr;
 
-  // Construct client address to send this shareable handle to
+  // Construct client 地址 to 发送 此 shareable 句柄 to
   memset(&cliaddr, 0, sizeof(cliaddr));
   cliaddr.sun_family = AF_UNIX;
 

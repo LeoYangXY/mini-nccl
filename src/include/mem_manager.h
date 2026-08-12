@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/mem_manager.h — 内存管理器(mem manager)结构定义
+ * ----------------------------------------------------------------------------
+ * 定义 NCCL 的“用户注册内存管理”结构：把用户传入的 host/device buffer 登记为可
+ * 被 transport 直接访问的段，管理其 IPC 句柄、引用计数与生命周期。
+ */
+
 #ifndef NCCL_MEM_MANAGER_H_
 #define NCCL_MEM_MANAGER_H_
 
@@ -19,7 +26,7 @@ extern "C" {
 #endif
 
 #if CUDART_VERSION < 12030
-// MNNVL: FABRIC handle support lifted from CUDA 12.3
+// MNNVL: FABRIC 句柄 支持 lifted from CUDA 12.3
 #define CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED ((CUdevice_attribute)128)
 #define CU_MEM_HANDLE_TYPE_FABRIC ((CUmemAllocationHandleType)0x8ULL)
 #ifndef CU_IPC_HANDLE_SIZE
@@ -33,47 +40,47 @@ typedef CUmemFabricHandle_v1 CUmemFabricHandle;
 
 struct ncclComm;
 
-// Initial capacity for exported peers array
+// 初始的 capacity for exported 对等端 数组
 #define NCCL_MEM_EXPORT_PEERS_INIT 8
 
-// Memory Type for NCCL allocations
+// 内存 类型 for NCCL 分配
 typedef enum {
   ncclMemPersist = 0,  // Persistent memory - track stats only, never release/offload
   ncclMemScratch = 1,  // Free without saving
   ncclMemOffload = 2   // Copy to CPU before free, restore on resume
 } ncclMemType_t;
 
-// Memory entry state
+// 内存 entry 状态
 typedef enum {
   ncclDynMemStateActive = 0,  // Memory is allocated and usable
   ncclDynMemStateReleased = 1   // Memory has been released
 } ncclDynMemState_t;
 
-// Local owned memory descriptor
+// 本地 owned 内存 descriptor
 typedef struct ncclDynMemLocalDesc {
-  // Shareable handle for P2P exports
-  // TODO: Remove the 'fd' field - POSIX FD handles are converted on-demand via proxy
-  // (ncclProxyClientGetFdBlocking), so we no longer export them upfront. Only FABRIC
-  // handles need upfront export since they can be shared directly via messaging.
+  // Shareable 句柄 for P2P exports
+  // 待办: Remove the 'fd' 字段 - POSIX FD 句柄 are converted on-demand via 代理
+  // (ncclProxyClientGetFdBlocking), 所以 we 不再 export them upfront. 仅 FABRIC
+  // 句柄 需要 upfront export 自 they 可以 shared directly via messaging.
   union {
     int fd;            // For POSIX_FILE_DESCRIPTOR (unused)
     CUmemFabricHandle fabricHandle;  // For FABRIC
   } shareableHandle;
   bool shareableHandleValid;
-  // Peer tracking for P2P exports
+  // 对等端 tracking for P2P exports
   int numExportedPeers;
   int exportedPeersCapacity;
   int* exportedPeerRanks;
 } ncclDynMemLocalDesc;
 
-// Imported from peer memory descriptor
+// Imported from 对等端 内存 descriptor
 typedef struct ncclDynMemImportDesc {
   int ownerRank;     // Rank that owns the original buffer
   int ownerDev;      // CUDA device of the owner
   void* ownerPtr;      // Owner's virtual address
 } ncclDynMemImportDesc;
 
-// Individual tracked memory entry (only track scratch and offload allocations)
+// Individual tracked 内存 entry (仅 track scratch 并且 offload 分配)
 typedef struct ncclDynMemEntry {
   void* ptr;           // GPU virtual address
   size_t size;          // Allocation size
@@ -83,21 +90,21 @@ typedef struct ncclDynMemEntry {
   ncclDynMemState_t state;
   int cudaDev;
 
-  // CPU backup for OFFLOAD type memory
+  // CPU backup for OFFLOAD 类型 内存
   void* cpuBackup;     // Host memory for offloaded data
 
-  // Ownership type and type-specific data
+  // Ownership 类型 并且 类型-特定的 数据
   bool isImportedFromPeer;  // true if this is a peer-imported buffer
   union {
     ncclDynMemLocalDesc local;
     ncclDynMemImportDesc imported;
   } desc;
 
-  // Linked list pointer
+  // 已链接 列表 指针
   struct ncclDynMemEntry* next;
 } ncclDynMemEntry;
 
-// P2P Handle Exchange Structure
+// P2P 句柄 Exchange 结构
 typedef struct ncclDynMemP2pHandleInfo {
   void* ptr;
   int ownerRank;
@@ -110,7 +117,7 @@ typedef struct ncclDynMemP2pHandleInfo {
   };
 } ncclDynMemP2pHandleInfo;
 
-// Memory manager attached to ncclComm
+// 内存 管理器 attached to ncclComm
 typedef struct ncclMemManager {
   ncclDynMemEntry* entries;  // Linked list of tracked allocations, only track scratch and offload allocations
   int numEntries;
@@ -135,25 +142,25 @@ struct ncclMemManagerTask {
   struct ncclComm* comm;
 };
 
-// Initialize memory manager
+// 初始化 内存 管理器
 ncclResult_t ncclMemManagerInit(struct ncclComm* comm);
 
-// Destroy memory manager and free all resources
+// 销毁 内存 管理器 并且 释放 所有 resources
 ncclResult_t ncclMemManagerDestroy(struct ncclComm* comm);
 
-// Track a new allocation
+// Track a new 分配
 ncclResult_t ncclMemTrack(struct ncclMemManager* manager, void* ptr, size_t size, CUmemGenericAllocationHandle handle,
                           CUmemAllocationHandleType handleType, ncclMemType_t memType);
 
-// Track imported allocation from peer
+// Track imported 分配 from 对等端
 ncclResult_t ncclMemTrackImportFromPeer(struct ncclMemManager* manager, void* ptr, size_t size,
                                         CUmemGenericAllocationHandle handle, CUmemAllocationHandleType handleType,
                                         ncclMemType_t memType, int ownerRank, int ownerDev, void* ownerPtr);
 
-// Untrack allocation
+// Untrack 分配
 ncclResult_t ncclMemUntrack(struct ncclMemManager* manager, void* ptr, size_t size);
 
-// Add peer info for buffers in the linked list entries (only for dynamic memory: scratch/offload)
+// Add 对等端 信息 for 缓冲区 在 ... 中 已链接 列表 entries (仅 for dynamic 内存: scratch/offload)
 ncclResult_t ncclDynMemMarkExportToPeer(struct ncclMemManager* manager, void* ptr, int peerRank);
 
 ncclResult_t ncclCommMemSuspend(struct ncclComm* comm);

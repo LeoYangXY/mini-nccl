@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/comm__types.h — communicator 类型定义
+ * ----------------------------------------------------------------------------
+ * 定义 nccl_device 框架下 communicator 的设备侧类型（ncclDeviceComm 等），被
+ * comm__funcs.h 引用。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_COMM__TYPES_H_
 #define _NCCL_DEVICE_COMM__TYPES_H_
 #include "../comm.h"
@@ -25,7 +32,7 @@ struct ncclDevCommWindowTable {
 typedef struct ncclDevCommWindowTable* ncclDevCommWindowTable_t;
 
 struct ncclDevComm {
-  // Internal NCCL structure versioning metadata.  Do not modify.
+  // 内部 NCCL 结构 versioning metadata.  执行 不 modify.
   unsigned int magic;
   unsigned int version;
 
@@ -56,7 +63,7 @@ struct ncclDevComm {
   bool ginStrongLegacySignals;
   bool ginContextsRailed;
 
-  // FT related
+  // 容错相关
   uint32_t* abortFlag;
 
   ncclLsaBarrierHandle_t hybridLsaBarrier;

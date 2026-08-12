@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/device/reduce_kernel.h — device 端规约(reduce)算子模板
+ * ----------------------------------------------------------------------------
+ * 定义各数据类型(int/float/half/bf16 等)与规约 op(sum/prod/min/max)的 device 端
+ * 实现，以及 PreOp/PostOp 等包装。被 Primitives 与算法 kernel 用于原地/跨卡规约。
+ */
+
 #ifndef NCCL_REDUCE_KERNEL_H_
 #define NCCL_REDUCE_KERNEL_H_
 
@@ -33,10 +40,10 @@ template <>
 struct IsFloatingPoint<double> : std::true_type {};
 
 ////////////////////////////////////////////////////////////////////////////////
-// The reduction function classes. All classes must:
-//  1. Expose the `EltType` typedef.
-//  2. Have constructor taking no arguments (default constructible).
-//  3. Have constructor taking `uint64_t opArg`.
+// 规约算子(函数)类。所有类都必须满足：
+//  1. 暴露 `EltType` 类型别名。
+//  2. Have constructor 正在取 无 参数 (默认 constructible).
+//  3. Have constructor 正在取 `uint64_t opArg`.
 
 template <typename T>
 struct FuncCopy {
@@ -71,7 +78,7 @@ template <typename T>
 struct FuncSumPostDiv;
 
 ////////////////////////////////////////////////////////////////////////////////
-// Trait class for handling the reduction argument.
+// 处理规约参数(opArg)的 trait 类。
 
 template <typename Fn>
 struct RedOpArg { // default case: no argument
@@ -96,12 +103,12 @@ struct RedOpArg<FuncMinMax<T>> {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// Trait classes for reduction functions. Given a function (FuncSum, etc.)
-// and a number of elements in a pack, will reduce, preOp, or postOp a pack
-// of elements. These classes are intended to be specialized for specific
-// combinations of reduction function and pack size.
+// 规约函数的 trait 类。给定某个函数(如 FuncSum 等)
+// 与 打包 内的元素个数，它们会对一个 打包
+// 执行 规约、preOp 或 postOp。这些类应当针对特定的
+// “规约函数 × 打包 大小”组合进行特化。
 
-// clang-format off: commented struct body will result in semicolon be put on a newline
+// 关闭 clang-格式：结构体体的注释会导致分号被放到新行
 template<typename A, typename B, int EltPerPackA>
 struct Apply_Cast/*{
   static BytePack<EltPerPackA*sizeof(B)/sizeof(A)> cast(BytePack<EltPerPackA*sizeof(A)> a);
@@ -125,17 +132,17 @@ struct Apply_PostOp/*{
 }*/;
 template<typename Fn>
 struct LoadMultimem_BigPackSize/*{
-  // If non-zero, then this and sizeof(T) are valid pack sizes for LoadMultimem,
-  // otherwise there are no valid pack sizes for LoadMultimem.
+  // 若非零，则它本身与 sizeof(T) 都是 LoadMultimem 合法的 打包 大小；
+  // 否则 LoadMultimem 没有合法的 打包 大小。
   static constexpr int BigPackSize = 0;
 }*/;
 template<typename Fn, int BytePerPack>
 struct Apply_LoadMultimem/*{
   static BytePack<BytePerPack> load(Fn fn, uintptr_t addr);
 }*/;
-// clang-format on
+// clang-格式 on
 
-// Helpers for dealing with BytePack<0>'s
+// 处理 BytePack<0> 的辅助函数
 template <typename A, typename B, int EltPerPack>
 struct Apply_Cast_MaybeEmpty : Apply_Cast<A, B, EltPerPack> {};
 template <typename A, typename B>
@@ -184,10 +191,10 @@ struct Apply_LoadMultimem_MaybeEmpty<Fn, 0> {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// Public API for calling the trait classes. These take the data elements as a
-// pack of any type, which could be a BytePack<?> or any integral type (uint64_t,
-// uint32_t, etc.), and will return a new pack where each element has been
-// transformed appropriately.
+// 调用 trait 类的公开 API。它们把数据元素以
+// 任意类型的 打包 传入(可以是 BytePack<?> 或任意整数类型，如 uint64_t、
+// uint32_t 等)，并返回一个新的 打包，其中每个元素都已被
+// 做了相应变换。
 
 template <typename A, typename B, typename PackA>
 __device__ __forceinline__ BytePack<BytePackOf<PackA>::Size * sizeof(B) / sizeof(A)> applyCast(PackA a) {
@@ -218,7 +225,7 @@ __device__ __forceinline__ BytePack<BytePerPack> applyLoadMultimem(Fn fn, uintpt
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Apply_Cast
+// Apply_Cast(类型转换算子)
 
 template <typename A, typename B, int EltPerPack>
 struct Apply_Cast {
@@ -302,9 +309,9 @@ EASY_CAST(__nv_fp8_e4m3, float, 4, __nv_fp8x4_e4m3, float4)
 #undef EASY_CAST
 
 ////////////////////////////////////////////////////////////////////////////////
-// Apply_Reduce
+// Apply_Reduce(规约算子)
 
-// Nonsensical base case
+// 无意义的基类情形(不应被实例化)
 template <typename Fn>
 struct Apply_Reduce<Fn, /*EltPerPack=*/0> {
   __device__ __forceinline__ static BytePack<0> reduce(Fn fn, BytePack<0> a, BytePack<0> b) {
@@ -312,10 +319,10 @@ struct Apply_Reduce<Fn, /*EltPerPack=*/0> {
   }
 };
 
-// General recursive definition (EltPerPack > 1). This is how we iterate over
-// all elements in a pack of any size, by breaking it into halves. Eventually
-// we'll hit a base case (a more specific template specialization which takes
-// precedence).
+// 通用递归定义(EltPerPack > 1)。这就是我们遍历
+// 任意大小 打包 中全部元素的方式：不断折半。最终
+// 会命中基例(一个更具体的、优先级更高的模板特化)，
+// 
 template <typename Fn, int EltPerPack>
 struct Apply_Reduce {
   template <int Size>
@@ -326,7 +333,7 @@ struct Apply_Reduce {
   }
 };
 
-// Base case definitions (EltPerPack == 1)
+// 基例定义(EltPerPack == 1)
 template <typename T>
 struct Apply_Reduce<FuncCopy<T>, /*EltPerPack=*/1> {
   __device__ __forceinline__ static BytePack<sizeof(T)> reduce(FuncCopy<T> fn, BytePack<sizeof(T)> a,
@@ -356,14 +363,14 @@ struct Apply_Reduce<FuncMinMax<T>, /*EltPerPack=*/1> {
   }
 };
 
-// Optimizations for specfic types and element count combinations:
+// 针对特定类型与元素数量组合的优化：
 template <>
 struct Apply_Reduce<FuncSum<uint8_t>, /*EltPerPack=*/4> {
   __device__ __forceinline__ static BytePack<4> reduce(FuncSum<uint8_t> fn, BytePack<4> a, BytePack<4> b) {
     constexpr uint32_t even = 0x00ff00ffu;
     uint32_t x = (a.native & even) + (b.native & even);
     uint32_t y = (a.native & ~even) + (b.native & ~even);
-    // a.native = (x & even) | (y & ~even);
+    // a.原生 = (x & 甚至) | (y & ~甚至);
     a.native = __byte_perm(x, y, 0x7250);
     return a;
   }
@@ -374,20 +381,20 @@ struct Apply_Reduce<FuncMinMax<uint8_t>, /*EltPerPack=*/4> {
   __device__ static BytePack<4> reduce(FuncMinMax<uint8_t> fn, BytePack<4> a, BytePack<4> b) {
     constexpr uint32_t ones = 0x01010101u;
     constexpr uint32_t even = 0x00ff00ffu; // even byte mask
-    // Replicate xormask to all bytes
+    // 把 xormask 复制到所有字节
     uint32_t x = fn.xormask.native * ones;
-    // Transform inputs by xormask
+    // 用 xormask 变换输入
     uint32_t ax = a.native ^ x;
     uint32_t bx = b.native ^ x;
-    // Use 9-bit arithmetic to compute d=a-b
+    // 用 9 位算术计算 d=a-b
     uint32_t d0 = (ax & even) + (~bx & even) + ones;
     uint32_t d1 = (ax >> 8 & even) + (~(bx >> 8) & even) + ones;
-    // Move sign bit of each 9-bit delta into the least bit of origin byte
-    // uint32_t s = (d0>>8 & ones & even) | (d1 & ones & ~even);
+    // 把每个 9 位差值的符号位移到原字节的最低位
+    // uint32_t s = (d0>>8 & ones & 甚至) | (d1 & ones & ~甚至);
     uint32_t s = __byte_perm(d0, d1, 0x7351) & ones;
-    // Broadcast least bit across whole byte
+    // 把最低位广播到整个字节
     s *= 0xffu;
-    // Compose result by selecting bytes via: signbit(a-b)==1 ? a : b
+    // 按 signbit(a-b)==1 ? a : b 选择字节，组合出结果
     a.native = (a.native & s) | (b.native & ~s);
     return a;
   }
@@ -424,8 +431,8 @@ SPECIALIZE_REDUCE(FuncMinMax, double, 1, double, fn.isMinNotMax ? fmin(x, y) : f
 
 #if __CUDA_ARCH__ >= 530 && __CUDA_ARCH__ != 610
 SPECIALIZE_REDUCE(FuncSum, half, 1, half, __hadd(x, y))
-// Coverity recommends the use of std::move here but, given that half is a scalar,
-// a plain copy will be just as efficient.
+// Coverity recommends the 使用 of std::move here 但, 给定的 那个 half is a 标量,
+// a plain 拷贝 将会 仅 as efficient.
 // coverity[copy_constructor_call]
 SPECIALIZE_REDUCE(FuncSum, half, 2, half2, __hadd2(x, y))
 SPECIALIZE_REDUCE(FuncProd, half, 1, half, __hmul(x, y))
@@ -492,25 +499,25 @@ SPECIALIZE_REDUCE(FuncMinMax, __nv_fp8_e5m2, 2, __nv_fp8x2_e5m2,
 #undef SPECIALIZE_REDUCE
 
 ////////////////////////////////////////////////////////////////////////////////
-// Apply_PreOp
+// Apply_PreOp(规约前的预处理算子)
 
-// General recursive definition (EltPerPack > 1)
+// 通用递归定义(EltPerPack > 1)
 template <typename Fn, int EltPerPack>
 struct Apply_PreOp {
   static constexpr bool IsIdentity = Apply_PreOp<Fn, EltPerPack / 2>::IsIdentity;
   template <int Size>
   __device__ __forceinline__ static BytePack<Size> preOp(Fn fn, BytePack<Size> a) {
     if NCCL_IF_CONSTEXPR (!IsIdentity) {
-      // The `if (!IsIdentity)` condition is not strictly necessary, but it may help
-      // compiler in that it won't have to tear a register apart for no reason
-      // just to put it back together again.
+      // 若 (!IsIdentity) 这个条件并非严格必需，但它有助于
+      // 编译器：避免它无缘无故地把一个寄存器拆开又重组。
+      // 
       a.half[0] = Apply_PreOp<Fn, EltPerPack / 2>::preOp(fn, a.half[0]);
       a.half[1] = Apply_PreOp<Fn, EltPerPack / 2>::preOp(fn, a.half[1]);
     }
     return a;
   }
 };
-// Base case definition (EltPerPack == 1), by default is identity function.
+// 基例定义(EltPerPack == 1)，默认是恒等函数。
 template <typename Fn>
 struct Apply_PreOp<Fn, /*EltPerPack=*/1> {
   static constexpr bool IsIdentity = true;
@@ -519,7 +526,7 @@ struct Apply_PreOp<Fn, /*EltPerPack=*/1> {
     return a;
   }
 };
-// Base case definition (EltPerPack == 0), is nonsense!
+// 基例定义(EltPerPack == 0)，无意义！
 template <typename Fn>
 struct Apply_PreOp<Fn, /*EltPerPack=*/0> {
   static constexpr bool IsIdentity = true;
@@ -529,25 +536,25 @@ struct Apply_PreOp<Fn, /*EltPerPack=*/0> {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// Apply_PostOp
+// Apply_PostOp(规约后的后处理算子)
 
-// General recursive definition (EltPerPack > 1)
+// 通用递归定义(EltPerPack > 1)
 template <typename Fn, int EltPerPack>
 struct Apply_PostOp {
   static constexpr bool IsIdentity = Apply_PostOp<Fn, EltPerPack / 2>::IsIdentity;
   template <int Size>
   __device__ __forceinline__ static BytePack<Size> postOp(Fn fn, BytePack<Size> a) {
     if NCCL_IF_CONSTEXPR (!IsIdentity) {
-      // The `if (!IsIdentity)` condition is not strictly necessary, but it may help
-      // compiler in that it won't have to tear a register apart for no reason
-      // just to put it back together again.
+      // 若 (!IsIdentity) 这个条件并非严格必需，但它有助于
+      // 编译器：避免它无缘无故地把一个寄存器拆开又重组。
+      // 
       a.half[0] = Apply_PostOp<Fn, EltPerPack / 2>::postOp(fn, a.half[0]);
       a.half[1] = Apply_PostOp<Fn, EltPerPack / 2>::postOp(fn, a.half[1]);
     }
     return a;
   }
 };
-// Base case definition (EltPerPack == 1), by default is identity function.
+// 基例定义(EltPerPack == 1)，默认是恒等函数。
 template <typename Fn>
 struct Apply_PostOp<Fn, /*EltPerPack=*/1> {
   static constexpr bool IsIdentity = true;
@@ -556,7 +563,7 @@ struct Apply_PostOp<Fn, /*EltPerPack=*/1> {
     return a;
   }
 };
-// Base case definition (EltPerPack == 0), is nonsense!
+// 基例定义(EltPerPack == 0)，无意义！
 template <typename Fn>
 struct Apply_PostOp<Fn, /*EltPerPack=*/0> {
   static constexpr bool IsIdentity = true;
@@ -566,7 +573,7 @@ struct Apply_PostOp<Fn, /*EltPerPack=*/0> {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// FuncPreMulSum
+// FuncPreMulSum(先乘标量再求和，用于 Avg 等)
 
 template <typename T>
 struct RedOpArg<FuncPreMulSum<T>> {
@@ -582,7 +589,7 @@ struct RedOpArg<FuncPreMulSum<T>> {
   }
 };
 
-// General definition for all integral types, float, and double.
+// 对所有整数类型、浮点 与 双精度 的通用定义。
 template <typename T>
 struct FuncPreMulSum {
   using EltType = T;
@@ -598,8 +605,8 @@ struct FuncPreMulSum {
 };
 
 template <>
-// Coverity recommends the users of this type to use std::move in certain cases but,
-// given that half is a scalar, a plain copy will be just as efficient.
+// Coverity recommends 用户s of 此 类型 to 使用 std::move 入 certa以防s 但,
+// 给定的 那个 half is a 标量, a plain 拷贝 将会 仅 as efficient.
 // coverity[moveable_type]
 struct FuncPreMulSum<half> {
   using EltType = half;
@@ -629,8 +636,8 @@ struct FuncPreMulSum<half> {
 
 #if defined(__CUDA_BF16_TYPES_EXIST__)
 template <>
-// Coverity recommends the users of this type to use std::move in certain cases but,
-// given that __nv_bfloat16 is a scalar, a plain copy will be just as efficient.
+// Coverity recommends 用户s of 此 类型 to 使用 std::move 入 certa以防s 但,
+// 给定的 那个 __nv_bfloat16 is a 标量, a plain 拷贝 将会 仅 as efficient.
 // coverity[moveable_type]
 struct FuncPreMulSum<__nv_bfloat16> {
   using EltType = __nv_bfloat16;
@@ -697,12 +704,12 @@ template <typename T, int EltPerPack>
 struct Apply_Reduce<FuncPreMulSum<T>, EltPerPack> {
   __device__ __forceinline__ static BytePack<EltPerPack * sizeof(T)> reduce(
     FuncPreMulSum<T> fn, BytePack<EltPerPack * sizeof(T)> a, BytePack<EltPerPack * sizeof(T)> b) {
-    // FuncPreMulSum reduce dispatches to FuncSum.
+    // FuncPreMulSum 的 规约 分派给 FuncSum(求和)。
     return Apply_Reduce<FuncSum<T>, EltPerPack>::reduce(FuncSum<T>(), a, b);
   }
 };
 
-// PreOp of FuncPreMulSum for integral types, float, and double.
+// FuncPreMulSum 对整数类型、浮点、双精度 的 PreOp。
 template <typename T>
 struct Apply_PreOp<FuncPreMulSum<T>, /*EltPerPack=*/1> {
   static constexpr bool IsIdentity = false;
@@ -712,7 +719,7 @@ struct Apply_PreOp<FuncPreMulSum<T>, /*EltPerPack=*/1> {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// Apply_PreOp of FuncPreMulSum for float16.
+// FuncPreMulSum 对 float16 的 PreOp。
 
 template <>
 struct Apply_PreOp<FuncPreMulSum<half>, /*EltPerPack=*/1> {
@@ -736,7 +743,7 @@ struct Apply_PreOp<FuncPreMulSum<half>, /*EltPerPack=*/2> {
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-// Apply_PreOp of FuncPreMulSum for bfloat16.
+// FuncPreMulSum 对 bfloat16 的 PreOp。
 
 #if defined(__CUDA_BF16_TYPES_EXIST__)
 template <>
@@ -764,7 +771,7 @@ struct Apply_PreOp<FuncPreMulSum<__nv_bfloat16>, /*EltPerPack=*/2> {
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-// Apply_PreOp of FuncPreMulSum for fp8.
+// FuncPreMulSum 对 fp8 的 PreOp。
 
 #if defined(__CUDA_FP8_TYPES_EXIST__)
 #if __CUDA_ARCH__ >= 900
@@ -805,7 +812,7 @@ struct Apply_PreOp<FuncPreMulSum<__nv_fp8_e5m2>, /*EltPerPack=*/2> {
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-// FuncSumPostDiv
+// FuncSumPostDiv(求和后做除法，即求平均 Avg)
 
 template <typename T>
 struct RedOpArg<FuncSumPostDiv<T>> {
@@ -947,20 +954,20 @@ struct FuncSumPostDiv {
     recip = UintType(-1) / divisor;
   }
   __device__ __forceinline__ T divide(T x) {
-    // x is negative iff we are in signed mode and the top bit is set
+    // 当且仅当处于有符号模式且最高位为 1 时，x 为负
     bool xneg = isSigned && (x & ~(T(-1) >> 1));
-    // Compute abs(x):
-    // T(-x) vs -T(x) is critical. We have to negate then truncate the bits. Consider
-    // if we are doing signed 8-bit types, thus T=uint8_t. The value -1 is encoded
-    // as 0xff. -T(0xff) when promoted to 32-bit (which is implicit by compiler)
-    // gives 0xffffff01, but T(-0xff) is 0x1, and that is the abs value we want.
+    // 计算 abs(x)：
+    // T(-x) 与 -T(x) 是关键区别。我们必须先取负再截断比特。考虑
+    // 若用有符号 8 位类型，即 T=uint8_t。值 -1 被编码为
+    // 0xff。-T(0xff) 被提升为 32 位(编译器隐式提升)时
+    // 得到 0xffffff01，而 T(-0xff) 是 0x1，这才是我们想要的 abs 值。
     UintType xabs = xneg ? T(-x) : x;
-    // Compute quotient by multiplying by reciprical.
+    // 通过乘以倒数来计算商。
     UintType q = sizeof(T) == 8 ? __umul64hi(xabs, recip) : __umulhi(xabs, recip);
-    // Quotient may be off by one so do a fixup.
+    // 商可能偏差 1，因此做一次修正。
     if (xabs - q * divisor >= divisor) q += 1;
-    // If original x was negative then we have to negate it back since we were
-    // working with its abs val.
+    // 若原 x 为负，则要把结果取负还原，因为我们之前
+    // 是在用其 abs 值计算的。
     return xneg ? -T(q) : T(q);
   }
 };
@@ -969,13 +976,13 @@ template <typename T, int EltPerPack>
 struct Apply_Reduce<FuncSumPostDiv<T>, EltPerPack> : Apply_Reduce<FuncSum<T>, EltPerPack> {
   __device__ __forceinline__ static BytePack<EltPerPack * sizeof(T)> reduce(
     FuncSumPostDiv<T> fn, BytePack<EltPerPack * sizeof(T)> a, BytePack<EltPerPack * sizeof(T)> b) {
-    // FuncSumPostDiv reduce dispatches to FuncSum.
+    // FuncSumPostDiv 规约 dispatches to FuncSum.
     return Apply_Reduce<FuncSum<T>, EltPerPack>::reduce(FuncSum<T>(), a, b);
   }
 };
 
-// Confusingly, these functions multiply by the scalar, not divide by it. This is okay because we set the scalar to be
-// 1/n when creating the FuncSumPostDiv object.
+// 容易混淆的是：这些函数做的是乘标量而非除。这没问题，因为我们在创建 FuncSumPostDiv 对象时已把标量设为
+// 1/n。
 template <>
 struct Apply_PostOp<FuncSumPostDiv<float>, /*EltPerPack=*/1> {
   static constexpr bool IsIdentity = false;
@@ -1089,7 +1096,7 @@ struct Apply_PostOp<FuncSumPostDiv<T>, /*EltPerPack=*/1> {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// Apply_LoadMultimem
+// Apply_LoadMultimem(用 multimem 指令加载)
 
 #define RegCode_for_size_1 "r"
 #define RegCode_for_size_2 "h"
@@ -1296,7 +1303,7 @@ DEFINE_Apply_LoadMultimem_sum(uint32_t, u32, 4) DEFINE_Apply_LoadMultimem_minmax
                           DEFINE_Apply_LoadMultimem_minmax_v4_and_xparts(__nv_fp8_e5m2, e5m2x4, 4)
 #endif
 
-  // FuncSumPostDiv multimem: load with FuncSum (add)
+  // FuncSumPostDiv 的 multimem 版本：用 FuncSum(加法)加载
   template <typename T, int PackSize>
   struct Apply_LoadMultimem<FuncSumPostDiv<T>, PackSize> {
   static constexpr int EltPerPack = PackSize / (int)sizeof(T);

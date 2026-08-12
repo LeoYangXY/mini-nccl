@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/scatter.cu — Scatter 性能/功能测试
+ * ----------------------------------------------------------------------------
+ * 实现 scatter_perf 基准：把 root 的完整数据分散到各 rank，演示 NCCL Scatter API
+ * 用法与字节计数计算。取自 nccl-tests 并裁剪。
+ */
+
 #include "cuda_runtime.h"
 #include "common.h"
 

@@ -5,12 +5,19 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nvmlwrap.h — NVML 库包装
+ * ----------------------------------------------------------------------------
+ * 通过 dlopen 动态加载 libnvidia-ml，把 NVML 管理 API 封装成统一函数指针，用于读取
+ * GPU 的 PCI 拓扑、NVLink 状态等硬件信息（运行时按需解析符号）。
+ */
+
 #ifndef NCCL_NVMLWRAP_H_
 #define NCCL_NVMLWRAP_H_
 
 #include "nccl.h"
 
-// #define NCCL_NVML_DIRECT 1
+// #定义 NCCL_NVML_DIRECT 1
 #ifndef NCCL_NVML_DIRECT
 #define NCCL_NVML_DIRECT 0
 #endif
@@ -18,7 +25,7 @@
 #if NCCL_NVML_DIRECT
 #include "nvml.h"
 #else
-// Dynamically handle dependencies on NVML
+// Dynamically 句柄 dependencies on NVML
 
 /* Extracted from nvml.h */
 
@@ -41,7 +48,7 @@ typedef enum nvmlNvLinkCapability_enum {
   NVML_NVLINK_CAP_SYSMEM_ATOMICS = 3,     // System memory atomics are supported
   NVML_NVLINK_CAP_SLI_BRIDGE = 4,     // SLI is supported over this link
   NVML_NVLINK_CAP_VALID = 5,     // Link is supported on this device
-  // should be last
+  // 应当 最后
   NVML_NVLINK_CAP_COUNT
 } nvmlNvLinkCapability_t;
 
@@ -76,10 +83,10 @@ typedef struct nvmlPciInfo_st {
   unsigned int bus; //!< The bus on which the device resides, 0 to 0xff
   unsigned int device; //!< The device's id on the bus, 0 to 31
   unsigned int pciDeviceId; //!< The combined 16-bit device id and 16-bit vendor id
-  // Added in NVML 2.285 API
+  // Added 入 NVML 2.285 API
   unsigned int pciSubSystemId; //!< The 32-bit Sub System Device ID
 
-  // NVIDIA reserved for internal use only
+  // NVIDIA 保留 for 内部 使用 仅
   unsigned int reserved0;
   unsigned int reserved1;
   unsigned int reserved2;
@@ -136,7 +143,7 @@ typedef enum nvmlValueType_enum {
   NVML_VALUE_TYPE_UNSIGNED_LONG_LONG = 3,
   NVML_VALUE_TYPE_SIGNED_LONG_LONG = 4,
 
-  // Keep this last
+  // 保留 此 最后
   NVML_VALUE_TYPE_COUNT
 } nvmlValueType_t;
 
@@ -188,15 +195,15 @@ typedef union nvmlValue_st {
  */
 typedef struct nvmlFieldValue_st {
   unsigned int fieldId; //!< ID of the NVML field to retrieve. This must be set before any call that uses
-  //!< this struct. See the constants starting with NVML_FI_ above.
+  //!< 此 结构体. 参见 the constants starting with NVML_FI_ 上方.
   unsigned int scopeId; //!< Scope ID can represent data used by NVML depending on fieldId's context. For
-  //!< example, for NVLink throughput counter data, scopeId can represent linkId.
+  //!< 示例, for NVLink 吞吐量 counter 数据, scopeId can represent linkId.
   long long timestamp; //!< CPU Timestamp of this value in microseconds since 1970
   long long latencyUsec; //!< How long this field value took to update (in usec) within NVML. This may be
-  //!< averaged across several fields that are serviced by the same driver call.
+  //!< averaged across 若干 字段 那个 are serviced by 相同 driver 调用.
   nvmlValueType_t valueType; //!< Type of the value stored in value
   nvmlReturn_t nvmlReturn; //!< Return code for retrieving this value. This must be checked before looking at
-  //!< value, as value is undefined if nvmlReturn != NVML_SUCCESS
+  //!< 值, as 值 is undefined 若 nvmlReturn != NVML_SUCCESS
   nvmlValue_t value; //!< Value for this field. This is only valid if nvmlReturn == NVML_SUCCESS
 } nvmlFieldValue_t;
 
@@ -212,7 +219,7 @@ typedef unsigned char nvmlGpuFabricState_t;
 typedef struct {
   unsigned char clusterUuid[NVML_GPU_FABRIC_UUID_LEN]; //!< Uuid of the cluster to which this GPU belongs
   nvmlReturn_t status; //!< Error status, if any. Must be checked only if
-  //!< state returns "complete".
+  //!< 状态 返回 "完成".
   unsigned int cliqueId; //!< ID of the fabric clique to which this GPU belongs
   nvmlGpuFabricState_t state; //!< Current state of GPU registration process
 } nvmlGpuFabricInfo_t;
@@ -253,7 +260,7 @@ typedef struct {
   //!< \ref nvmlGpuFabricInfo_v2)
   unsigned char clusterUuid[NVML_GPU_FABRIC_UUID_LEN]; //!< Uuid of the cluster to which this GPU belongs
   nvmlReturn_t status; //!< Error status, if any. Must be checked only if
-  //!< state returns "complete".
+  //!< 状态 返回 "完成".
   unsigned int cliqueId; //!< ID of the fabric clique to which this GPU belongs
   nvmlGpuFabricState_t state; //!< Current state of GPU registration process
   unsigned int healthMask; //!< GPU Fabric health Status Mask
@@ -272,13 +279,13 @@ typedef nvmlGpuFabricInfo_v2_t nvmlGpuFabricInfoV_t;
 typedef struct {
   unsigned int version; //!< the API version number
   unsigned char ibGuid[16]; //!< Infiniband GUID reported by platform (for Blackwell, ibGuid is 8
-  //!< bytes so indices 8-15 are zero)
+  //!< 字节 所以 indices 8-15 are zero)
   unsigned char chassisSerialNumber[16]; //!< Serial number of the chassis containing this GPU (for Blackwell
-  //!< it is 13 bytes so indices 13-15 are zero)
+  //!< 这是 13 字节 所以 indices 13-15 are zero)
   unsigned char slotNumber; //!< The slot number in the chassis containing this GPU (includes
   //!< switches)
   unsigned char trayIndex; //!< The tray index within the compute slots in the chassis containing
-  //!< this GPU (does not include switches)
+  //!< 此 GPU (执行 不 包含 switches)
   unsigned char hostId; //!< Index of the node within the slot containing this GPU
   unsigned char peerType; //!< Platform indicated NVLink-peer type (e.g. switch present or not)
   unsigned char moduleId; //!< ID of this GPU within the node
@@ -341,9 +348,9 @@ struct ncclNvmlCCStatus {
   bool multiGpuNVLE;
 };
 
-// All ncclNvmlFoo() functions call ncclNvmlEnsureInitialized() implicitly.
-// Outsiders need only call it if they want to inspect the ncclNvml global
-// tables above.
+// 所有 ncclNvmlFoo() 函数 调用 ncclNvmlEnsureInitialized() implicitly.
+// Outsiders 需要 仅 调用 it 若y 希望 inspect the ncclNvml 全局的
+// tables 上方.
 ncclResult_t ncclNvmlEnsureInitialized();
 
 ncclResult_t ncclNvmlDeviceGetHandleByPciBusId(const char* pciBusId, nvmlDevice_t* device);

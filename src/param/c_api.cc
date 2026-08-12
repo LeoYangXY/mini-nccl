@@ -5,9 +5,16 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-// C API implementation for ncclParam access.
+/*
+ * src/param/c_api.cc — 参数系统(param)的 C API 实现
+ * ----------------------------------------------------------------------------
+ * 实现面向 C 的 ncclParam 访问接口（声明见 param/c_api.h），供非 C++ 侧或外部工具
+ * 查询 NCCL 参数值。
+ */
+
+// C API 实现 for ncclParam access.
 //
-// This file implements the C-facing API declared in param/c_api.h.
+// 该文件 implements the C-facing API declared 入 param/c_api.h.
 
 #include "param/param.h"
 #include "core.h"
@@ -20,7 +27,7 @@
 
 USE_NCCL_PARAM(ncclParamDumpAllFlag, bool);
 
-// Helper to unwrap opaque handle to ncclParamRegistry::mapEntry*
+// 辅助 to unwrap opaque 句柄 to ncclParamRegistry::mapEntry*
 static inline ncclParamRegistry::mapEntry* unwrap(ncclParamHandle_t h) {
   return reinterpret_cast<ncclParamRegistry::mapEntry*>(h);
 }
@@ -28,7 +35,7 @@ static inline ncclParamRegistry::mapEntry* unwrap(ncclParamHandle_t h) {
 static inline void ncclParamCheckFlag(uint64_t flags, const char* key) {
   static std::unordered_set<std::string> warningSet;
 
-  // skip if this key was checked before, avoid repetitive warning messages
+  // 若 ... 则跳过 此 key was checked 之前, 避免 repetitive 警告 消息
   if (warningSet.count(key)) {
     return;
   }
@@ -49,7 +56,7 @@ static inline void ncclParamCheckFlag(uint64_t flags, const char* key) {
 }
 
 // ============================================================================
-// Handle-based Access Interface
+// 句柄-based Access 接口
 // ============================================================================
 
 NCCL_API(ncclResult_t, ncclParamBind, ncclParamHandle_t* out, const char* key);
@@ -66,7 +73,7 @@ ncclResult_t ncclParamBind(ncclParamHandle_t* out, const char* key) {
 }
 
 // ============================================================================
-// Typed Getters — dispatch via typeId + getRawData()
+// 类型化取值器 — 通过 typeId + getRawData() 分发
 // ============================================================================
 
 #define NCCL_PARAM_DEFINE_TYPED_GETTER(suffix, ctype, tid) \
@@ -94,7 +101,7 @@ NCCL_PARAM_DEFINE_TYPED_GETTER(U64, uint64_t, NCCL_PARAM_TYPE_U64)
 #undef NCCL_PARAM_DEFINE_TYPED_GETTER
 
 // ============================================================================
-// String Accessors
+// 字符串访问器
 // ============================================================================
 
 NCCL_API(ncclResult_t, ncclParamGetStr, ncclParamHandle_t h, const char** out);
@@ -105,7 +112,7 @@ ncclResult_t ncclParamGetStr(ncclParamHandle_t h, const char** out) {
     INFO(NCCL_ENV, "PARAM: type mismatch for key \"%s\"", e->info.key);
     return ncclInvalidArgument;
   }
-  // Thread-local buffer to keep the returned pointer valid for the caller
+  // 线程-本地 缓冲区 to 保留 the 已返回 指针 合法的 for 调用方
   static thread_local std::string buffer;
   buffer = unwrap(h)->param->toString();
   *out = buffer.c_str();
@@ -119,14 +126,14 @@ ncclResult_t ncclParamGet(ncclParamHandle_t h, void* out, int maxLen, int* len) 
 }
 
 // ============================================================================
-// Typeless Access Interface
+// Typeless Access 接口
 // ============================================================================
 NCCL_API(ncclResult_t, ncclParamGetAllParameterKeys, const char*** table, int* tableLen);
 ncclResult_t ncclParamGetAllParameterKeys(const char*** table, int* tableLen) {
   if (!table || !tableLen) return ncclInvalidArgument;
 
-  // Thread-local storage: keyTable owns string copies so ptrTable pointers remain
-  // valid even if the registry map changes between calls.
+  // 线程-本地 storage: keyTable owns string 拷贝 所以 ptrTable 指针 remain
+  // 合法的 即使 the registry 映射 changes 之间 调用.
   static thread_local std::vector<std::string> keyTable;
   static thread_local std::vector<const char*> ptrTable;
 
@@ -157,7 +164,7 @@ NCCL_API(ncclResult_t, ncclParamGetParameter, const char* key, const char** valu
 ncclResult_t ncclParamGetParameter(const char* key, const char** value, int* valueLen) {
   if (!key || !value || !valueLen) return ncclInvalidArgument;
 
-  // Thread-local buffer to keep the returned pointer valid for the caller
+  // 线程-本地 缓冲区 to 保留 the 已返回 指针 合法的 for 调用方
   static thread_local std::string resultHolder;
 
   auto* entry = ncclParamRegistry::find(key);

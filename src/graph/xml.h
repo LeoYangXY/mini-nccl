@@ -15,10 +15,10 @@
 #include <stdlib.h>
 #include <cinttypes>
 
-// PCI device class for NVSwitch (used to identify remote NVLink targets)
+// PCI 设备 类 for NVSwitch (用于 identify 远端 NVLink targets)
 #define PCI_NVSWITCH_CLASS "0x068000"
 
-// A few constraints to make the implementation easy
+// A 少量 约束 to 使 the 实现 easy
 #define MAX_STR_LEN 255
 #define MAX_ATTR_COUNT 16
 #define MAX_SUBS 640
@@ -205,12 +205,12 @@ static ncclResult_t xmlFindTagKv(struct ncclXml* xml, const char* tagName, struc
 static ncclResult_t xmlFindNode(struct ncclXmlNode* parentNode, struct ncclXmlNode* searchNode,
                                 struct ncclXmlNode** node) {
   *node = NULL;
-  // Search for the node at the current level only.
+  // Search 为了 节点 at 当前 层级 仅.
   for (int i = 0; i < parentNode->nSubs; i++) {
     struct ncclXmlNode* n = parentNode->subs[i];
     if (strcmp(n->name, searchNode->name) == 0 && n->type == searchNode->type && n->nAttrs == searchNode->nAttrs) {
       int a;
-      // Ensure that all the attributes are the same.
+      // 确保 那个 所有 the 属性 are 相同.
       for (a = 0; a < searchNode->nAttrs; a++) {
         const char* val;
         NCCLCHECK(xmlGetAttr(n, searchNode->attrs[a].key, &val));
@@ -402,13 +402,13 @@ static ncclResult_t xmlAddTree(struct ncclXml* dst, struct ncclXmlNode* parent, 
     parent->subs[parent->nSubs++] = dstNode;
   }
   dstNode->nSubs = 0;
-  // Recursively copy the subtree(s)
+  // Recursively 拷贝 subtree(s)
   for (int i = 0; i < srcNode->nSubs; i++) NCCLCHECK(xmlAddTree(dst, dstNode, srcNode->subs[i]));
   return ncclSuccess;
 }
 
-// Dictionary for STR -> INT conversions. No dictionary size information,
-// there needs to be a last element with str == NULL.
+// Dictionary for STR -> 整型 conversions. 无 dictionary 大小 information,
+// there 需要 be a 最后 元素 with str == NULL.
 
 inline void printMissingTopoDictValueHint() {
   INFO(NCCL_GRAPH,

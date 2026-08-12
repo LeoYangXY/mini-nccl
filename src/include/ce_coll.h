@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/ce_coll.h — CE(collective engine)聚合引擎接口
+ * ----------------------------------------------------------------------------
+ * 定义 device 端“集合引擎”原语：利用 GPU 的 copy engine(CE) 在 kernel 间协作完成
+ * 规约/广播等，是对 SIMPLE 协议之外的一种搬运路径抽象。
+ */
+
 #ifndef NCCL_CE_COLL_H_
 #define NCCL_CE_COLL_H_
 
@@ -12,7 +19,7 @@
 #include "nccl_common.h"
 #include "bitops.h"
 
-// Memory operations per rank for different synchronization protocols
+// 内存 操作 每个 rank for 不同 同步 protocols
 #define NCCL_CE_SYNC_OPS_PER_RANK_MC 2
 #define NCCL_CE_SYNC_OPS_PER_RANK_UC 3
 
@@ -71,14 +78,14 @@ ncclResult_t ncclCeInit(struct ncclComm* comm);
 
 ncclResult_t ncclCeFinalize(struct ncclComm* comm);
 
-// Intra-LSA-rank barrier.
+// 节点内-LSA-rank 屏障.
 ncclResult_t ncclMemOpSync(struct ncclComm* comm, cudaStream_t stream, struct ncclCeCollArgs* profilerArgs = nullptr);
 
-// Allocate / free internal arrays for a batch-ops parameter struct.
+// 分配 / 释放 内部 数组 for a batch-ops 参数 结构体.
 ncclResult_t ncclCeInitBatchOpsParams(struct ncclCeBatchOpsParams* params, int capacity);
 void ncclCeFreeBatchOpsParams(struct ncclCeBatchOpsParams* params);
 
-// Launch a batch of cudaMemcpyAsync ops
+// 启动一批 cudaMemcpyAsync 操作
 ncclResult_t ncclCeLaunchBatchOps(struct ncclComm* comm, struct ncclCeBatchOpsParams* params, cudaStream_t stream,
                                   struct ncclCeCollArgs* profilerArgs = nullptr);
 

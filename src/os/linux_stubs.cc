@@ -8,6 +8,15 @@
  * stubbed out. Adapted from os/windows_stubs.cc of the original NCCL.
  *************************************************************************/
 
+/*
+ * src/os/linux_stubs.cc — Linux 桩实现（精简版）
+ * ----------------------------------------------------------------------------
+ * 完整版 NCCL 中由 plugin/、ras/、gin/、rma/、nccl_device/gin_*.cc 提供的符号，在
+ * 这个精简单节点版里被 stub 掉（仅保留 bootstrap、拓扑探测、P2P/SHM 传输、ring/tree
+ * 算法与 simple/LL/LL128 协议）。本文件提供这些桩，保证链接通过。改编自原版
+ * os/windows_stubs.cc。
+ */
+
 #include "nccl.h"
 #include "comm.h"
 #include "checks.h"
@@ -59,7 +68,7 @@ ncclResult_t ncclNetInit(struct ncclComm* comm) {
   comm->ncclCollNet = nullptr;
   comm->netPluginIndex = -1;
 
-  // Initialize the socket transport to enumerate network interfaces.
+  // 初始化 套接字 transport to enumerate 网络 interfaces.
   ncclNetCommConfig_t commConfig = {};
   commConfig.trafficClass = NCCL_NET_TRAFFIC_CLASS_UNDEF;
   NCCLCHECK(comm->ncclNet->init(&comm->netContext, comm->commHash, &commConfig, ncclDebugLog, NULL));

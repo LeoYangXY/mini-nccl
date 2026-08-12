@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/utils.h — 通用工具函数与宏
+ * ----------------------------------------------------------------------------
+ * 提供字符串、时间、数值解析、字节单位换算、bit 操作、链表/队列等通用工具，以及
+ * NCCL 的一些全局工具宏。被各模块广泛引用，属于“杂项工具箱”。
+ */
+
 #ifndef NCCL_UTILS_H_
 #define NCCL_UTILS_H_
 
@@ -23,14 +30,14 @@
 #include <random>
 #include <chrono>
 
-// On Windows, strtok_s is equivalent to POSIX strtok_r with same signature
+// On Windows, strtok_s is 等价于 POSIX strtok_r with 相同 signature
 #ifdef NCCL_OS_WINDOWS
 #define strtok_r strtok_s
 #endif
 
 int ncclCudaCompCap();
 
-// PCI Bus ID <-> int64 conversion functions
+// PCI 总线 ID ↔ int64 转换函数
 ncclResult_t int64ToBusId(int64_t id, char* busId);
 ncclResult_t busIdToInt64(const char* busId, int64_t* id);
 ncclResult_t pciPathToInt64(char* path, int64_t* id);
@@ -57,7 +64,7 @@ static long log2i(long n) {
   return log2Down(n);
 }
 
-// Comparator function for qsort/bsearch to compare integers
+// 用于 qsort/bsearch 的整数比较函数
 static int compareInts(const void* a, const void* b) {
   int ia = *(const int*)a, ib = *(const int*)b;
   return (ia > ib) - (ia < ib);
@@ -98,7 +105,7 @@ inline ncclResult_t getRandomData(void* buffer, size_t bytes) {
 }
 
 static inline int gcd(int a, int b) {
-  // use the euclidian algorithm
+  // 使用欧几里得(辗转相除)算法
   while (b != 0) {
     int temp = b;
     b = a % b;
@@ -151,7 +158,7 @@ inline Header* ncclMemoryStackAllocInlineArray(struct ncclMemoryStack* me, size_
  */
 struct ncclMemoryPool;
 
-// Equivalent to zero-initialization
+// 等价于零初始化
 void ncclMemoryPoolConstruct(struct ncclMemoryPool* me);
 template <typename T>
 T* ncclMemoryPoolAlloc(struct ncclMemoryPool* me, struct ncclMemoryStack* backing);
@@ -201,7 +208,7 @@ struct ncclThreadSignal {
   std::condition_variable cond;
 };
 
-// A convenience instance per-thread.
+// 每个线程一个的便捷实例。
 extern thread_local struct ncclThreadSignal ncclThreadSignalLocalInstance;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -213,16 +220,16 @@ template <typename T, T* T::* next>
 void ncclIntruQueueMpscConstruct(struct ncclIntruQueueMpsc<T, next>* me);
 template <typename T, T* T::* next>
 bool ncclIntruQueueMpscEmpty(struct ncclIntruQueueMpsc<T, next>* me);
-// Enqueue element. Returns true if queue is not abandoned. Even if queue is
-// abandoned the element enqueued, so the caller needs to make arrangements for
-// the queue to be tended.
+// 入队一个元素。若队列未被放弃则返回 真。即便队列已被
+// 放弃，元素仍会被入队，因此调用者需要自行安排
+// 对该队列的后续处理。
 template <typename T, T* T::* next>
 bool ncclIntruQueueMpscEnqueue(struct ncclIntruQueueMpsc<T, next>* me, T* x);
-// Dequeue all elements at a glance. If there aren't any and `waitSome` is
-// true then this call will wait until it can return a non empty list.
+// 一次性取出所有元素。若没有元素且 waitSome 为
+// 真，则本次调用会阻塞直到能返回非空列表。
 template <typename T, T* T::* next>
 T* ncclIntruQueueMpscDequeueAll(struct ncclIntruQueueMpsc<T, next>* me, bool waitSome);
-// Dequeue all elements and set queue to abandoned state.
+// 取出所有元素并把队列设为“已放弃”状态。
 template <typename T, T* T::* next>
 T* ncclIntruQueueMpscAbandon(struct ncclIntruQueueMpsc<T, next>* me);
 
@@ -337,7 +344,7 @@ inline T* ncclMemoryPoolAlloc(struct ncclMemoryPool* me, struct ncclMemoryStack*
     cell = me->head;
     me->head = cell->next;
   } else {
-    // Use the internal allocate() since it doesn't memset to 0 yet.
+    // 使用内部的 分配()，因为它尚不会 memset 清零。
     size_t cellSize = std::max(sizeof(Cell), sizeof(T));
     size_t cellAlign = std::max(alignof(Cell), alignof(T));
     cell = (Cell*)ncclMemoryStack::allocate(backing, cellSize, cellAlign);
@@ -484,10 +491,10 @@ bool ncclIntruQueueMpscEnqueue(ncclIntruQueueMpsc<T, next>* me, T* x) {
   T** prevNext = utail <= 0x2 ? &me->head : &(prev->*next);
   COMPILER_ATOMIC_STORE(prevNext, x, std::memory_order_relaxed);
   if (utail == 0x1) {
-    // waiting
+    // 等待中
     std::atomic_thread_fence(std::memory_order_acquire); // to see me->waiting
-    // This lock/unlock is essential to ensure we don't race ahead of the consumer
-    // and signal the cond before they begin waiting on it.
+    // 这把锁的加锁/解锁至关重要：确保我们不会抢在消费者之前，
+    // 在消费者开始等待条件变量之前就先发信号。
     struct ncclThreadSignal* waiting = me->waiting;
     {
       std::unique_lock<std::mutex> lock(waiting->mutex);
@@ -506,7 +513,7 @@ T* ncclIntruQueueMpscDequeueAll(ncclIntruQueueMpsc<T, next>* me, bool waitSome) 
     bool sleeping = false;
     do {
       if (clockNano() - t0 >= 10 * 1000) {
-        // spin for first 10us
+        // 前 10 微秒做自旋等待
         struct ncclThreadSignal* waitSignal = &ncclThreadSignalLocalInstance;
         std::unique_lock<std::mutex> lock(waitSignal->mutex);
         uintptr_t expected = sleeping ? 0x1 : 0x0;
@@ -584,11 +591,11 @@ ncclResult_t ncclBitsToString(uint32_t bits, uint32_t mask, const char* (*toStr)
                               const char* wildcard);
 
 ////////////////////////////////////////////////////////////////////////////////
-// Hash function for pointer types (shared by address map implementations)
+// 指针类型的哈希函数(各地址映射实现共用)
 uint64_t ncclHashPointer(int hbits, void* key);
 
 ////////////////////////////////////////////////////////////////////////////////
-// Intrusive address map implementation (avoids per-entry allocations)
+// 侵入式地址映射实现(避免为每个条目单独分配内存)
 
 /*
  * ncclIntruAddressMap Usage Contract
@@ -632,17 +639,17 @@ uint64_t ncclHashPointer(int hbits, void* key);
  *   - Key size must be valid (0 < keySize <= sizeof(uintptr_t))
  */
 
-// Untyped internal structure
+// Untyped 内部 结构
 struct ncclIntruAddressMap_untyped {
   int hbits;  // log2 of table size
   int count;  // number of entries
   void** table;
 };
 
-// Typed wrapper (uses composition for C compatibility)
+// Typed wrapper (使用 composition for C compatibility)
 template <typename Obj, typename Key, Key Obj::* keyField, Obj* Obj::* nextField>
 struct ncclIntruAddressMap {
-  // Compile-time checks for valid usage
+  // 编译-time 检查 for 合法的 usage
   static_assert(sizeof(Key) <= sizeof(uintptr_t),
                 "ncclIntruAddressMap: Key type size must be <= sizeof(uintptr_t). "
                 "Keys larger than a pointer cannot be safely converted to uintptr_t.");
@@ -650,9 +657,9 @@ struct ncclIntruAddressMap {
   ncclIntruAddressMap_untyped base;
 };
 
-// Destructor (optional - only needed if entries remain in map)
-// Note: Map auto-cleans when last entry is removed, so this is only needed
-// if abandoning a non-empty map to avoid leaking the bucket table.
+// Destructor (可选 - 仅 已需要 若 entries remain 入 映射)
+// 注意：当最后一个条目被移除时，映射会自动清理，因此该析构
+// 仅当要丢弃一个非空映射时才需要，以避免桶表(bucket table)泄漏。
 template <typename Obj, typename Key, Key Obj::* keyField, Obj* Obj::* nextField>
 static inline void ncclIntruAddressMapDestruct(struct ncclIntruAddressMap<Obj, Key, keyField, nextField>* map) {
   if (map->base.table != nullptr) {
@@ -663,7 +670,7 @@ static inline void ncclIntruAddressMapDestruct(struct ncclIntruAddressMap<Obj, K
   map->base.count = 0;
 }
 
-// Internal untyped function prototypes
+// 内部 untyped 函数 prototypes
 ncclResult_t ncclIntruAddressMapInsert_untyped(struct ncclIntruAddressMap_untyped* map, int keySize, int keyFieldOffset,
                                                int nextFieldOffset, uintptr_t key, void* object);
 
@@ -673,13 +680,13 @@ ncclResult_t ncclIntruAddressMapFind_untyped(struct ncclIntruAddressMap_untyped*
 ncclResult_t ncclIntruAddressMapRemove_untyped(struct ncclIntruAddressMap_untyped* map, int keySize, int keyFieldOffset,
                                                int nextFieldOffset, uintptr_t key);
 
-// Typed template implementations (type-erasing wrappers)
+// Typed 模板 实现 (类型-erasing wrappers)
 template <typename Obj, typename Key, Key Obj::* keyField, Obj* Obj::* nextField>
 static inline ncclResult_t ncclIntruAddressMapInsert(struct ncclIntruAddressMap<Obj, Key, keyField, nextField>* map,
                                                      Key key, Obj* object) {
   Obj dummy;
-  // Using offsetof macro would be better except it won't work with non-C types,
-  // like those that involve inheritance.
+  // 用 offsetof 宏本更好，但它不适用于非 C 类型，
+  // 例如涉及继承的类型。
   int keyFieldOffset = (char*)&(dummy.*keyField) - (char*)&dummy;
   int nextFieldOffset = (char*)&(dummy.*nextField) - (char*)&dummy;
   return ncclIntruAddressMapInsert_untyped(&map->base, (int)sizeof(Key), keyFieldOffset, nextFieldOffset,
@@ -719,7 +726,7 @@ inline ncclResult_t ncclThreadJoin(std::thread& thread) {
   }
 }
 
-// Convert NCCL numeric version to x.yy.zz string
+// 把 NCCL 数字版本号转换为 x.yy.zz 形式的字符串
 static inline const char* ncclVersionToString(int version, char* buf, size_t bufSize) {
   snprintf(buf, bufSize, "%d.%d.%d", version / 10000, (version % 10000) / 100, version % 100);
   return buf;

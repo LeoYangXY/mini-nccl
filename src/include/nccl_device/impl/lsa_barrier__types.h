@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/lsa_barrier__types.h — LSA barrier 类型定义
+ * ----------------------------------------------------------------------------
+ * 定义 nccl_device 框架 LSA barrier 的设备侧类型，被 lsa_barrier__funcs.h 引用。
+ * 属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_MEM_BARRIER__TYPES_H_
 #define _NCCL_DEVICE_MEM_BARRIER__TYPES_H_
 #include "../lsa_barrier.h"
@@ -30,10 +37,10 @@ struct ncclLsaBarrierSession_internal {
   NCCL_DEVICE_INLINE uint32_t* mcInbox(bool multimem) {
     uint32_t* state;
     if (multimem) {
-      // multicast
+      // 多播
       state = (uint32_t*)ncclGetResourceBufferMultimemPointer(comm, handle.bufHandle, mmHandle);
     } else {
-      // unicast
+      // 单播
       state = (uint32_t*)ncclGetResourceBufferLocalPointer(comm, handle.bufHandle);
     }
     return state + 2 * handle.nBarriers + index;

@@ -5,14 +5,21 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/net_device.h — 网络设备(device)接口
+ * ----------------------------------------------------------------------------
+ * 定义 NCCL 网络设备(device 侧)的抽象：ncclNetDevice*[ 等结构与版本/MTU 等常量，
+ * 供网络传输在 device kernel 内直接收发数据。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef NCCL_NET_DEVICE_H_
 #define NCCL_NET_DEVICE_H_
 
 #define NCCL_NET_DEVICE_INVALID_VERSION 0x0
 #define NCCL_NET_MTU_SIZE 4096
 
-// Arbitrary version number - A given NCCL build will only be compatible with a single device networking plugin
-// version. NCCL will check the supplied version number from net->getProperties() and compare to its internal version.
+// Arbitrary 版本 number - A 给定的 NCCL 构建 will 仅 be compatible with a 单个 设备 networking 插件
+// 版本. NCCL will 检查 supplied 版本 number from 网络->getProperties() 并且 compare to its 内部 版本.
 #define NCCL_NET_DEVICE_UNPACK_VERSION 0x7
 
 typedef enum {

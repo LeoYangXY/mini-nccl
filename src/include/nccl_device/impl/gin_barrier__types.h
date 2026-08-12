@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/gin_barrier__types.h — [GIN 相关] GIN barrier 类型
+ * ----------------------------------------------------------------------------
+ * 定义 GIN(第三方 GPU 内部接口库) barrier 的设备侧类型，被 gin_barrier__funcs.h
+ * 引用。GIN 由 Meta 引入，mini-nccl 精简版下多被 stub。
+ */
+
 #ifndef _NCCL_DEVICE_GIN_BARRIER__TYPES_H_
 #define _NCCL_DEVICE_GIN_BARRIER__TYPES_H_
 #include "../gin_barrier.h"
@@ -25,7 +32,7 @@ struct ncclGinBarrierSession_internal {
   ncclGinBarrierHandle handle;
   int index;
   ncclGinSignal_t signal;
-  // True when the fence covers every GIN context on the comm.
+  // 真 当 ... 时 fence covers 每一个 GIN 上下文 在 ... 上 通信域.
   bool fenceAllContexts;
 
   template <bool EnableTimeout>

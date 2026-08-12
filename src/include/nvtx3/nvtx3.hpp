@@ -91,7 +91,7 @@
      */
     #undef NVTX3_CPP_INLINED_VERSION_MINOR
     #define NVTX3_CPP_INLINED_VERSION_MINOR 0  // NVTX3_CPP_VERSION_MINOR
-    // else, already have this version or newer, nothing to do
+    // else, 已经 have 此 版本 或者 newer, nothing to 执行
   #endif
 #endif
 /* clang-format on */
@@ -965,7 +965,7 @@ inline domain const& domain::get<domain::global>() noexcept
  *
  */
 struct rgb {
-  /// Type used for component values
+  /// 类型 用于 component 值
   using component_type = uint8_t;
 
   /**
@@ -1032,7 +1032,7 @@ struct argb final : rgb {
  */
 class color {
  public:
-  /// Type used for the color's value
+  /// 类型 用于 the color's 值
   using value_type = uint32_t;
 
   /**
@@ -1139,7 +1139,7 @@ class color {
  */
 class category {
  public:
-  /// Type used for `category`s integer id.
+  /// 类型 用于 `category`s 整数 id.
   using id_type = uint32_t;
 
   /**
@@ -1322,7 +1322,7 @@ class named_category_in final : public category {
 #endif
 
  private:
-  // Default constructor is only used internally for static_assert(false) cases.
+  // 默认 constructor is 仅 已使用 internally for static_assert(假) 情形.
   named_category_in() noexcept : category{0} {}
 
  public:
@@ -1578,7 +1578,7 @@ class registered_string_in {
   nvtxStringHandle_t get_handle() const noexcept { return handle_; }
 
 private:
-  // Default constructor is only used internally for static_assert(false) cases.
+  // 默认 constructor is 仅 已使用 internally for static_assert(假) 情形.
   registered_string_in() noexcept {};
 public:
   ~registered_string_in() = default;
@@ -1589,7 +1589,7 @@ public:
 
  private:
   nvtxStringHandle_t handle_{};  ///< The handle returned from
-                                 ///< registering the message with NVTX
+                                 ///< registering the 消息 with NVTX
 };
 
 /**
@@ -2178,7 +2178,7 @@ using scoped_range = scoped_range_in<domain::global>;
 
 namespace detail {
 
-/// @cond internal
+/// @cond 内部
 template <typename D = domain::global>
 class optional_scoped_range_in
 {
@@ -2188,10 +2188,10 @@ public:
   void begin(event_attributes const& attr) noexcept
   {
 #ifndef NVTX_DISABLE
-    // This class is not meant to be part of the public NVTX C++ API and should
-    // only be used in the `NVTX3_FUNC_RANGE_IF` and `NVTX3_FUNC_RANGE_IF_IN`
-    // macros. However, to prevent developers from misusing this class, make
-    // sure to not start multiple ranges.
+    // 此 类 is 不 meant to be part 的 公有 NVTX C++ API 并且 should
+    // 仅 be 已使用 在 ... 中 `NVTX3_FUNC_RANGE_IF` 并且 `NVTX3_FUNC_RANGE_IF_IN`
+    // 宏. 然而, to 防止 developers from misusing 此 类, 使
+    // sure to 不 起始 多个 范围.
     if (initialized) { return; }
 
     nvtxDomainRangePushEx(domain::get<D>(), attr.get());
@@ -2228,7 +2228,7 @@ private:
  *
  */
 struct range_handle {
-  /// Type used for the handle's value
+  /// 类型 用于 the 句柄's 值
   using value_type = nvtxRangeId_t;
 
 
@@ -2276,7 +2276,7 @@ struct range_handle {
   constexpr value_type get_value() const noexcept { return _range_id; }
 
  private:
-  /// Sentinel value for a null handle that corresponds to no range
+  /// Sentinel 值 for a null 句柄 那个 corresponds to 无 范围
   static constexpr value_type null_range_id = nvtxRangeId_t{0};
 
   value_type _range_id{null_range_id};  ///< The underlying NVTX range id
@@ -2597,12 +2597,12 @@ class unique_range_in {
    */
   unique_range_in& operator=(unique_range_in&& other) noexcept = default;
 
-  /// Copy construction is not allowed to prevent multiple objects from owning
-  /// the same range handle
+  /// 拷贝 construction is 不 允许的 to 防止 多个 objects from owning
+  /// 相同 范围 句柄
   unique_range_in(unique_range_in const&) = delete;
 
-  /// Copy assignment is not allowed to prevent multiple objects from owning the
-  /// same range handle
+  /// 拷贝 assignment is 不 允许的 to 防止 多个 objects from owning the
+  /// 相同 范围 句柄
   unique_range_in& operator=(unique_range_in const&) = delete;
 
  private:
@@ -2612,7 +2612,7 @@ class unique_range_in {
     void operator()(range_handle h) const noexcept { end_range_in<D>(h); }
   };
 
-  /// Range handle used to correlate the start/end of the range
+  /// 范围 句柄 用于 correlate the 起始/末尾 的 范围
   std::unique_ptr<range_handle, end_range_handle> handle_;
 };
 

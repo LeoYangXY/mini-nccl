@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/bootstrap.h — bootstrap(引导)接口的声明
+ * ----------------------------------------------------------------------------
+ * bootstrap 是多进程/多节点 NCCL 通信的“第 0 步”：通过某个 rank 作为根，让所有
+ * rank 互相交换 IP/端口并建立 socket 环，从而交换拓扑信息、建连句柄。本文件声明
+ * ncclBootstrap 的创建/连接/收发接口，实现见 src/bootstrap.cc。
+ */
+
 #ifndef NCCL_BOOTSTRAP_H_
 #define NCCL_BOOTSTRAP_H_
 

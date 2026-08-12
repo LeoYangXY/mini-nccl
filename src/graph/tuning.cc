@@ -50,25 +50,25 @@ static int getNthreads(const char* name, int env, int min, int max, int def) {
   return nt;
 }
 
-// Parse a map of prefixes to a list of elements. The first prefix is
-// optional and, if not present, the list of elements will be applied
-// to all prefixes. Only the first list of elements can lack a
-// prefix. Prefixes (if present) are followed by a colon. Lists of
-// elements are comma delimited. Mappings of prefix to the lists of
-// elements are semi-colon delimited.
+// 解析“前缀 -> 元素列表”的映射。第一个前缀是
+// 可选的；若不写前缀，则该元素列表将应用于
+// 所有前缀。只有第一个元素列表允许省略
+// 前缀。前缀(若存在)后面跟一个冒号。元素列表
+// 以逗号分隔。不同“前缀 -> 元素列表”的映射之间
+// 元素 are semi-colon delimited.
 //
-// For example:
+// 例如:
 //
-//     NCCL_ALGO="ring,collnetdirect;allreduce:tree,collnetdirect;broadcast:ring"
-// Enable ring and collnetdirect for all functions, then select tree
-// and collnetdirect for allreduce and ring for broadcast.
+//     NCCL_ALGO="环,collnetdirect;全规约:树,collnetdirect;广播:环"
+// 对所有算子启用 环 与 collnetdirect，然后为 全规约 选择 树
+// 和 collnetdirect，为 广播 选择 环。
 //
-//     NCCL_PROTO="LL,Simple;allreduce:^LL"
-// Enable LL and Simple for all functions, but everything except LL
-// for allreduce.
+//     NCCL_PROTO="LL,Simple;全规约:^LL"
+// 对所有算子启用 LL 与 Simple 协议，但对 全规约 启用除 LL 之外的
+// 全部协议。
 //
-//     NCCL_PROTO="^LL128;allreduce:LL128"
-// Enable everything but LL128, but only LL128 for allreduce.
+//     NCCL_PROTO="^LL128;全规约:LL128"
+// 启用除 LL128 之外的全部，但对 全规约 只启用 LL128。
 ncclResult_t parseList(const char* str, const char* prefixElems[], int nprefixes, const char* elems[], int nelems,
                        int* list) {
   ncclResult_t ret = ncclSuccess;
@@ -84,9 +84,9 @@ ncclResult_t parseList(const char* str, const char* prefixElems[], int nprefixes
     char* elemList = strtok_r(NULL, ":", &tmpSubStr);
     if (elemList == NULL) {
       if (fullToken != fullStr) {
-        // It makes no sense for any entry other than the first to not have a prefix,
-        // because then all the prefixes before the prefix-less entry would be
-        // overwritten.
+        // 除第一项之外的其它项如果不带前缀是没有意义的，
+        // 因为那样的话，出现在这个无前缀项之前的所有前缀都会被
+        // 被覆盖。
         WARN("All entries except the first must have a prefix: \"%s\"", str);
         ret = ncclInvalidUsage;
         goto fail;
@@ -152,7 +152,7 @@ fail:
   goto exit;
 }
 
-// NVLS efficiency factor.
+// NVLS 效率 factor.
 static const float nvlsEfficiency[NCCL_NUM_COMPCAPS] = {
   0.0f, // Volta
   0.0f, // Ampere
@@ -160,8 +160,8 @@ static const float nvlsEfficiency[NCCL_NUM_COMPCAPS] = {
   0.74f, // Blackwell
 };
 
-// Default tuner constants (positional initializers for C++17 compatibility)
-// clang-format off
+// 调优器的默认常量(采用位置初始化写法以兼容 C++17)
+// clang-格式 off
 static const ncclTunerConstants_t ncclTunerConstantsDefaults = {
   // baseLatencies
   {
@@ -227,7 +227,7 @@ static const ncclTunerConstants_t ncclTunerConstantsDefaults = {
     {0.0, 96.0, 80.0} /* Blackwell (N1/N2/N4) */
   }
 };
-// clang-format on
+// clang-格式 on
 
 NCCL_PARAM(PatEnable, "PAT_ENABLE", 2);
 static int ncclPatEnable(struct ncclComm* comm) {
@@ -239,7 +239,7 @@ static int ncclPatEnable(struct ncclComm* comm) {
   return 1;
 }
 
-// Network post overhead in ns (1000 = 1 us)
+// 网络 后 开销 入 ns (1000 = 1 us)
 NCCL_PARAM(NetOverhead, "NET_OVERHEAD", -2);
 
 static float getNetOverhead(struct ncclComm* comm) {
@@ -282,7 +282,7 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
                                           minCompCap >= 80 ? NCCL_AMPERE_COMPCAP_IDX :
                                                              NCCL_VOLTA_COMPCAP_IDX);
   int index2 = nNodes <= 2 ? nNodes - 1 : 2;
-  // LL: for single node, we look at GPU type; for multi-node, we look at CPU type
+  // LL 协议：单节点场景看 GPU 型号，多节点场景看 CPU 型号(因为瓶颈位置不同)
   int index1 = nNodes == 1 ? compCapIndex :
                (comm->cpuVendor == NCCL_TOPO_CPU_VENDOR_AMD || comm->cpuVendor == NCCL_TOPO_CPU_VENDOR_MIXED) ? 1 :
                                                                                                                 0;
@@ -291,7 +291,7 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
   double perChMaxRingLL128Bw = comm->tunerConstants.perChMaxRingLL128Bws[compCapIndex][index2];
   double perChMaxTreeLL128Bw = comm->tunerConstants.perChMaxTreeLL128Bws[compCapIndex][index2];
   double perChMaxNVLSTreeBw = comm->tunerConstants.perChMaxNVLSTreeBws[compCapIndex][index2];
-  // De-penalize Tree/Simple latency on Power systems to favor Tree than Ring
+  // 在 Power 架构系统上降低 树/Simple 的延迟惩罚，使其更倾向于选择 树 而非 环
   if (comm->cpuArch == NCCL_TOPO_CPU_ARCH_POWER)
     comm->tunerConstants.hwLatencies[NCCL_HW_PCI][NCCL_ALGO_TREE][NCCL_PROTO_SIMPLE] =
       comm->tunerConstants.hwLatencies[NCCL_HW_PCI][NCCL_ALGO_RING][NCCL_PROTO_SIMPLE];
@@ -322,25 +322,25 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
         int collnet = (a == NCCL_ALGO_COLLNET_DIRECT || a == NCCL_ALGO_COLLNET_CHAIN) ? 1 : 0;
         float bw = nNodes <= 2 || collnet ? graphs[a]->bwIntra : graphs[a]->bwInter;
         if (a == NCCL_ALGO_NVLS_TREE || a == NCCL_ALGO_NVLS) {
-          // NVLS/NVLStree needs at least 2 channels
+          // NVLS/NVLStree needs 至少 2 通道
           if (graphs[a]->nChannels < 2) continue;
-          // Convert to NVLS busBW/channel
+          // 换算为 NVLS 场景下每个 通道 的总线带宽
           float intraBw =
             graphs[a]->bwIntra * nvlsEfficiency[compCapIndex] * (graphs[a]->nChannels - 1) / graphs[a]->nChannels;
-          // AllReduce pipelines two operations.
+          // 全规约 pipelines two 操作.
           if (coll == ncclFuncAllReduce) {
             intraBw *= 2.0f;
           } else {
             intraBw *= (ppn - 1) / ppn;
           }
-          // Handle 2 node case of NVLSTree
+          // 处理 NVLSTree 的双节点特例
           float interBw = graphs[a]->bwInter * ((nNodes <= 2 && a == NCCL_ALGO_NVLS_TREE) ? 2 : 1);
           bw = std::min({intraBw, interBw,
                          a == NCCL_ALGO_NVLS_TREE ? (float)perChMaxNVLSTreeBw : std::numeric_limits<float>::max()});
         };
         float busBw = graphs[a]->nChannels * bw;
 
-        // Various model refinements
+        // 各种 model refinements
         if (a == NCCL_ALGO_RING && p == NCCL_PROTO_LL) busBw = std::min(llMaxBw, busBw * .5);
         if (a == NCCL_ALGO_RING && p == NCCL_PROTO_LL128)
           busBw = std::min(busBw * (0.92 /*120.0/128.0*/), graphs[a]->nChannels * perChMaxRingLL128Bw);
@@ -358,15 +358,15 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
           if (coll == ncclFuncAllGather || coll == ncclFuncReduceScatter) {
             busBw = ppn * std::min(graphs[a]->bwIntra, graphs[a]->bwInter * 0.9f);
           } else {
-            // Collnet+Direct requires all GPUs to have a local NIC to work at full speed
+            // Collnet+Direct 要求每张 GPU 都有本地网卡才能跑到满速
             float factor = ppn / (1.0 * graphs[a]->nChannels); // GPU/NIC ratio
             factor -= (factor - 1) / 2;
             busBw /= factor;
             if (minCompCap >= 90) busBw *= .85;
           }
         }
-        // disable collnet for allgather/reducescatter if #localranks > #heads
-        // AllGather/ReduceScatter requires 1:1 GPU:NIC
+        // 当本地 rank 数超过 头 数时，对 全收集/reducescatter 禁用 collnet
+        // 全收集/ReduceScatter requires 1:1 GPU:NIC
         if ((a == NCCL_ALGO_NVLS || a == NCCL_ALGO_COLLNET_DIRECT) && p == NCCL_PROTO_SIMPLE &&
             (coll == ncclFuncAllGather || coll == ncclFuncReduceScatter) && comm->nNodes > 1) {
           int nHeads = 0;
@@ -390,7 +390,7 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
           }
         }
 
-        // Convert bus BW to algorithm BW
+        // 把总线带宽换算为算法带宽(算法带宽才反映有效吞吐)
         if (!(a != NCCL_ALGO_RING && (coll == ncclFuncAllGather || coll == ncclFuncReduceScatter))) {
           float ratio = 1.0f;
           if (a == NCCL_ALGO_RING || a == NCCL_ALGO_NVLS || a == NCCL_ALGO_NVLS_TREE) ratio *= (1.0 * nRanks) / nsteps;
@@ -400,11 +400,11 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
         comm->bandwidths[coll][a][p] = busBw;
         comm->latencies[coll][a][p] = comm->tunerConstants.baseLatencies[a][p];
         float intraLat = comm->tunerConstants.hwLatencies[intraHw[a]][a][p];
-        // With ppn=1 latencies are fully exposed, use the Tree network latency
+        // 当每节点仅 1 个进程(ppn=1)时延迟无法被掩盖，改用 树 的网络延迟模型
         float interLat = ppn == 1 ? comm->tunerConstants.hwLatencies[NCCL_HW_NET][NCCL_ALGO_TREE][p] :
                                     comm->tunerConstants.hwLatencies[NCCL_HW_NET][a][p];
         interLat += graphs[a]->latencyInter;
-        // Also add the flush extra latency
+        // 另外还要加上 刷写 操作带来的额外延迟
         if (p == NCCL_PROTO_SIMPLE) interLat += graphs[a]->latencyInter;
 
         if (a == NCCL_ALGO_RING) {
@@ -413,12 +413,12 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
             if (graphs[a]->sameChannels) {
               comm->latencies[coll][a][p] += lat;
             } else {
-              // Add some chunk latency, waiting for proper chunk modeling
+              // 叠加一部分 块 级延迟，等待后续引入更精确的 块 建模
               if (p == NCCL_PROTO_SIMPLE) lat = comm->tunerConstants.hwLatencies[hw[a]][NCCL_ALGO_TREE][p];
               comm->latencies[coll][a][p] += nsteps * lat;
             }
           } else {
-            // Inter-node rings still have to launch nsteps * net overhead.
+            // 跨节点的环仍然要付出 nsteps 次网络开销。
             float netOverhead = 0.0;
             if (nNodes > 1) {
               netOverhead = getNetOverhead(comm);
@@ -434,7 +434,7 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
           }
         } else if (a == NCCL_ALGO_COLLNET_DIRECT) {
           comm->latencies[coll][a][p] +=
-            // Add 0.4 us arity serialization latency
+            // Add 0.4 us arity serialization 延迟
             2 * (std::min(1, (nRanks / nNodes - 1)) * intraLat + (nRanks / nNodes - 1) * 0.4) + interLat;
         } else if (a == NCCL_ALGO_COLLNET_CHAIN) {
           comm->latencies[coll][a][p] += 2 * (nRanks / nNodes - 1) * intraLat + interLat;
@@ -454,8 +454,8 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
     }
   }
 
-  // Protocols/Algorithms enable/disable, and user overrides.
-  // All are enabled except ll128 which is enabled by default only in certain cases.
+  // 协议/算法的启用与禁用，以及用户的显式覆盖设置。
+  // 默认全部启用，唯独 LL128 只在特定条件下才默认开启。
   int protoEnable[NCCL_NUM_FUNCTIONS * NCCL_NUM_PROTOCOLS];
   int algoEnable[NCCL_NUM_FUNCTIONS * NCCL_NUM_ALGORITHMS];
   for (int f = 0; f < NCCL_NUM_FUNCTIONS; f++) {
@@ -515,14 +515,14 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
   for (int f = 0; f < NCCL_NUM_FUNCTIONS; f++) {
     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
       int disable = 0;
-      // Disable NVLS Tree on a single node
+      // Disable NVLS 树 on a 单个 节点
       if (comm->nNodes == 1 && a == NCCL_ALGO_NVLS_TREE) disable = 1;
-      // Disable Collnet+Direct, Collnet+Chain or Collnet+NVLS if collnet is not supported.
+      // 若不支持 collnet，则一并禁用 Collnet+Direct、Collnet+Chain 与 Collnet+NVLS。
       if (comm->config.collnetEnable == 0 &&
           (a == NCCL_ALGO_COLLNET_DIRECT || a == NCCL_ALGO_COLLNET_CHAIN || (a == NCCL_ALGO_NVLS && comm->nNodes > 1)))
         disable = 1;
       if (comm->config.collnetEnable && a == NCCL_ALGO_COLLNET_CHAIN && comm->collNetChainSupport == 0) disable = 1;
-      // Disable CollNet+Direct if not on an NVSwitch system
+      // Disable CollNet+Direct 否则 on an NVSwitch 系统
       if (nvsCount == 0 && a == NCCL_ALGO_COLLNET_DIRECT) disable = 1;
       if (disable) algoEnable[f * NCCL_NUM_ALGORITHMS + a] = 0;
     }
@@ -535,10 +535,10 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
         if (pEnable == 2 && p == NCCL_PROTO_LL128) {
           pEnable = 1;
           if (ncclParamLl128C2c() && minCompCap >= 90) {
-            // Enable LL128 by default only on Hopper/Blackwell for all connections up to P2C and PXN.
+            // 仅在 Hopper/Blackwell 架构上默认启用 LL128，且连接类型不超过 P2C 与 PXN。
             pEnable &= (graphs[a]->typeInter <= PATH_PXN);
           } else {
-            // Enable LL128 only up to PXB. Don't enable LL128 over PxN because PxN can encapsulate PxB or P2C links.
+            // 只在 PXB 及以内启用 LL128。不要在 PxN 上启用，因为 PxN 可能内含 PxB 或 P2C 链路(可靠性无法保证)。
             pEnable &= (graphs[a]->typeInter <= PATH_PXB);
             if (!ncclParamLl128C2c() && minCompCap >= 90) {
               INFO(NCCL_GRAPH, "Disabling LL128 over all PxN connections (PXB and C2C). This ensures that no C2C link "
@@ -546,7 +546,7 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
             }
           }
           pEnable &= (graphs[a]->typeIntra <= PATH_NVB);
-          // Enable LL128 for interoperability between GPUs with different compcap (Hopper and above)
+          // 为不同计算能力(Hopper 及以上)的 GPU 之间的互操作启用 LL128
           pEnable &= (minCompCap == maxCompCap || minCompCap >= 90);
           pEnable &= !(minCompCap < 70 || (minCompCap == 90 && CUDART_VERSION == 11080 && c == ncclFuncAllReduce &&
                                            a == NCCL_ALGO_RING && comm->nRanks == 2));
@@ -601,7 +601,7 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
     }
   }
 
-  // Set per-thread amount of work before we increase nThreads and nChannels
+  // 设定单线程的工作量阈值：只有超过该阈值才会增加 nThreads 与 nChannels
   for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
     comm->threadThresholds[a][NCCL_PROTO_LL] = NCCL_LL_THREAD_THRESHOLD;
     comm->threadThresholds[a][NCCL_PROTO_LL128] = NCCL_LL128_THREAD_THRESHOLD;
@@ -611,7 +611,7 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
   comm->threadThresholds[NCCL_ALGO_COLLNET_DIRECT][NCCL_PROTO_SIMPLE] = 512;
   comm->threadThresholds[NCCL_ALGO_COLLNET_CHAIN][NCCL_PROTO_SIMPLE] = 512;
 
-  // Override defaults with user env
+  // 用用户设置的环境变量覆盖默认值
   const char* str = ncclGetEnv("NCCL_THREAD_THRESHOLDS");
   if (str) {
     INFO(NCCL_ENV, "NCCL_THREAD_THRESHOLDS set by environment to %s", str);
@@ -634,15 +634,15 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
   return ncclSuccess;
 }
 
-// Trees are not perfectly sticking to the model for medium sizes. Applying a static correction
-// factor is not ideal but works quite well. Powers of two, 64 B to 256MB.
-// clang-format off
+// 中等数据量下 树 的实测表现与模型预测有偏差。这里施加一个静态修正
+// 系数：虽不够优雅但效果相当好。取值按 2 的幂分档，覆盖 64 B 到 256MB。
+// clang-格式 off
 static float treeCorrectionFactor[NCCL_NUM_PROTOCOLS][24] = {
   { 1.0, 1.0, 1.0, 1.0,  .9,  .8,  .7,  .7,  .7,  .7,  .6,  .5,  .4,  .4,  .5,  .6,  .7,  .8,  .9, 1.0, 1.0, 1.0, 1.0, 1.0 },
   { 1.0, 1.0, 1.0, 1.0, 1.0,  .9,  .8,  .8,  .8,  .7,  .6,  .6,  .6,  .6,  .6,  .6,  .8,  .9,  .9,  .9,  .9, 1.0, 1.0, 1.0 },
   {  .9,  .9,  .9,  .9,  .9,  .9,  .9,  .8,  .7,  .6,  .6,  .5,  .5,  .5,  .5,  .6,  .7,  .8,  .7,  .7,  .8,  .9,  .9,  .9 }
 };
-// clang-format on
+// clang-格式 on
 
 ncclResult_t ncclTopoGetAlgoTime(struct ncclComm* comm, int coll, int algorithm, int protocol, size_t nBytes,
                                  int numPipeOps, float* time) {
@@ -665,7 +665,7 @@ ncclResult_t ncclTopoGetAlgoTime(struct ncclComm* comm, int coll, int algorithm,
       nBytes / (comm->nChannels * comm->nRanks) >= 64) {
     lat *= comm->minCompCap < 80 ? 1.9 : 1.4; // Plateau effect of ring
   }
-  // Tree pipelining saves latency in aggregation cases
+  // 树 pipelining saves 延迟 入 aggregation 情形
   int latCount = algorithm == NCCL_ALGO_RING ? numPipeOps : DIVUP(numPipeOps, NCCL_MAX_DEV_WORK_BATCH_COLLS);
   *time = lat * latCount + nBytes / (1000 * bw);
   return ncclSuccess;

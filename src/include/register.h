@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/register.h — 用户 buffer 注册接口声明
+ * ----------------------------------------------------------------------------
+ * 声明 ncclCommRegister/ncclCommDeregister 等用户 buffer 注册入口，以及注册表的
+ * 管理结构。注册后 buffer 可被 transport 直接访问（Pinned/IPC/GDR）。
+ */
+
 #ifndef NCCL_REGISTER_H_
 #define NCCL_REGISTER_H_
 
@@ -37,26 +44,26 @@ struct ncclRegNetHandles {
 };
 
 struct ncclReg {
-  // common attributes
+  // 通用 属性
   uintptr_t begAddr, endAddr; // page aligned
   int localRefs;
   int graphRefs;
   uint32_t state;
-  // net reg
+  // 网络 reg
   struct ncclRegNetHandles* netHandleHead;
-  // nvls reg
+  // NVLS 注册
   CUdeviceptr regAddr;
   size_t regUCSize, regMCSize;
   int dev;
   CUmemGenericAllocationHandle mcHandle;
   uintptr_t caddrs[NCCL_MAX_LOCAL_RANKS]; /* use to check if NVLS buffers match among intra-node ranks */
-  // collnet reg
+  // collnet 注册
   void* collnetHandle;
   // gin reg
   void** ginMhandles;
   void** ginHandles;
   struct ncclProxyConnector* collnetProxyconn;
-  // general ipc reg
+  // 通用 ipc 注册
   struct ncclPeerRegIpcAddr regIpcAddrs;
   struct ncclIpcRegInfo** ipcInfos;  // Dynamically allocated, sized to ipcInfosSize
   int ipcInfosSize;                  // Size of ipcInfos array (localRanks or nRanks for cross-clique)

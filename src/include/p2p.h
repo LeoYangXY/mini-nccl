@@ -7,6 +7,13 @@
 
 #include <stdlib.h>
 
+/*
+ * include/p2p.h — P2P 传输结构定义
+ * ----------------------------------------------------------------------------
+ * 定义 P2P(点对点)传输相关的结构：ncclP2pOp 等发送/接收操作描述，与 P2P 连接
+ * 所需的元信息。具体建链逻辑在 transport/p2p.cc。
+ */
+
 #ifndef NCCL_P2P_H_
 #define NCCL_P2P_H_
 
@@ -16,7 +23,7 @@
 #include "core.h"
 #include "mem_manager.h"
 
-// CUmemFabricHandle compatibility definitions are now in mem_manager.h
+// CUmemFabricHandle compatibility definitions are now 入 mem_manager.h
 
 typedef union {
   uint64_t data; // Needs to hold a CUmemGenericAllocationHandle for UDS fd support
@@ -24,9 +31,9 @@ typedef union {
 } ncclCuDesc;
 
 typedef union {
-  // Legacy CUDA IPC
+  // 传统 CUDA IPC 路径
   cudaIpcMemHandle_t devIpc;
-  // cuMem API support
+  // 是否支持 cuMem(CUDA 虚拟内存管理)API
   struct {
     ncclCuDesc cuDesc;
     CUmemGenericAllocationHandle memHandle;

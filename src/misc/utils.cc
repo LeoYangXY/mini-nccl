@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/misc/utils.cc — 通用工具实现
+ * ----------------------------------------------------------------------------
+ * 实现 include/utils.h 的通用工具：字符串/时间/数值解析、字节单位换算、bit 操作、
+ * 链表/队列等，被各模块广泛引用，属于“杂项工具箱”。
+ */
+
 #include "utils.h"
 #include "core.h"
 #include "os.h"
@@ -14,7 +21,7 @@
 #include <stdlib.h>
 #include <mutex>
 
-// Get current Compute Capability
+// 获取 当前的 计算 能力
 int ncclCudaCompCap() {
   int cudaDev;
   if (!CUDASUCCESS(cudaGetDevice(&cudaDev))) return 0;
@@ -47,23 +54,23 @@ ncclResult_t busIdToInt64(const char* busId, int64_t* id) {
   return ncclSuccess;
 }
 
-// Get an int64 from a PCI path. For example, sys/class/pci0000:00/0000:00:02.0/0000:02:00.0/ will return 0x000002000.
+// 获取 an int64 from a PCI 路径. 例如, sys/类/pci0000:00/0000:00:02.0/0000:02:00.0/ will 返回 0x000002000.
 ncclResult_t pciPathToInt64(char* path, int64_t* id) {
   char* str = path + strlen(path) - 1;
-  // Remove trailing "/"
+  // 移除末尾的 "/"
   if (*str == '/') str--;
-  // Find next /
+  // 查找下一个 /
   while (*str != '/') str--;
   str++;
   NCCLCHECK(busIdToInt64(str, id));
   return ncclSuccess;
 }
 
-// Convert a logical cudaDev index to the NVML device minor number
+// 将 ... 转换 logical cudaDev 索引 到 NVML 设备 minor number
 ncclResult_t getBusId(int cudaDev, int64_t* busId) {
-  // On most systems, the PCI bus ID comes back as in the 0000:00:00.0
-  // format. Still need to allocate proper space in case PCI domain goes
-  // higher.
+  // On most systems, the PCI 总线 ID comes 后 as 在 ... 中 0000:00:00.0
+  // 格式. 仍需 to 分配 proper space 以防 PCI 域 goes
+  // 更高。
   char busIdStr[] = "00000000:00:00.0";
   CUDACHECK(cudaDeviceGetPCIBusId(busIdStr, sizeof(busIdStr), cudaDev));
   NCCLCHECK(busIdToInt64(busIdStr, busId));
@@ -118,7 +125,7 @@ static void getHostHashOnce() {
   char hostHash[1024];
   const char* hostId;
 
-  // Fall back is the full hostname if something fails
+  // 回退为 the 满的 hostname 若是如此mething 失败
   (void)getHostName(hostHash, sizeof(hostHash), '\0');
   int offset = strlen(hostHash);
 
@@ -145,7 +152,7 @@ static void getHostHashOnce() {
 #endif
   }
 
-  // Make sure the string is terminated
+  // 确保该 string is terminated
   hostHash[sizeof(hostHash) - 1] = '\0';
 
   TRACE(NCCL_INIT, "unique hostname '%s'", hostHash);
@@ -172,7 +179,7 @@ uint64_t hashCombine(uint64_t baseHash, uint64_t value) {
  */
 uint64_t getPidHash(void) {
   char pname[1024];
-  // Start off with our pid ($$)
+  // 以 ... 开始 our pid ($$)
   sprintf(pname, "%ld", (long)ncclOsGetPid());
   int plen = strlen(pname);
 #if defined(NCCL_OS_LINUX)
@@ -200,7 +207,7 @@ int parseStringList(const char* string, struct netIf* ifList, int maxList) {
     char* tok = ncclOsStrSep(&c, ":");
     if (tok && tok[0] != '\0') {
       snprintf(ifList[ifNum].prefix, sizeof(ifList[ifNum].prefix), "%s", tok);
-      // port, rail, and plane will default to -1 if absent or empty
+      // 端口, rail, 并且 plane will 默认 to -1 若 absent 或者 空的
       tok = ncclOsStrSep(&c, ":");
       ifList[ifNum].port = (tok && tok[0] != '\0') ? atoi(tok) : -1;
       tok = ncclOsStrSep(&c, ":");
@@ -216,7 +223,7 @@ int parseStringList(const char* string, struct netIf* ifList, int maxList) {
 }
 
 static bool matchIf(const char* string, const char* ref, bool matchExact) {
-  // Make sure to include '\0' in the exact case
+  // 务必确保 包含 '\0' 在 ... 中 exact 情形
   int matchLen = matchExact ? strlen(string) + 1 : strlen(ref);
   return strncmp(string, ref, matchLen) == 0;
 }
@@ -229,7 +236,7 @@ static bool matchPort(const int port1, const int port2) {
 }
 
 bool matchIfList(const char* string, int port, struct netIf* ifList, int listSize, bool matchExact, int* ifId) {
-  // Make an exception for the case where no user list is defined
+  // 做个例外 为了 情形 何処 无 用户 列表 被定义为
   if (ifId) *ifId = -1;
   if (listSize == 0) return true;
 
@@ -245,17 +252,17 @@ bool matchIfList(const char* string, int port, struct netIf* ifList, int listSiz
 thread_local struct ncclThreadSignal ncclThreadSignalLocalInstance;
 
 void* ncclMemoryStack::allocateSpilled(struct ncclMemoryStack* me, size_t size, size_t align) {
-  // `me->hunks` points to the top of the stack non-empty hunks. Hunks above
-  // this (reachable via `->above`) are empty.
+  // `me->hunks` points 到 顶 的 栈 non-空的 hunks. Hunks 上方
+  // 此 (reachable via `->上方`) are 空的.
   struct Hunk* top = me->topFrame.hunk;
   size_t mallocSize = 0;
 
-  // If we have lots of space left in hunk but that wasn't enough then we'll
-  // allocate the object unhunked.
+  // 若 我们已有 lots of space 左 入 hunk 但 那个 wasn't enough then we'll
+  // 分配 object unhunked.
   if (me->topFrame.end - me->topFrame.bumper >= 8 << 10) goto unhunked;
 
-  // If we have another hunk (which must be empty) waiting above this one and
-  // the object fits then use that.
+  // 若 我们已有 另一个 hunk (该 必须为 空的) waiting 上方 此 one 并且
+  // the object fits then 使用 那个.
   if (top && top->above) {
     struct Hunk* top1 = top->above;
     uintptr_t uobj = (reinterpret_cast<uintptr_t>(top1) + sizeof(struct Hunk) + align - 1) & -uintptr_t(align);
@@ -268,7 +275,7 @@ void* ncclMemoryStack::allocateSpilled(struct ncclMemoryStack* me, size_t size, 
   }
 
   { // If the next hunk we're going to allocate wouldn't be big enough but the
-    // Unhunk proxy fits in the current hunk then go allocate as unhunked.
+    // Unhunk 代理 fits 入 当前 hunk then go 分配 as unhunked.
     size_t nextSize = (top ? top->size : 0) + (64 << 10);
     constexpr size_t maxAlign = 64;
     if (nextSize < sizeof(struct Hunk) + maxAlign + size) {
@@ -276,8 +283,8 @@ void* ncclMemoryStack::allocateSpilled(struct ncclMemoryStack* me, size_t size, 
       if (uproxy + sizeof(struct Unhunk) <= me->topFrame.end) goto unhunked;
     }
 
-    // At this point we must need another hunk, either to fit the object
-    // itself or its Unhunk proxy.
+    // 此时 we must 需要 另一个 hunk, 二者之一 to fit the object
+    // itself 或者 its Unhunk 代理.
     mallocSize = nextSize;
     INFO_LOC(NCCL_ALLOC_HOST, "memory stack hunk malloc(%llu)", (unsigned long long)mallocSize);
     struct Hunk* top1 = (struct Hunk*)malloc(mallocSize);
@@ -301,7 +308,7 @@ void* ncclMemoryStack::allocateSpilled(struct ncclMemoryStack* me, size_t size, 
 
 unhunked:
   { // We need to allocate the object out-of-band and put an Unhunk proxy in-band
-    // to keep track of it.
+    // to 保留 track of it.
     uintptr_t uproxy = (me->topFrame.bumper + alignof(Unhunk) - 1) & -uintptr_t(alignof(Unhunk));
     Unhunk* proxy = reinterpret_cast<Unhunk*>(uproxy);
     me->topFrame.bumper = uproxy + sizeof(Unhunk);
@@ -320,7 +327,7 @@ malloc_exhausted:
 }
 
 void ncclMemoryStackDestruct(struct ncclMemoryStack* me) {
-  // Free unhunks first because both the frames and unhunk proxies lie within the hunks.
+  // 释放 unhunks 第一 因为 两者 the frames 并且 unhunk 代理 lie with在 ... 中 hunks.
   struct ncclMemoryStack::Frame* f = &me->topFrame;
   while (f != nullptr) {
     struct ncclMemoryStack::Unhunk* u = f->unhunks;
@@ -330,7 +337,7 @@ void ncclMemoryStackDestruct(struct ncclMemoryStack* me) {
     }
     f = f->below;
   }
-  // Free hunks
+  // 释放 hunks
   struct ncclMemoryStack::Hunk* h = me->stub.above;
   while (h != nullptr) {
     struct ncclMemoryStack::Hunk* h1 = h->above;
@@ -346,13 +353,13 @@ ncclResult_t ncclBitsToString(uint32_t bits, uint32_t mask, const char* (*toStr)
 
   bits &= mask;
 
-  // print wildcard value if all bits set
+  // 打印 wildcard 值 若 所有 位 设置
   if (wildcard && bits == mask) {
     snprintf(buf, bufLen, "%s", wildcard);
     return ncclSuccess;
   }
 
-  // Add each set bit to string
+  // Add 每个 设置 位 to string
   int pos = 0;
   for (int i = 0; bits; i++, bits >>= 1) {
     if (bits & 1) {
@@ -365,8 +372,8 @@ ncclResult_t ncclBitsToString(uint32_t bits, uint32_t mask, const char* (*toStr)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Hash function for pointer types (shared by address map implementations)
-// Uses shadowpool's algorithm
+// Hash 函数 for 指针 类型 (shared by 地址 映射 实现)
+// 使用 shadowpool's 算法
 uint64_t ncclHashPointer(int hbits, void* key) {
   uintptr_t h = reinterpret_cast<uintptr_t>(key);
   h ^= h >> 32;
@@ -375,10 +382,10 @@ uint64_t ncclHashPointer(int hbits, void* key) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Intrusive address map implementation (untyped core functions)
+// Intrusive 地址 映射 实现 (untyped core 函数)
 
-// Helper: Read key from object at given offset
-// Key must be convertible to uintptr_t, so we read keySize bytes and zero-extend
+// 辅助: 读取 key from object at 给定的 偏移
+// Key 必须为 convertible to uintptr_t, 所以 we 读取 keySize 字节 并且 zero-extend
 static inline uintptr_t readKey(void* object, int keySize, int keyFieldOffset) {
   void* keyPtr = (char*)object + keyFieldOffset;
   uintptr_t result = 0;
@@ -386,8 +393,8 @@ static inline uintptr_t readKey(void* object, int keySize, int keyFieldOffset) {
   return result;
 }
 
-// Helper: Read next pointer from object at given offset
-// Uses memcpy to avoid strict aliasing violations when actual type is T*, not void*
+// 辅助: 读取 下一个 指针 from object at 给定的 偏移
+// 使用 memcpy to 避免 strict aliasing violations 当 actual 类型 is T*, 不 void*
 static inline void* readNextPtr(void* object, int nextFieldOffset) {
   void* nextPtr = (char*)object + nextFieldOffset;
   void* result = nullptr;
@@ -395,8 +402,8 @@ static inline void* readNextPtr(void* object, int nextFieldOffset) {
   return result;
 }
 
-// Helper: Write next pointer to object at given offset
-// Uses memcpy to avoid strict aliasing violations when actual type is T*, not void*
+// 辅助: 写入 下一个 指针 to object at 给定的 偏移
+// 使用 memcpy to 避免 strict aliasing violations 当 actual 类型 is T*, 不 void*
 static inline void writeNextPtr(void* object, int nextFieldOffset, void* value) {
   void* nextPtr = (char*)object + nextFieldOffset;
   memcpy(nextPtr, &value, sizeof(void*));
@@ -404,7 +411,7 @@ static inline void writeNextPtr(void* object, int nextFieldOffset, void* value) 
 
 ncclResult_t ncclIntruAddressMapInsert_untyped(struct ncclIntruAddressMap_untyped* map, int keySize, int keyFieldOffset,
                                                int nextFieldOffset, uintptr_t key, void* object) {
-  // Runtime validation
+  // Runtime 校验
   if (map == nullptr) {
     WARN("Intrusive address map pointer is NULL");
     return ncclInvalidUsage;
@@ -418,7 +425,7 @@ ncclResult_t ncclIntruAddressMapInsert_untyped(struct ncclIntruAddressMap_untype
     return ncclInvalidUsage;
   }
 
-  // Lazy initialization - create table on first insert
+  // Lazy 初始化 - 创建 table on 第一 insert
   if (map->hbits == 0) {
     const int initHbits = 4;
     const size_t tableEntries = (size_t)1 << initHbits;
@@ -433,26 +440,26 @@ ncclResult_t ncclIntruAddressMapInsert_untyped(struct ncclIntruAddressMap_untype
 
   int hbits = map->hbits;
 
-  // Check for address map size increase before inserting. Maintain 2:1 object:bucket ratio.
+  // 检查 for 地址 映射 大小 increase 之前 inserting. Maintain 2:1 object:bucket ratio.
   if (map->count + 1 > 2 << hbits) {
     int oldHbits = hbits;
     int oldSize = 1 << oldHbits;
     int newHbits = hbits + 1;
     int newSize = 1 << newHbits;
 
-    // Allocate a new table (don't use realloc to avoid data corruption during rehashing)
+    // 分配 a new table (don't 使用 realloc to 避免 数据 corruption 期间 rehashing)
     void** newTable = (void**)malloc(newSize * sizeof(void*));
     if (newTable == nullptr) {
       WARN("Intrusive address map resize failed: malloc(%d entries) returned null", newSize);
       return ncclSystemError;
     }
 
-    // Initialize all new buckets to nullptr
+    // 初始化 所有 new buckets to nullptr
     for (int i = 0; i < newSize; i++) {
       newTable[i] = nullptr;
     }
 
-    // Rehash all existing entries from old table to new table
+    // Rehash 所有 existing entries from old table to new table
     for (int i = 0; i < oldSize; i++) {
       void* obj = map->table[i];
 
@@ -466,17 +473,17 @@ ncclResult_t ncclIntruAddressMapInsert_untyped(struct ncclIntruAddressMap_untype
       }
     }
 
-    // Free old table and update to new table
+    // 释放 old table 并且 update to new table
     free(map->table);
     map->table = newTable;
     map->hbits = newHbits;
   }
 
-  // Insert object into appropriate bucket
+  // 将对象插入合适的桶中
   uint64_t b = ncclHashPointer(map->hbits, (void*)key);
   void* currentNext = readNextPtr(object, nextFieldOffset);
 
-  // Check if next pointer is already non-NULL (object might already be in a list)
+  // 检查 若 下一个 指针 is 已经 non-NULL (object might 已经 be 入 a 列表)
   if (currentNext != nullptr) {
     INFO(NCCL_INIT,
          "Intrusive map: inserting object %p with non-NULL next pointer %p (key=0x%lx). "
@@ -493,7 +500,7 @@ ncclResult_t ncclIntruAddressMapInsert_untyped(struct ncclIntruAddressMap_untype
 
 ncclResult_t ncclIntruAddressMapFind_untyped(struct ncclIntruAddressMap_untyped* map, int keySize, int keyFieldOffset,
                                              int nextFieldOffset, uintptr_t key, void** object) {
-  // Runtime validation
+  // Runtime 校验
   if (map == nullptr) {
     WARN("Intrusive address map pointer is NULL");
     return ncclInvalidUsage;
@@ -509,7 +516,7 @@ ncclResult_t ncclIntruAddressMapFind_untyped(struct ncclIntruAddressMap_untyped*
 
   *object = nullptr;
 
-  // Empty map is not an error - just means key not found
+  // 空的 映射 is 不 an 错误 - 仅 means key 不 已找到
   if (map->hbits == 0) {
     return ncclSuccess;
   }
@@ -526,13 +533,13 @@ ncclResult_t ncclIntruAddressMapFind_untyped(struct ncclIntruAddressMap_untyped*
     obj = readNextPtr(obj, nextFieldOffset);
   }
 
-  // Key not found is not an error - *object is already nullptr
+  // Key 不 已找到 is 不 an 错误 - *object is 已经 nullptr
   return ncclSuccess;
 }
 
 ncclResult_t ncclIntruAddressMapRemove_untyped(struct ncclIntruAddressMap_untyped* map, int keySize, int keyFieldOffset,
                                                int nextFieldOffset, uintptr_t key) {
-  // Runtime validation
+  // Runtime 校验
   if (map == nullptr) {
     WARN("Intrusive address map pointer is NULL");
     return ncclInvalidUsage;
@@ -542,7 +549,7 @@ ncclResult_t ncclIntruAddressMapRemove_untyped(struct ncclIntruAddressMap_untype
     return ncclInvalidUsage;
   }
 
-  // Removing from empty map is not an error - it's idempotent
+  // Removing from 空的 映射 is 不 an 错误 - it's idempotent
   if (map->hbits == 0) {
     return ncclSuccess;
   }
@@ -556,18 +563,18 @@ ncclResult_t ncclIntruAddressMapRemove_untyped(struct ncclIntruAddressMap_untype
     if (objKey == key) {
       void* next = readNextPtr(obj, nextFieldOffset);
 
-      // Update the previous pointer to skip the current object
+      // Update 上一个 指针 to skip 当前 object
       if (prev == nullptr) {
-        // Removing from head of bucket
+        // Removing from 头 of bucket
         map->table[b] = next;
       } else {
-        // Removing from middle/end of list
+        // Removing from 中间/末尾 of 列表
         writeNextPtr(prev, nextFieldOffset, next);
       }
 
       map->count -= 1;
 
-      // If this was the last entry, clean up the table (same pattern as non-intrusive map)
+      // 若 此 was 最后一个 entry, clean up the table (相同 pattern as non-intrusive 映射)
       if (map->count == 0) {
         free(map->table);
         map->hbits = 0;
@@ -581,6 +588,6 @@ ncclResult_t ncclIntruAddressMapRemove_untyped(struct ncclIntruAddressMap_untype
     obj = readNextPtr(obj, nextFieldOffset);
   }
 
-  // Key not found is not an error - remove is idempotent
+  // Key 不 已找到 is 不 an 错误 - remove is idempotent
   return ncclSuccess;
 }

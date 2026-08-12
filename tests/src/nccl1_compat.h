@@ -4,6 +4,12 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/nccl1_compat.h — NCCL 1.x 向后兼容头
+ * ----------------------------------------------------------------------------
+ * 提供 NCCL 1.x API 的兼容定义，使基于旧版 API 的测试代码仍能编译运行。
+ */
+
 #ifndef NCCL1_COMPAT_H
 #define NCCL1_COMPAT_H
 

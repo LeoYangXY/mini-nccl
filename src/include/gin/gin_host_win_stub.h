@@ -6,6 +6,13 @@
  * headers (gin_host.h, nccl_gin.h, gin_v*.h) are included when building on Windows.
  *************************************************************************/
 
+/*
+ * src/include/gin/gin_host_win_stub.h — GIN Windows 桩头 [GIN 相关/第三方]
+ * ----------------------------------------------------------------------------
+ * Windows 专用 stub：仅定义最小化的 GIN 类型与声明，使得在 Windows 下构建时
+ * 不会包含真正的 GIN 头(gin_host.h / nccl_gin.h / gin_v*.h)。
+ */
+
 #ifndef _NCCL_GIN_HOST_WIN_STUB_H_
 #define _NCCL_GIN_HOST_WIN_STUB_H_
 

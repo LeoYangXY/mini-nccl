@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/mlx5/mlx5dvsymbols.h — MLX5 符号动态加载 [第三方/Mellanox]
+ * ----------------------------------------------------------------------------
+ * 在 NCCL_BUILD_MLX5DV 下声明从 libmlx5dv 动态加载的符号，
+ * 通过 dlsym 获取 MLX5 direct verbs 函数指针。
+ */
+
 #ifndef NCCL_MLX5DV_SYMBOLS_H_
 #define NCCL_MLX5DV_SYMBOLS_H_
 

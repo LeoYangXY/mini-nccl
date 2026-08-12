@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/group.cc — group(分组启动)语义实现
+ * ----------------------------------------------------------------------------
+ * 实现 ncclGroupStart/ncclGroupEnd：在组区间内的多个 collective 调用先被收集，组
+ * 结束时统一调度、批量启动 kernel，既减少启动开销，又保证组内操作的一致性视图。
+ * 与 enqueue.cc 紧密协作（后续会做详细逐行注释）。
+ */
+
 #include "group.h"
 #include "debug.h"
 #include "enqueue.h"
@@ -24,12 +32,12 @@
 
 #define GROUP_MAX_RECLAIM_STEPS 10
 
-thread_local int ncclGroupDepth = 0; // depth of ncclGroupStart nesting
+thread_local int ncclGroupDepth = 0; // ncclGroupStart 嵌套的层数
 thread_local ncclResult_t ncclGroupError = ncclSuccess;
 thread_local struct ncclComm* ncclGroupCommHead[ncclGroupTaskTypeNum] = {nullptr};
 thread_local struct ncclComm* ncclGroupCommPreconnectHead = nullptr;
 thread_local struct ncclIntruQueue<struct ncclAsyncJob, &ncclAsyncJob::next> ncclAsyncJobs;
-thread_local int ncclGroupBlocking = -1; /* default mode */
+thread_local int ncclGroupBlocking = -1; /* 默认模式 */
 void* ncclAsyncJobMain(void* arg);
 
 ncclResult_t ncclAsyncLaunch(struct ncclAsyncJob* job, ncclResult_t (*func)(struct ncclAsyncJob*),
@@ -64,7 +72,7 @@ ncclResult_t ncclAsyncLaunch(struct ncclAsyncJob* job, ncclResult_t (*func)(stru
     if (ret == ncclSuccess) {
       ncclIntruQueueEnqueue(&ncclAsyncJobs, job);
     } else {
-      // no need to undo, the job hasn't run
+      // 无 需要 undo, the job hasn't run
       if (destructor) destructor(job);
     }
   }
@@ -185,7 +193,7 @@ static ncclResult_t ncclCollPreconnect(struct ncclComm* comm, bool* algoNeedConn
           NCCLCHECK(ncclTransportPatConnect(comm));
           break;
         }
-        // Yes, it's a dead code.  That's fine...
+        // 是的，这是死代码，没关系……
         // coverity[dead_error_begin]
       default:
         {
@@ -270,7 +278,7 @@ ncclResult_t ncclCommGroupRegisterSymmetric(struct ncclAsyncJob* job_) {
     struct ncclDevrCommCreateTask* task = ncclIntruQueueDequeue(&comm->devrState.commCreateTaskQueue);
     NCCLCHECKGOTO(ncclDevrCommCreateInternal(comm, task->reqs, task->outDevComm, /*isInternal=*/false, task->devCompat),
                   ret, fail);
-    freeDevCommRequirements(task->reqs); // free additional task memory for reqs
+    freeDevCommRequirements(task->reqs); // 释放 reqs 占用的额外任务内存
     free(task);
   }
 
@@ -311,9 +319,9 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
   struct ncclComm* cliqueHead = head;
   struct ncclComm* cliqueNextHead;
   bool useBarrier = ncclParamLaunchMode == ncclLaunchModeGroup;
-  // This outer loop iterates over cliques of comms which are siblings of the
-  // same global entity. We calculate a clique as all comms which have the same
-  // `intraComm0` value.
+  // 此 outer 循环 iterates over cliques of 通信域 该 are siblings 的
+  // 相同 全局的 entity. We 计算 a clique as 所有 通信域 该 have 相同
+  // `intraComm0` 值.
   do {
     struct ncclComm* comm = cliqueHead;
     bool capturingYes = false, capturingNo = false;
@@ -327,29 +335,28 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
     cliqueNextHead = comm;
 
     if (capturingYes && capturingNo) {
-      // We have entered barriers but are aborting without leaving them. Thus
-      // these comms are permanently trashed. We need a good mechanism for
-      // tracking and reporting that.
+      // 我们已经进入了屏障(屏障)却要在不离开的情况下中止。
+      // 因此这些 通信域 已被永久破坏。我们需要一套完善的机制来追踪并上报该情况。
       WARN("Either none or all communicators in a ncclGroup() can be CUDA graph captured.");
       result = ncclInvalidUsage;
       goto failure;
     }
 
     while (true) {
-      // Iterate rounds of launches for clique.
+      // 对 clique 逐轮发起 内核。
       bool moreRounds = false;
       comm = cliqueHead;
       do {
-        // Iterate clique members.
+        // 遍历 clique 成员。
         struct ncclComm* next = comm->groupNext[ncclGroupTaskTypeCollective];
         if (useBarrier) {
-          // Barrier reduction result tells us if this was the final round.
+          // 屏障 规约 结果 tells us 若 此 was the 最终的 round.
           moreRounds = 0 != ncclCommIntraBarrierOut(comm);
         } else {
           moreRounds |= comm->planner.unlaunchedPlansHead != nullptr;
         }
         if (moreRounds) {
-          // Pop next unlaunched kernel
+          // 取出下一个尚未启动的 内核
           struct ncclKernelPlan* plan = comm->planner.unlaunchedPlansHead;
           if (plan != nullptr) {
             comm->planner.unlaunchedPlansHead = plan->next;
@@ -363,13 +370,13 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
               NCCLCHECKGOTO(ncclLaunchKernel(comm, plan), result, failure);
             }
           }
-          // Barrier reduction input indicates if we require further rounds.
+          // 屏障 规约 输入 indicates 若 we require further rounds.
           if (useBarrier) ncclCommIntraBarrierIn(comm, comm->planner.unlaunchedPlansHead != nullptr ? 1 : 0);
           if (plan != nullptr) {
             NCCLCHECKGOTO(ncclLaunchKernelAfter_NoCuda(comm, plan), result, failure);
           }
         } else {
-          // Final round.
+          // 最终的 round.
           CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), result, failure);
           NCCLCHECKGOTO(ncclLaunchFinish(comm), result, failure);
         }
@@ -398,26 +405,26 @@ static void groupCleanup(struct ncclComm** groupCommHeadPtr,
   struct ncclComm* comm;
   for (int type = 0; type < ncclGroupTaskTypeNum; ++type) {
     comm = groupCommHeadPtr[type];
-    // reset groupCommHeadPtr[type]
+    // reset groupCommHeadPtr[类型]
     groupCommHeadPtr[type] = nullptr;
     while (comm != nullptr) {
       struct ncclComm* next = comm->groupNext[type];
       (void)ncclGroupCommLeave(comm, type); // overwrites comm->groupNext
-      // We don't know if preconnect succeeded or happened at all, so clear
-      // the flags that let `taskAppend()` skip over checking if preconnect
-      // is needed.
+      // We don't 知道 若 preconnect 已成功 或者 happened at 所有, 所以 clear
+      // the 标志 那个 let `taskAppend()` skip over checking 若 preconnect
+      // 需要.
       if (type == ncclGroupTaskTypeCollective) {
         comm->preconnectNext = reinterpret_cast<struct ncclComm*>(0x1);
         for (int i = 0; i < comm->nRanks; i++) {
           comm->connectSend[i] = 0UL;
           comm->connectRecv[i] = 0UL;
         }
-        // Reclaim abandoned kernel plan memory. Note ncclWork structs were already
-        // reclaimed by a `ncclMemoryStackPop(&comm->memScoped)` during `ncclGroupCommLeave()`.
+        // Reclaim abandoned 内核 plan 内存. 注意 ncclWork structs were 已经
+        // reclaimed by a `ncclMemoryStackPop(&通信域->memScoped)` 期间 `ncclGroupCommLeave()`.
         while (!ncclIntruQueueEmpty(&comm->planner.planQueue)) {
           struct ncclKernelPlan* plan = ncclIntruQueueDequeue(&comm->planner.planQueue);
-          // Persistent plans will be reclaimed via the callbackQueue when the
-          // graph drops its UserObject reference.
+          // Persistent plans 将会 reclaimed via the callbackQueue 当 ... 时
+          // 图 drops its UserObject 参考.
           if (!plan->persistent) {
             while (!ncclIntruQueueEmpty(&plan->proxyOpQueue)) {
               struct ncclProxyOp* pxop = ncclIntruQueueDequeue(&plan->proxyOpQueue);
@@ -520,7 +527,7 @@ static ncclResult_t asyncJobLaunch(struct ncclIntruQueue<struct ncclAsyncJob, &n
 
         job = job->next;
       } while (job != nullptr);
-      // Let preconnect threads progress.
+      // Let preconnect 线程 progress.
       if (jobsDone == false) std::this_thread::sleep_for(std::chrono::microseconds(1));
     } while (jobsDone == false);
 
@@ -625,7 +632,7 @@ static ncclResult_t groupLaunch(struct ncclAsyncJob* job_, ncclSimInfo_t* simInf
 
   NCCLCHECKGOTO(asyncJobLaunch(asyncJobsMain, groupAbortFlag), ret, fail);
 
-  // only loop through sym alloc and register tasks
+  // 仅 循环 through sym alloc 并且 寄存器 tasks
   for (int type = ncclGroupTaskTypeSymRegister; type <= ncclGroupTaskTypeSymRegister; ++type) {
     if (groupCommHeadMain[type]) {
       struct ncclComm* cliqueHead = groupCommHeadMain[type];
@@ -666,15 +673,15 @@ static ncclResult_t groupLaunch(struct ncclAsyncJob* job_, ncclSimInfo_t* simInf
     ncclIntruQueueConstruct(&asyncCollJobs);
     ncclIntruQueueConstruct(&asyncDebugJobs);
     do {
-      // We need to preconnect connections for collectives clique by clique to avoid
-      // race condition for split shared comms which can connect the same connections
-      // at the same time.
+      // 需要 preconnect 连接 for 集合通信 clique by clique to 避免
+      // 竞态 condition for split shared 通信域 该 can connect 相同 连接
+      // 同时.
       comm = cliqueHead;
       do {
         NCCLCHECKGOTO(ncclPrepareTasksAndCollPreconnect(comm, simInfo, &asyncCollJobs), ret, fail);
         comm = comm->groupNext[ncclGroupTaskTypeCollective];
       } while (comm != nullptr && comm->intraComm0 == cliqueHead->intraComm0);
-      // connect
+      // 连接
       NCCLCHECKGOTO(asyncJobLaunch(&asyncCollJobs, groupAbortFlag), ret, fail);
       while (!ncclIntruQueueEmpty(&asyncCollJobs)) {
         struct ncclAsyncJob* job = ncclIntruQueueDequeue(&asyncCollJobs);
@@ -683,7 +690,7 @@ static ncclResult_t groupLaunch(struct ncclAsyncJob* job_, ncclSimInfo_t* simInf
       cliqueHead = comm;
     } while (cliqueHead != nullptr);
 
-    // done with all buffer allocation, start registration and enqueue
+    // 已完成 with 所有 缓冲区 分配, 起始 注册 并且 enqueue
     comm = groupCommHeadMain[ncclGroupTaskTypeCollective];
     do {
       CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
@@ -691,7 +698,7 @@ static ncclResult_t groupLaunch(struct ncclAsyncJob* job_, ncclSimInfo_t* simInf
       comm = comm->groupNext[ncclGroupTaskTypeCollective];
     } while (comm);
 
-    // debug check
+    // 调试 检查
     cliqueHead = groupCommHeadMain[ncclGroupTaskTypeCollective];
     do {
       comm = cliqueHead;
@@ -736,8 +743,8 @@ static ncclResult_t groupLaunch(struct ncclAsyncJob* job_, ncclSimInfo_t* simInf
     while (groupCommHeadMain[type] != nullptr) {
       struct ncclComm* comm = groupCommHeadMain[type];
       struct ncclComm* next = comm->groupNext[type];
-      // Poll for callbacks sent to us from other threads. Typically these free
-      // resources from to our memory pools and UB
+      // 轮询 for 回调函数 sent to us from 其他 线程. Typically 这些 释放
+      // resources from to our 内存 池 并且 UB
       if (comm->reclaimSteps == GROUP_MAX_RECLAIM_STEPS) {
         NCCLCHECKGOTO(ncclCommPollCallbacks(comm, /*waitSome=*/false), ret, fail);
         comm->reclaimSteps = 0;
@@ -841,7 +848,7 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
           ncclComm_t comm = ncclGroupCommHead[type];
           do {
             NCCLCHECKGOTO(ncclCommSetAsyncError(comm, ncclInProgress), ret, fail);
-            /* link group job to communicators. */
+            /* 把 group job 链接到各个 communicator */
             if (comm->groupJob == NULL) {
               comm->groupJob = groupJob;
               groupJob->groupRefCount++;
@@ -865,14 +872,14 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
       delete groupJob;
     }
   } else {
-    // Free when not needed (single rank case)
+    // 释放 当 不 已需要 (单个 rank 情形)
     delete groupJob;
   }
-  /* Reset the job state for the next group call. */
+  /* 为下一次 group 调用复位 job 状态 */
   groupLocalResetJobState();
 
 exit:
-  // Profiler group API start is called inside taskAppend to get graph capture information for the event
+  // 剖析器 组 API 起始 被称为 inside taskAppend to 获取 图 capture information 为了 事件
   NCCLCHECK(ncclProfilerStopGroupApiEvent());
   return ret;
 fail:

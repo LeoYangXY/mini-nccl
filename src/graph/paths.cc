@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/graph/paths.cc — 路径与带宽计算（核心）
+ * ----------------------------------------------------------------------------
+ * 实现 ncclTopoComputePaths：在拓扑图上求任意两节点间的最优路径与各链路瓶颈带宽，
+ * 并据此推算“可并行的 P2P channel 数”（带宽 ÷ 单 channel 基准）。这是后续
+ * search 决定 channel 数与算法选择的基础（后续会做详细逐行注释）。
+ */
+
 #include "core.h"
 #include "graph.h"
 #include "topo.h"
@@ -14,7 +22,7 @@
 #include "transport.h"
 #include "device.h"
 
-// Pre-compute GPU->NIC, GPU->GPU and NIC->GPU paths
+// 预计算 GPU->网卡、GPU->GPU 以及 网卡->GPU 的路径
 
 struct ncclTopoNodeList {
   struct ncclTopoNode* list[NCCL_TOPO_MAX_NODES];
@@ -41,7 +49,7 @@ static ncclResult_t ncclTopoSetPaths(struct ncclTopoNode* baseNode, struct ncclT
     for (int i = 0; i < system->nodes[baseNode->type].count; i++) baseNode->paths[baseNode->type][i].type = PATH_DIS;
   }
 
-  // breadth-first search to set all paths to that node in the system
+  // 用广度优先搜索，设置系统中通往该节点的所有路径
   struct ncclTopoNodeList nodeList;
   struct ncclTopoNodeList nextNodeList = {{0}, 0};
   nodeList.count = 1;
@@ -70,10 +78,10 @@ static ncclResult_t ncclTopoSetPaths(struct ncclTopoNode* baseNode, struct ncclT
         NCCLCHECK(getPath(system, remNode, baseNode->type, baseNode->id, &remPath));
         float bw = std::min(path->bw, link->bw);
 
-        // Only allow path to go through a DEV if either
-        // - the remNode is a GPU and the link type is PATH_LOC, or
-        // - NVB is enabled and remNode is a DEV and link type is NVLink and the path isn't too long for NVB;
-        // else, discard the path.
+        // 仅当满足以下条件之一时，才允许路径经过 DEV 节点：
+        // - 远端节点是 GPU 且链路类型为 PATH_LOC；或
+        // - 启用了 NVB，且远端节点是 DEV、链路类型为 NVLink，并且该路径对 NVB 而言不算太长；
+        // 否则丢弃该路径。
         int pathMaxLength = (baseNode->type == GPU) ? 2 : 1;
         ncclTopoNode* baseDevNode = (baseNode->type == GPU) ? baseNode->gpu.parent : baseNode;
         if (node != baseDevNode && node->type == DEV && (link->type != LINK_LOC || remNode->type != GPU) &&
@@ -81,23 +89,23 @@ static ncclResult_t ncclTopoSetPaths(struct ncclTopoNode* baseNode, struct ncclT
           continue;
         }
 
-        // Start with path type = link type. PATH and LINK types are supposed to match.
-        // Don't consider LINK_NET as we only care about the NIC->GPU path.
+        // 初始路径类型 = 链路类型。路径 与 链路 类型应当一致。
+        // 不考虑 LINK_NET，因为我们只关心 网卡->GPU 的路径。
         int newType = link->type == LINK_NET ? LINK_LOC : link->type;
-        // Differentiate between one and multiple PCI switches
+        // 区分经过一个还是多个 PCI 交换机的情况
         if (node->type == PCI && remNode->type == PCI) newType = PATH_PXB;
-        // Consider a path going through the CPU as PATH_PHB
+        // 把经过 CPU 的路径视为 PATH_PHB
         if (link->type == LINK_PCI && (node->type == CPU || link->remNode->type == CPU)) newType = PATH_PHB;
-        // Set 1 hop NVLink as NVB.
+        // 把单跳 NVLink 设为 NVB。
         if (node->type == DEV && path->type == PATH_NVL && newType == PATH_NVL && path->count == pathMaxLength)
           newType = PATH_NVB;
         newType = std::max(path->type, newType);
 
-        // Update if better path type, OR same type with higher bw, OR same type/bw with strickly fewer hops.
-        // Note: path->count +1 to account for the existing path + current candidate, see remPath->count update.
+        // 若以下任一成立则更新：路径类型更优、或同类型但带宽更高、或同类型同带宽但跳数严格更少。
+        // 注意：路径->计数 +1 是为了计入已有路径加上当前候选，详见 remPath->计数 的更新。
         if (newType < remPath->type || (newType == remPath->type && remPath->bw < bw) ||
             (newType == remPath->type && remPath->bw == bw && remPath->count > (path->count + 1))) {
-          // Find reverse link
+          // 找到反向链路
           for (int l = 0; l < remNode->nlinks; l++) {
             if (remNode->links[l].remNode == node && remNode->links[l].type == link->type) {
               remPath->list[0] = remNode->links + l;
@@ -109,13 +117,13 @@ static ncclResult_t ncclTopoSetPaths(struct ncclTopoNode* baseNode, struct ncclT
                  remNode->nlinks, node->type, node->id);
             return ncclInternalError;
           }
-          // Copy the rest of the path
+          // 拷贝路径的其余部分
           for (int i = 0; i < path->count; i++) remPath->list[i + 1] = path->list[i];
           remPath->count = path->count + 1;
           remPath->bw = bw;
           remPath->type = newType;
 
-          // Add to the list for the next iteration if not already in the list
+          // 若尚未在列表中，则加入列表供下一轮迭代使用
           int i;
           for (i = 0; i < nextNodeList.count; i++) {
             if (nextNodeList.list[i] == remNode) break;
@@ -212,14 +220,14 @@ static ncclResult_t addInterStep(struct ncclTopoSystem* system, int tx, int ix, 
   struct ncclTopoNode* srcNode = system->nodes[t1].nodes + i1;
 
   int l = 0;
-  // Node 1 -> CPU
+  // 节点 1 -> CPU
   for (int i = 0; i < srcNode->paths[tx][ix].count; i++)
     srcNode->paths[t2][i2].list[l++] = srcNode->paths[tx][ix].list[i];
-  // CPU -> Node 2
+  // CPU -> 节点 2
   for (int i = 0; i < cpuNode->paths[t2][i2].count; i++)
     srcNode->paths[t2][i2].list[l++] = cpuNode->paths[t2][i2].list[i];
 
-  // Update path characteristics
+  // 更新路径特征
   srcNode->paths[t2][i2].count = l;
   srcNode->paths[t2][i2].type = mergePathType(srcNode->paths[tx][ix].type, cpuNode->paths[t2][i2].type);
   if (tx == GPU) srcNode->paths[t2][i2].type = PATH_PXN;
@@ -227,7 +235,7 @@ static ncclResult_t addInterStep(struct ncclTopoSystem* system, int tx, int ix, 
   return ncclSuccess;
 }
 
-// Remove/free all paths
+// 移除并释放所有路径
 static void ncclTopoRemovePaths(struct ncclTopoSystem* system) {
   for (int t1 = 0; t1 < NCCL_TOPO_NODE_TYPES; t1++) {
     for (int n = 0; n < system->nodes[t1].count; n++) {
@@ -261,10 +269,10 @@ ncclResult_t ncclGetLevel(int* level, const char* disableEnv, const char* levelE
             break;
           }
         }
-        // Old style numbering
-        // levelsOldToNew to is an array with each index corresponding to the
-        // "old level" int, and each value mapping to the correct value defined in topo.h
-        // maxOldLevel is a quick check to handle out of bounds (based on the length of levelsOldToNew)
+        // 旧式编号
+        // levelsOldToNew 是一个数组，其每个下标对应
+        // “旧层级”整数，而每个值映射到 拓扑.h 中定义的正确取值
+        // maxOldLevel 是一个快速检查，用于处理越界(基于 levelsOldToNew 的长度)
         if (l == -1 && str[0] >= '0' && str[0] <= '9') {
           int oldLevel = strtol(str, NULL, 0);
           const int maxOldLevel = sizeof(levelsOldToNew) / sizeof(int) - 1;
@@ -283,18 +291,18 @@ NCCL_PARAM(IgnoreDisabledP2p, "IGNORE_DISABLED_P2P", 0);
 
 static int ncclTopoUserP2pLevel = -1; // Initially "uninitialized".  When initialized but unset, changes to -2.
 
-// Gets the user-provided value of NCCL_P2P_LEVEL/NCCL_P2P_DISABLE.  If the user did not provide any, the value
-// of the "level" argument is left unchanged.
+// 获取用户提供的 NCCL_P2P_LEVEL/NCCL_P2P_DISABLE 值。若用户未提供，则该
+// 层级 参数的值保持不变。
 ncclResult_t ncclGetUserP2pLevel(int* level) {
   if (ncclTopoUserP2pLevel == -1) NCCLCHECK(ncclGetLevel(&ncclTopoUserP2pLevel, "NCCL_P2P_DISABLE", "NCCL_P2P_LEVEL"));
   if (ncclTopoUserP2pLevel != -2) *level = ncclTopoUserP2pLevel;
   return ncclSuccess;
 }
 
-// Tests two ranks for CUDA P2P connectivity.
-// *cudaP2p returns 1 if CUDA P2P between the ranks is supported.
-// *p2p returns 1 only if the distance between the ranks is no greater than NCCL_P2P_LEVEL.
-// The connection may go through an intermediate rank.
+// 测试两个 rank 之间的 CUDA P2P 连通性。
+// 若两 rank 间支持 CUDA P2P，则 *cudaP2p 返回 1。
+// 仅当两 rank 之间的距离不超过 NCCL_P2P_LEVEL 时，*p2p 才返回 1。
+// 连接可能会经过一个中间 rank。
 ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* system, int rank1, int rank2, int* p2p,
                               int* read, int* intermediateRank, int* cudaP2p) {
   int mnnvl = 0;
@@ -305,7 +313,7 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
   if (intermediateRank) *intermediateRank = -1;
   if (cudaP2p) *cudaP2p = 0;
 
-  // Rule out different nodes / isolated containers
+  // 排除不同节点 / 隔离容器的情况
   if (comm) {
     info1 = comm->peerInfo + rank1;
     info2 = comm->peerInfo + rank2;
@@ -313,7 +321,7 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
       if (comm->MNNVL) {
         NCCLCHECK(ncclTopoCheckMNNVL(comm, info1, info2, &mnnvl));
         if (mnnvl < 0) {
-          // Force enable CUDA P2P for cross-clique (NCCL_MNNVL_CROSS_CLIQUE=1)
+          // 为跨 clique 强制启用 CUDA P2P(NCCL_MNNVL_CROSS_CLIQUE=1)
           if (p2p) *p2p = 1;
           if (cudaP2p) *cudaP2p = 1;
           return ncclSuccess;
@@ -327,21 +335,21 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
     }
   }
 
-  // Get GPUs from topology
+  // 从拓扑中取出 GPU 节点
   int g1, g2;
   NCCLCHECK(ncclTopoRankToIndex(system, rank1, &g1, /*showWarn=*/true));
   struct ncclTopoNode* gpu1 = system->nodes[GPU].nodes + g1;
   if (ncclTopoRankToIndex(system, rank2, &g2, /*showWarn=*/false) == ncclInternalError) {
-    // GPU not found, we can't use p2p.
+    // 找不到 GPU，则无法使用 p2p。
     return ncclSuccess;
   }
 
   int intermediateIndex = -1;
-  // Set intermediate GPU rank, if routing through an intermediate GPU.
+  // 若要经过中间 GPU 转发，则设置中间 GPU 的 rank。
   struct ncclTopoLinkList* path = gpu1->paths[GPU] + g2;
   if (path->count == 4) {
-    // Intermediate goes through DEV, not GPU.
-    // path is GPU1 - DEV1 - DEV2 - DEV3 - GPU2, so the intermediate DEV is located at path->list[1]->remNode
+    // 中间路径经过 DEV 而非 GPU。
+    // 路径形如 GPU1 - DEV1 - DEV2 - DEV3 - GPU2，因此中间 DEV 位于 路径->列表[1]->remNode
     struct ncclTopoNode* intermediateNode = path->list[1]->remNode;
     if (intermediateNode->type == DEV) {
       int interRank;
@@ -352,24 +360,24 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
     }
   }
 
-  // By default don't use P2P across CPU Host Bridges and further apart
+  // 默认不在跨 CPU 主桥(主机 Bridge)以及更远的距离上使用 P2P
   int p2pLevel = PATH_PXB;
 
   int arch, vendor, model;
   NCCLCHECK(ncclTopoCpuType(system, &arch, &vendor, &model));
-  // Allow P2P between pairs of GPU devices on AMD systems
+  // 允许 AMD 系统上成对的 GPU 设备之间使用 P2P
   if ((arch == NCCL_TOPO_CPU_ARCH_X86 && vendor == NCCL_TOPO_CPU_VENDOR_AMD) && system->nodes[DEV].count <= 2)
     p2pLevel = PATH_SYS;
 
-  // User override
+  // 用户覆盖设置
   NCCLCHECK(ncclGetUserP2pLevel(&p2pLevel));
 
-  // Compute the PCI distance and compare with the p2pLevel.
+  // 计算 PCI 距离并与 p2pLevel 比较。
   if (path->type <= p2pLevel) *p2p = 1;
 
-  // Use parent pointer comparison to handle multi-rank-per-GPU case:
-  // Different topology indices (g1 != g2) may point to the same physical GPU
-  // when multiple ranks share one device. Skip NVML P2P validation for same device.
+  // 用父指针比较来处理“一个 GPU 多个 rank”的情形：
+  // 不同的拓扑索引(g1 != g2)可能指向同一块物理 GPU，
+  // 当多个 rank 共享一个设备时。对相同设备跳过 NVML P2P 校验。
   bool checkNvml =
     (ncclParamIgnoreDisabledP2p() != 2 &&
      system->nodes[GPU].nodes[g1].gpu.parent != system->nodes[GPU].nodes[g2].gpu.parent &&
@@ -413,7 +421,7 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
 
   if (path->type == PATH_NVL) {
     struct ncclTopoNode* gpu2 = system->nodes[GPU].nodes + g2;
-    // Enable P2P Read for Ampere/NVLink only
+    // 仅在 Ampere 架构 + NVLink 时启用 P2P 读取
     if (read && (gpu1->gpu.cudaCompCap == gpu2->gpu.cudaCompCap) && (gpu1->gpu.cudaCompCap == 80)) *read = 1;
   }
 
@@ -425,7 +433,7 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
       *cudaP2p = (ncclNvmlDevicePairs[n1][n2].p2pStatusRead == NVML_P2P_STATUS_OK &&
                   ncclNvmlDevicePairs[n1][n2].p2pStatusWrite == NVML_P2P_STATUS_OK);
     } else {
-      // We assume P2P connectivity in case the ranks are connected using MNNVL or are on the same host.
+      // 若 rank 通过 MNNVL 相连、或处于同一主机，我们假设 P2P 连通。
       *cudaP2p = (mnnvl || comm == NULL || info1->hostHash == info2->hostHash);
     }
   }
@@ -433,25 +441,25 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
   return ncclSuccess;
 }
 
-// MNNVL: Check whether peers are in the same fabric cluster and clique
+// MNNVL：检查对端是否在同一 fabric 集群与 clique 内
 ncclResult_t ncclTopoCheckMNNVL(struct ncclComm* comm, struct ncclPeerInfo* info1, struct ncclPeerInfo* info2,
                                 int* ret) {
   *ret = 0;
 
   nvmlGpuFabricInfoV_t* fabricInfo1 = &info1->fabricInfo;
   nvmlGpuFabricInfoV_t* fabricInfo2 = &info2->fabricInfo;
-  // A zero UUID means we don't have MNNVL fabric info
+  // UUID 为零表示我们没有 MNNVL fabric 信息
   unsigned long uuid0 = 0;
   unsigned long uuid1 = 0;
   memcpy(&uuid0, fabricInfo2->clusterUuid, sizeof(uuid0));
   memcpy(&uuid1, fabricInfo2->clusterUuid + sizeof(uuid0), sizeof(uuid1));
   if ((uuid0 | uuid1) == 0) return ncclSuccess;
-  // Same UUID required. Within same UUID: either same clique OR cross-clique enabled
+  // 要求 UUID 相同。在相同 UUID 内：要么同一 clique，要么已启用跨 clique
   if ((memcmp(fabricInfo1->clusterUuid, fabricInfo2->clusterUuid, NVML_GPU_FABRIC_UUID_LEN) == 0) &&
       (comm->p2pCrossClique || fabricInfo1->cliqueId == fabricInfo2->cliqueId)) {
     TRACE(NCCL_NET, "MNNVL rank %d matching peer %d 0x%lx UUID %lx.%lx cliqueId 0x%x/0x%x crossClique %d", info1->rank,
           info2->rank, info2->busId, uuid0, uuid1, fabricInfo1->cliqueId, fabricInfo2->cliqueId, comm->p2pCrossClique);
-    // Return -1 for cross-clique (different clique but same UUID) to force CUDA P2P
+    // 对跨 clique(不同 clique 但相同 UUID)返回 -1，强制走 CUDA P2P
     *ret = (comm->p2pCrossClique && fabricInfo1->cliqueId != fabricInfo2->cliqueId) ? -1 : 1;
   }
   return ncclSuccess;
@@ -461,7 +469,7 @@ NCCL_PARAM(NetGdrRead, "NET_GDR_READ", -2);
 int ncclTopoUserGdrLevel = -1;
 const char* ncclTopoGdrModeStr[ncclTopoGdrModeNum] = {"Disabled", "Default", "PCI"};
 
-// On C2C platforms use GDRDMA on NICs which are connected to the CPUs
+// 在 C2C 平台上，对连接到 CPU 的网卡使用 GDRDMA
 NCCL_PARAM(NetGdrC2c, "NET_GDR_C2C", 1);
 NCCL_PARAM(NetGdrMloPart, "NET_GDR_MLOPART", 0);
 
@@ -469,7 +477,7 @@ ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* system, int rank, int64_t n
                               enum ncclTopoGdrMode* gdrMode) {
   *gdrMode = ncclTopoGdrModeDisable;
 
-  // Get GPU and NET
+  // 取出 GPU 与网卡(网络)节点
   int n, g;
   NCCLCHECK(ncclTopoIdToIndex(system, NET, netId, &n));
   struct ncclTopoNode* net = system->nodes[NET].nodes + n;
@@ -481,20 +489,20 @@ ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* system, int rank, int64_t n
            NCCL_TOPO_ID_LOCAL_ID(gpu->id), rank, NCCL_TOPO_ID_SYSTEM_ID(net->id), NCCL_TOPO_ID_LOCAL_ID(net->id));
 #endif
 
-  // Check that both the NIC and GPUs support it
+  // 检查网卡与 GPU 是否都支持该能力
   if (net->net.gdrSupport == 0) return ncclSuccess;
   if (gpu->gpu.gdrSupport == 0) return ncclSuccess;
   if (gpu->gpu.mloPart != NCCL_TOPO_UNDEF && !ncclParamNetGdrMloPart()) return ncclSuccess;
 
   if (read) {
-    // For reads (sends) only enable under certain conditions
+    // 对于读(发送)操作，仅在特定条件下启用
     int gdrReadParam = ncclParamNetGdrRead();
     if (gdrReadParam == 0) return ncclSuccess;
-    // Disable GDR Reads pre-Ampere when we have other PCI flows
+    // 当存在其它 PCI 数据流时，在 Ampere 之前禁用 GDR Reads
     if (gdrReadParam < 0 && gpu->gpu.cudaCompCap < 80) {
       int nvlink = 0;
-      // Since we don't know whether there are other communicators,
-      // it's better to keep things local if we have a single GPU.
+      // 由于我们不知道是否存在其它通信域，
+      // 在仅有单 GPU 时，最好保持本地访问。
       if (system->nodes[GPU].count == 1) nvlink = 1;
       for (int i = 0; i < system->nodes[GPU].count; i++) {
         if (i == g) continue;
@@ -507,13 +515,13 @@ ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* system, int rank, int64_t n
     }
   }
 
-  // Check if we are close enough that it makes sense to enable GDR
+  // 检查距离是否足够近，以致启用 GDR 有意义
   int netGdrLevel = ncclParamNetGdrC2c() ? PATH_P2C : PATH_PXB;
   NCCLCHECK(ncclGetLevel(&ncclTopoUserGdrLevel, NULL, "NCCL_NET_GDR_LEVEL"));
   if (ncclTopoUserGdrLevel != -2) netGdrLevel = ncclTopoUserGdrLevel;
   int distance = gpu->paths[NET][n].type;
   if (distance == PATH_PXN) {
-    // In case of PXN, use the intermediate GPU distance instead
+    // 若是 PXN，则改用中间 GPU 的距离
     int proxyRank;
     NCCLCHECK(ncclTopoGetIntermediateRank(system, gpu->gpu.rank, netId, &proxyRank));
     NCCLCHECK(ncclTopoRankToIndex(system, proxyRank, &g, /*showWarn=*/true));
@@ -534,7 +542,7 @@ ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* system, int rank, int64_t n
     return ncclSuccess;
   }
 
-  // Force PCIe mapping if path goes through PCI on a C2C system
+  // 在 C2C 系统上、若路径经过 PCI，则强制使用 PCIe 映射
   int c;
   NCCLCHECK(ncclGetLocalCpu(system, g, &c));
   if (gpu->paths[CPU][c].type == PATH_C2C && distance != PATH_P2C) *gdrMode = ncclTopoGdrModePci;
@@ -568,10 +576,10 @@ ncclResult_t ncclTopoIsGdrAvail(struct ncclTopoSystem* system, int rank, bool* a
   return ncclSuccess;
 }
 
-// Set to 0 to disable the flush on Hopper when using GDR
+// 设为 0 可在使用 GDR 时禁用 Hopper 上的 刷写
 NCCL_PARAM(NetForceFlush, "NET_FORCE_FLUSH", 0);
 
-// Based on the system topology, determine whether an explicit iflush is needed on the GDR recv path.
+// 根据系统拓扑，判断在 GDR 接收路径上是否需要进行显式的 iflush。
 ncclResult_t ncclTopoNeedFlush(struct ncclComm* comm, int64_t netId, int netDev, int rank,
                                enum ncclTopoFlushType* flush) {
   *flush = ncclTopoFlushAlways;
@@ -582,10 +590,10 @@ ncclResult_t ncclTopoNeedFlush(struct ncclComm* comm, int64_t netId, int netDev,
   struct ncclTopoSystem* system = comm->topo;
   NCCLCHECK(ncclTopoRankToIndex(system, rank, &g, /*showWarn=*/true));
   struct ncclTopoNode* gpu = system->nodes[GPU].nodes + g;
-  // Flush is required on Ampere and earlier
+  // 在 Ampere 及更早架构上需要 刷写
   if (gpu->gpu.cudaCompCap >= 90) {
     *flush = ncclTopoFlushNone;
-    // DataDirect NIC require a flush operation because control path is using C2C and data path is using PCIe.
+    // DataDirect 网卡需要 刷写，因为其控制路径走 C2C、数据路径走 PCIe。
     int c, n;
     NCCLCHECK(ncclGetLocalCpu(system, g, &c));
     NCCLCHECK(ncclTopoIdToIndex(system, NET, netId, &n));
@@ -598,13 +606,13 @@ ncclResult_t ncclTopoNeedFlush(struct ncclComm* comm, int64_t netId, int netDev,
 
 NCCL_PARAM(NetDisableIntra, "NET_DISABLE_INTRA", 0);
 
-// Check whether going through the network would be faster than going through P2P/SHM.
+// 检查走网络是否比走 P2P/SHM 更快。
 ncclResult_t ncclTopoCheckNet(struct ncclTopoSystem* system, int rank1, int rank2, int* net) {
   if (ncclParamNetDisableIntra() == 1) {
     *net = 0;
     return ncclSuccess;
   }
-  // First check the current GPU-to-GPU speed.
+  // 先检查当前 GPU 到 GPU 的速率。
   int g1, g2;
   if (ncclTopoRankToIndex(system, rank1, &g1, /*showWarn=*/false) != ncclSuccess ||
       ncclTopoRankToIndex(system, rank2, &g2, /*showWarn=*/false) != ncclSuccess) {
@@ -616,7 +624,7 @@ ncclResult_t ncclTopoCheckNet(struct ncclTopoSystem* system, int rank1, int rank
   struct ncclTopoNode* gpu2 = system->nodes[GPU].nodes + g2;
   float speed = gpu1->paths[GPU][g2].bw;
 
-  // Now check the speed each GPU can access the network through PXB or better
+  // 再检查每块 GPU 经 PXB 或更优路径访问网络的速率
   float netSpeed1 = 0, netSpeed2 = 0;
   for (int n = 0; n < system->nodes[NET].count; n++) {
     struct ncclTopoLinkList* path = gpu1->paths[NET] + n;
@@ -632,19 +640,19 @@ ncclResult_t ncclTopoCheckNet(struct ncclTopoSystem* system, int rank1, int rank
 
 ncclResult_t ncclTopoGetIntermediateRank(struct ncclTopoSystem* system, int rank, int64_t netId,
                                          int* intermediateRank) {
-  // Get GPU and NET
+  // 取出 GPU 与网卡(网络)节点
   int n, g;
   NCCLCHECK(ncclTopoIdToIndex(system, NET, netId, &n));
   NCCLCHECK(ncclTopoRankToIndex(system, rank, &g, /*showWarn=*/true));
   struct ncclTopoNode* gpu = system->nodes[GPU].nodes + g;
   struct ncclTopoLinkList* path = gpu->paths[NET] + n;
   if (path->type == PATH_PXN) {
-    // PXN path follows GPU-DEV-NVS-..., start from the first NVS node and find the first DEV in the path
+    // PXN 路径形如 GPU-DEV-NVS-...，从第一个 NVS 节点出发，找到路径中的第一个 DEV
     int i = 1;
     while (i < path->count && path->list[i]->remNode->type == NVS) i++;
     struct ncclTopoNode* node = path->list[i]->remNode;
 
-    // Select the first GPU on the device found to be the PXN intermediate rank
+    // 把找到的设备上的第一块 GPU 选为 PXN 中间 rank
     if (node->type == DEV) {
       for (int i = 0; i < node->nlinks; i++) {
         if (node->links[i].remNode->type == GPU) {
@@ -667,8 +675,8 @@ ncclResult_t ncclTopoGetIntermediateRank(struct ncclTopoSystem* system, int rank
 
 NCCL_PARAM(PxnDisable, "PXN_DISABLE", 0);
 
-// Net v4 plugins don't have non-blocking connect/accept. We can't therefore use
-// remote proxies without risking deadlocks
+// 网络 v4 插件不支持非阻塞的 connect/accept，因此我们不能使用
+// 远端 代理，否则有死锁风险
 int ncclPxnDisable(struct ncclComm* comm) {
 #if defined(NCCL_OS_LINUX)
   static int pxnDisable = -1;
@@ -719,54 +727,54 @@ ncclResult_t ncclTopoGetPxnRanks(struct ncclComm* comm, int** intermediateRanks,
 NCCL_PARAM(PxnC2c, "PXN_C2C", 1);
 
 ncclResult_t ncclTopoComputePaths(struct ncclTopoSystem* system, struct ncclComm* comm) {
-  // Precompute paths between GPUs/NICs.
+  // 预计算 GPU/网卡 之间的路径。
 
-  // Remove everything in case we're re-computing
+  // 若重新计算，则先清除所有已有结果
   ncclTopoRemovePaths(system);
 
-  // Set direct paths to CPUs. We need them in many cases.
+  // 设置到 CPU 的直接路径(很多场景都需要)。
   for (int c = 0; c < system->nodes[CPU].count; c++) {
     NCCLCHECK(ncclTopoSetPaths(system->nodes[CPU].nodes + c, system));
   }
 
-  // Set direct paths to DEVs, needed in the graph search.
+  // 设置到 DEV 的直接路径(拓扑搜索需要)。
   for (int d = 0; d < system->nodes[DEV].count; d++) {
     NCCLCHECK(ncclTopoSetPaths(system->nodes[DEV].nodes + d, system));
   }
 
-  // Set direct paths to GPUs.
+  // 设置到 GPU 的直接路径。
   for (int g = 0; g < system->nodes[GPU].count; g++) {
     NCCLCHECK(ncclTopoSetPaths(system->nodes[GPU].nodes + g, system));
   }
 
-  // Set direct paths to NICs.
+  // 设置到网卡的直接路径。
   for (int n = 0; n < system->nodes[NET].count; n++) {
     NCCLCHECK(ncclTopoSetPaths(system->nodes[NET].nodes + n, system));
   }
 
-  // Set direct paths to GIN devices.
+  // 设置到 GIN 设备的直接路径。
   for (int n = 0; n < system->nodes[GIN].count; n++) {
     NCCLCHECK(ncclTopoSetPaths(system->nodes[GIN].nodes + n, system));
   }
 
-  // Set direct paths to RMA devices.
+  // 设置到 RMA 设备的直接路径。
   for (int n = 0; n < system->nodes[RMA].count; n++) {
     NCCLCHECK(ncclTopoSetPaths(system->nodes[RMA].nodes + n, system));
   }
 
-  // Set direct paths to NVSwitches.
+  // 设置到 NVSwitch 的直接路径。
   for (int n = 0; n < system->nodes[NVS].count; n++) {
     NCCLCHECK(ncclTopoSetPaths(system->nodes[NVS].nodes + n, system));
   }
 
-  // Update path for GPUs when we don't want to / can't use GPU Direct P2P
+  // 当我们不想/不能用 GPU Direct P2P 时，更新 GPU 的路径
   for (int g = 0; g < system->nodes[GPU].count; g++) {
     for (int p = 0; p < system->nodes[GPU].count; p++) {
       int p2p;
       NCCLCHECK(ncclTopoCheckP2p(comm, system, system->nodes[GPU].nodes[p].gpu.rank,
                                  system->nodes[GPU].nodes[g].gpu.rank, &p2p, NULL, NULL, NULL));
       if (p2p == 0) {
-        // Divert all traffic through the CPU
+        // 把所有流量改道经 CPU 转发
         int cpu;
         NCCLCHECK(ncclGetLocalCpu(system, g, &cpu));
         NCCLCHECK(addInterStep(system, CPU, cpu, GPU, p, GPU, g));
@@ -774,7 +782,7 @@ ncclResult_t ncclTopoComputePaths(struct ncclTopoSystem* system, struct ncclComm
     }
 
     if (comm == NULL) continue;
-    // Remove GPUs we can't (or don't want to) communicate with through P2P or SHM
+    // 移除那些我们无法(或不愿)通过 P2P 或 SHM 通信的 GPU
     struct ncclPeerInfo* dstInfo = comm->peerInfo + system->nodes[GPU].nodes[g].gpu.rank;
     for (int p = 0; p < system->nodes[GPU].count; p++) {
       if (p == g) continue;
@@ -785,14 +793,14 @@ ncclResult_t ncclTopoComputePaths(struct ncclTopoSystem* system, struct ncclComm
         int shm;
         NCCLCHECK(ncclTransports[TRANSPORT_SHM]->canConnect(&shm, comm, NULL, srcInfo, dstInfo));
         if (shm == 0) {
-          // Mark this peer as inaccessible. We'll trim it later.
+          // 标记该对端不可达。稍后我们会裁剪掉它。
           system->nodes[GPU].nodes[p].paths[GPU][g].type = PATH_NET;
         }
       }
     }
   }
-  // update the GPU -> NIC path in the case of C2C + PHB
-  // P2C is only set when the NET is the closest to the GPU. Otherwise PXN connections should be preferred
+  // 在 C2C + PHB 情形下更新 GPU -> 网卡 的路径
+  // P2C 仅在网卡离 GPU 最近时才设置。否则应优先选择 PXN 连接
   for (int g = 0; g < system->nodes[GPU].count; g++) {
     struct ncclTopoNode* gpuNode = system->nodes[GPU].nodes + g;
     int c = 1, localNetCount = 0, localNet[NCCL_TOPO_MAX_NODES];
@@ -809,22 +817,22 @@ ncclResult_t ncclTopoComputePaths(struct ncclTopoSystem* system, struct ncclComm
     }
   }
 
-  // Update paths for NICs (no GPU Direct, PXN, ...)
+  // 更新网卡路径(无 GPU Direct、PXN 等)
   for (int n = 0; n < system->nodes[NET].count; n++) {
     struct ncclTopoNode* netNode = system->nodes[NET].nodes + n;
 
     for (int g = 0; g < system->nodes[GPU].count; g++) {
-      // Check whether we can access the NIC through another NVLink-connected GPU (PXN)
+      // 检查能否通过另一块 NVLink 相连的 GPU 访问网卡(PXN)
       struct ncclTopoNode* gpu = system->nodes[GPU].nodes + g;
       if (ncclPxnDisable(comm) != 1) {
         int localGpuIndex;
         NCCLCHECK(ncclTopoGetLocalGpu(system, netNode->id, &localGpuIndex));
         if (localGpuIndex != g && localGpuIndex != -1) {
-          // PXN = PCI + NVLink.
+          // PXN = PCI + NVLink。
           struct ncclTopoNode* peerNode = system->nodes[GPU].nodes + localGpuIndex;
           enum ncclTopoGdrMode gdrMode;
           NCCLCHECK(ncclTopoCheckGdr(system, peerNode->gpu.rank, netNode->id, 1, &gdrMode));
-          // Only use PXN for NIC n if remote GPU p ...
+          // 仅当远端 GPU p ... 时，才对网卡 n 使用 PXN
           int pxnType = ncclParamPxnC2c() ? PATH_P2C : PATH_PXB;
           if (/* (1) is connected to the NIC with PxN type and GDR is enabled*/
               peerNode->paths[NET][n].type <= pxnType && (gdrMode != ncclTopoGdrModeDisable) &&
@@ -834,19 +842,19 @@ ncclResult_t ncclTopoComputePaths(struct ncclTopoSystem* system, struct ncclComm
               NCCL_TOPO_ID_SYSTEM_ID(peerNode->id) == NCCL_TOPO_ID_SYSTEM_ID(gpu->id) &&
               /* and (4) has either higher bw to that NIC or avoid going through the CPU (path.type is > PATH_PXN)*/
               (peerNode->paths[NET][n].bw > gpu->paths[NET][n].bw || gpu->paths[NET][n].type > PATH_PXN)) {
-            // We can use that GPU as relay to communicate with that NIC.
-            // Only enabling it in the GPU->NIC direction for now to favor
-            // receiving locally and sending remotely (consistent with net.cc)
+            // 我们可以把那块 GPU 作为中继来与该网卡通信。
+            // 目前只在 GPU->网卡 方向启用 PXN，以倾向于
+            // 本地接收、远端发送(与 网络.cc 中的取向一致)
             NCCLCHECK(addInterStep(system, GPU, localGpuIndex, GPU, g, NET, n));
           }
         }
       }
       if (gpu->paths[NET][n].type < PATH_PHB) {
-        // Update path when we dont want to / can't use GPU Direct RDMA.
+        // 当我们不想/不能用 GPU Direct RDMA 时，更新路径
         enum ncclTopoGdrMode gdr;
         NCCLCHECK(ncclTopoCheckGdr(system, system->nodes[GPU].nodes[g].gpu.rank, netNode->id, 0, &gdr));
         if (gdr == 0) {
-          // We cannot use GPU Direct RDMA, divert all traffic through the CPU local to the GPU
+          // 无法使用 GPU Direct RDMA 时，把所有流量改道经“与 GPU 同 NUMA 的本地 CPU”转发
           int localCpu;
           NCCLCHECK(ncclGetLocalCpu(system, g, &localCpu));
           NCCLCHECK(addInterStep(system, CPU, localCpu, NET, n, GPU, g));
@@ -856,7 +864,7 @@ ncclResult_t ncclTopoComputePaths(struct ncclTopoSystem* system, struct ncclComm
     }
   }
 
-  // Pre-compute NET local gpus to accelerate search
+  // 预计算“网卡本地的 GPU”以加速搜索
   for (int n = 0; n < system->nodes[NET].count; n++) {
     struct ncclTopoNode* net = system->nodes[NET].nodes + n;
     NCCLCHECK(ncclTopoGetLocalGpu(system, net->id, &net->net.localGpu));
@@ -923,29 +931,29 @@ static ncclResult_t ncclTopoGetNchannels(struct ncclComm* comm, int g /*local gp
   struct ncclTopoSystem* system = comm->topo;
   struct ncclTopoLinkList* path = NULL;
   if (ncclTopoRankToIndex(system, peerRank, &peer, /*showWarn=*/false) == ncclSuccess) {
-    // Same rank
+    // 相同的 rank
     if (g == peer) {
       *nChannels = -1;
       return ncclSuccess;
     }
-    // Local rank
+    // 本地 rank
     path = system->nodes[GPU].nodes[peer].paths[GPU] + g;
     if (path->type == PATH_NVL || path->type == PATH_NVB) {
-      // NVLink-based connection (NVB uses NVLink)
+      // 基于 NVLink 的连接(NVB 使用 NVLink)
       float nvlBw = ncclTopoNVLinkBw(system->nodes[GPU].nodes[g].gpu.cudaCompCap);
       *nChannels = 2 * std::max(1, (int)(path->bw / nvlBw));
     } else {
-      // PCIe connection
+      // PCIe 连接
       *nChannels = 2;
     }
   } else {
-    // Remote rank, use network
+    // 远端 rank，走网络
     int nNetChannels = comm->config.nChannelsPerNetPeer;
     if (nNetChannels == NCCL_CONFIG_UNDEF_INT) {
       float netBw = 0.0;
       int netCount = 0;
       NCCLCHECK(ncclTopoGetLocalNetCountByBw(system, g, &netCount, &netBw));
-      // We use at least 1 channel per NIC, and more if needed to meet the bw requirement.
+      // 每个网卡至少用 1 个 通道，若需要更多以满足带宽要求则增加。
       nNetChannels = 2;
       if (netCount > 0) nNetChannels = std::max(netCount, divUp((int)netBw, (int)ncclParamP2pPerChannelNetBw()));
     }
@@ -985,15 +993,15 @@ ncclResult_t ncclTopoComputeP2pChannels(struct ncclComm* comm) {
     comm->p2pnChannels = std::max(comm->p2pnChannels, (int)ncclParamMinP2pNChannels());
   }
 
-  // Make nChannelsPerPeer and nChannels powers of 2. This is relied on when mapping p2p peers to channels.
+  // 把 nChannelsPerPeer 与 nChannels 都规整为 2 的幂。将 p2p 对端映射到 通道 时依赖这一性质。
   comm->p2pnChannelsPerPeer = pow2Up(comm->p2pnChannelsPerPeer);
   comm->p2pnChannels = pow2Up(comm->p2pnChannels);
   comm->p2pnChannels = std::min(comm->p2pnChannels, pow2Down(ncclDevMaxChannelsForArgsBytes(ncclParamWorkArgsBytes())));
 
   if (comm->nNodes > 1 && comm->config.nChannelsPerNetPeer == NCCL_CONFIG_UNDEF_INT) {
-    // In the case of >1 NVLD (and the user didn't set nChannelsPerNetPeer), the network is the botteneck.
-    // Reduce the number of channels per host to avoid going above p2pnChannels to fit all the peers
-    // within a single round.
+    // 当存在多于 1 个 NVLD(且用户未设置 nChannelsPerNetPeer)时，网络成为瓶颈。
+    // 减少每个主机的 通道 数，避免超过 p2pnChannels，从而把全部对端都装进一轮。
+    // 
     INFO(NCCL_INIT, "Tuning P2P operations with maxP2pPeers = %d", comm->p2pMaxPeers);
     while (comm->p2pnChannelsPerPeer * divUp(comm->p2pMaxPeers, NCCL_MAX_DEV_WORK_P2P_PER_BATCH) > comm->p2pnChannels &&
            comm->p2pnChannelsPerPeer > 1) {
@@ -1003,7 +1011,7 @@ ncclResult_t ncclTopoComputeP2pChannels(struct ncclComm* comm) {
     comm->p2pnChannelsPerPeer = std::min(comm->p2pnChannels, comm->p2pnChannelsPerPeer);
   }
 
-  // Init channels that weren't used so far
+  // 初始化那些到目前为止尚未使用的 通道
   for (int c = comm->nChannels; c < comm->p2pnChannels; c++) NCCLCHECK(initChannel(comm, c));
 
   return ncclSuccess;
@@ -1054,8 +1062,8 @@ ncclResult_t ncclTopoGetGpuMaxPath(struct ncclTopoSystem* system, int type, int*
   return ncclSuccess;
 }
 
-// Check whether the system is all GPUs directly or indirectly connected to each other
-// through NVLink and C2C.
+// 检查系统中所有 GPU 是否两两直接或间接相连
+// (通过 NVLink 与 C2C)。
 ncclResult_t ncclTopoPathAllNVLink(struct ncclTopoSystem* system, int* allNvLink) {
   int maxPath;
   NCCLCHECK(ncclTopoGetGpuMaxPath(system, GPU, &maxPath));
@@ -1063,7 +1071,7 @@ ncclResult_t ncclTopoPathAllNVLink(struct ncclTopoSystem* system, int* allNvLink
   return ncclSuccess;
 }
 
-// Check whether the system is all GPUs connected directly to each other through NVLink/NVSwitch.
+// 检查系统是否所有 GPU 都通过 NVLink/NVSwitch 直连。
 ncclResult_t ncclTopoPathAllDirectNVLink(struct ncclTopoSystem* system, bool* directNvlink) {
   int maxPath;
   NCCLCHECK(ncclTopoGetGpuMaxPath(system, GPU, &maxPath));
@@ -1071,13 +1079,13 @@ ncclResult_t ncclTopoPathAllDirectNVLink(struct ncclTopoSystem* system, bool* di
   return ncclSuccess;
 }
 
-// Check whether we are in a split NVLink situation, with two NVLink domains, not
-// connected through NVLink (e.g. QPI).
+// 检查是否处于“分裂 NVLink”情形：存在两个 NVLink 域、但
+// 二者之间并非通过 NVLink 相连(例如经 QPI)。
 ncclResult_t ncclTopoSplitNvLink(struct ncclTopoSystem* system, int* splitNvLink) {
   ncclResult_t res = ncclSuccess;
   int nvlDomains = 0;
   int *nvlDomain = NULL, *nvlDomainCount = NULL;
-  // Compute NVLink domains
+  // 计算 NVLink 域
   NCCLCHECKGOTO(ncclCalloc(&nvlDomain, system->nodes[GPU].count), res, exit);
   for (int g = 0; g < system->nodes[GPU].count; g++) nvlDomain[g] = g;
   for (int g = 0; g < system->nodes[GPU].count; g++) {
@@ -1089,12 +1097,12 @@ ncclResult_t ncclTopoSplitNvLink(struct ncclTopoSystem* system, int* splitNvLink
       }
     }
   }
-  // Compute number of GPUs per NVLink domain.
+  // 计算每个 NVLink 域中的 GPU 数。
   NCCLCHECKGOTO(ncclCalloc(&nvlDomainCount, system->nodes[GPU].count), res, exit);
   for (int g = 0; g < system->nodes[GPU].count; g++) {
     nvlDomainCount[nvlDomain[g]]++;
   }
-  // Count the number of NVLink domains
+  // 统计 NVLink 域的数量
   for (int g = 0; g < system->nodes[GPU].count; g++) {
     if (nvlDomainCount[g] > 1) nvlDomains++;
   }

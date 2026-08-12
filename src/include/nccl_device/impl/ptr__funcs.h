@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/ptr__funcs.h — 指针辅助函数实现
+ * ----------------------------------------------------------------------------
+ * 实现 nccl_device 框架下设备指针的辅助函数（地址解引用/类型转换等），被其他设备
+ * API 使用。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_PTR__FUNCS_H_
 #define _NCCL_DEVICE_PTR__FUNCS_H_
 #include "ptr__types.h"

@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/misc/argcheck.cc — 参数校验(argument check)实现
+ * ----------------------------------------------------------------------------
+ * 实现指针/comm/datatype 等的合法性检查：CudaPtrCheck 校验用户指针是否为合法的
+ * 设备指针、comm 是否就绪等，提早返回清晰错误码，避免内核内崩溃。
+ */
+
 #include "argcheck.h"
 #include "comm.h"
 #include "bootstrap.h"
@@ -191,15 +198,15 @@ ncclResult_t ncclArgsGlobalCheck(struct ncclArgsInfo* argsInfo) {
   struct ncclInfo* info = &argsInfo->info;
   if (info->coll != ncclFuncSend && info->coll != ncclFuncRecv && info->coll != ncclFuncPutSignal &&
       info->coll != ncclFuncSignal && info->coll != ncclFuncWaitSignal) {
-    // exclude one-sided and sendrecv operations
-    // Check registration globally
+    // exclude one-sided 并且 sendrecv 操作
+    // 检查 注册 globally
     NCCLCHECK(registrationCheck(info));
   }
   return ncclSuccess;
 }
 
 ncclResult_t ArgsCheck(struct ncclInfo* info) {
-  // First, the easy ones
+  // 第一, the easy ones
   if (info->root < 0 || info->root >= info->comm->nRanks) {
     WARN("%s : invalid root %d (root should be in the 0..%d range)", info->opName, info->root, info->comm->nRanks);
     return ncclInvalidArgument;
@@ -209,9 +216,9 @@ ncclResult_t ArgsCheck(struct ncclInfo* info) {
     return ncclInvalidArgument;
   }
 
-  // ncclMaxRedOp < info->op will always be false due to the sizes of
-  // the datatypes involved, and that's by design.  We keep the check though
-  // just as a reminder.
+  // ncclMaxRedOp < 信息->操作 will always be 假 由于 the sizes of
+  // the datatypes involved, 并且 那个's by design.  We 保留 the 检查 尽管
+  // 仅 as a reminder.
   // coverity[result_independent_of_operands]
   if (info->op < 0 || ncclMaxRedOp < info->op) {
     WARN("%s : invalid reduction operation %d", info->opName, info->op);
@@ -228,11 +235,11 @@ ncclResult_t ArgsCheck(struct ncclInfo* info) {
     if ((info->coll == ncclFuncSend || info->coll == ncclFuncRecv)) {
       if (info->count > 0) NCCLCHECK(CudaPtrCheck(info->recvbuff, info->comm, "buff", info->opName));
     } else if (info->coll == ncclFuncPutSignal || info->coll == ncclFuncSignal || info->coll == ncclFuncWaitSignal) {
-      // One-sided RMA ops specify the remote destination via peerWin, not sendbuff/recvbuff,
-      // so the standard CUDA pointer checks do not apply here.
+      // One-sided RMA ops specify the 远端 目标 via peerWin, 不 sendbuff/recvbuff,
+      // 所以 the 标准 CUDA 指针 检查 执行 不 apply here.
       INFO(NCCL_COLL, "%s : skipping sendbuff/recvbuff pointer check (one-sided RMA uses peerWin)", info->opName);
     } else {
-      // Check CUDA device pointers
+      // 检查 CUDA 设备 指针
       if (info->coll != ncclFuncBroadcast || info->comm->rank == info->root) {
         NCCLCHECK(CudaPtrCheck(info->sendbuff, info->comm, "sendbuff", info->opName));
       }

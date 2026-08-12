@@ -5,6 +5,15 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/transport.h — 传输层(transport)接口定义
+ * ----------------------------------------------------------------------------
+ * 定义 ncclTransport 抽象接口与 ncclTransportComm（每种传输的 setup/send/recv/
+ * connect 函数表），以及 ncclConnect/conn 连接结构。具体实现在
+ * transport/(p2p.cc/nvls.cc/net.cc/coll_net.cc/shm.cc)。所有算法(ring/tree)都
+ * 通过“登记连接 → P2P setup”的通用流程建立实际数据通路。
+ */
+
 #ifndef NCCL_TRANSPORT_H_
 #define NCCL_TRANSPORT_H_
 
@@ -32,7 +41,7 @@ extern struct ncclTransport collNetTransport;
 extern struct ncclTransport profilerTransport;
 
 extern struct ncclTransport* ncclTransports[];
-// Forward declarations
+// 前向声明
 struct ncclRing;
 struct ncclConnector;
 struct ncclComm;
@@ -53,7 +62,7 @@ struct ncclPeerInfo {
   struct ncclComm* comm;
   int cudaCompCap;
   size_t totalGlobalMem;
-  // MNNVL support
+  // MNNVL 支持
   nvmlGpuFabricInfoV_t fabricInfo;
   int cuMemSupport;
   int version;

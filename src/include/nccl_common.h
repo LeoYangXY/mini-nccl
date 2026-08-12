@@ -5,12 +5,19 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_common.h — NCCL 公共基础类型与宏
+ * ----------------------------------------------------------------------------
+ * 定义 NCCL 各处共用的最小基础：ncclResult_t 等错误码、基础类型别名、公共工具宏。
+ * 几乎所有模块都间接依赖本文件，是项目“地基”的一部分。
+ */
+
 #ifndef NCCL_DEBUG_H_
 #define NCCL_DEBUG_H_
 
 #ifdef NCCL_OS_LINUX
-  // Workaround for libstdc++ trying to force public visibility of std:: symbols.  We don't want to do that in
-  // libnccl.so.
+  // 变通方案 for libstdc++ trying to force 公有 visibility of std:: symbols.  We don't 希望 执行 那个 入
+  // libnccl.所以.
 #include <bits/c++config.h>
 #undef _GLIBCXX_VISIBILITY
 #define _GLIBCXX_VISIBILITY(V)
@@ -18,7 +25,7 @@
 
 #include <cstdint>
 
-// Windows compatibility: define ssize_t if not available
+// Windows compatibility: 定义 ssize_t 否则 可用
 #ifdef NCCL_OS_WINDOWS
 #include <BaseTsd.h>
 typedef SSIZE_T ssize_t;
@@ -58,7 +65,7 @@ typedef enum {
 typedef void (*ncclDebugLogger_t)(ncclDebugLogLevel level, unsigned long flags, const char* file, int line,
                                   const char* fmt, ...);
 
-// NCCL core profiler callback for network defined events instrumentation
+// NCCL core 剖析器 回调函数 for 网络 已定义 事件 instrumentation
 enum {
   ncclProfilerNetEventStart = 0,
   ncclProfilerNetEventStop,

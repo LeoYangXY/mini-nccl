@@ -5,6 +5,12 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/plugin/nccl_profiler.h — Profiler 插件接口聚合头 [NVIDIA 插件接口/第三方]
+ * ----------------------------------------------------------------------------
+ * 汇总 Profiler 插件的各版本接口(profiler_v1~v6)及网络(IB/socket)子接口。
+ */
+
 #ifndef NCCL_PROFILER_H_
 #define NCCL_PROFILER_H_
 
@@ -21,7 +27,7 @@ enum {
   ncclProfileCollApi = (1 << 9),  // Collective API events
   ncclProfileP2pApi = (1 << 10), // Point-to-Point API events
   ncclProfileKernelLaunch = (1 << 11), // Kernel launch events
-  // CE events (v6)
+  // CE 事件 (v6)
   ncclProfileCeColl = (1 << 12), // CE collective operation
   ncclProfileCeSync = (1 << 13), // CE synchronization operation
   ncclProfileCeBatch = (1 << 14), // CE batch operation
@@ -90,8 +96,8 @@ typedef ncclProfilerEventState_t ncclProfilerEventState_v6_t;
 #include "profiler/profiler_v2.h"
 #include "profiler/profiler_v1.h"
 
-// Use v6 as default to support CE events
-// v5 and earlier versions are still supported for backward compatibility
+// 使用 v6 as 默认 to 支持 CE 事件
+// v5 并且 earlier 版本 are 仍 受支持的 for backward compatibility
 typedef ncclProfiler_v6_t ncclProfiler_t;
 typedef ncclProfilerEventDescr_v6_t ncclProfilerEventDescr_t;
 typedef ncclProfilerEventStateArgs_v6_t ncclProfilerEventStateArgs_t;

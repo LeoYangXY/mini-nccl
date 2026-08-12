@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/alltoall.cu — AllToAll 性能/功能测试
+ * ----------------------------------------------------------------------------
+ * 实现 alltoall_perf 基准：每个 rank 把数据按段分发给所有其他 rank（等量），演示
+ * NCCL AllToAll API 用法与字节计数计算。取自 nccl-tests 并裁剪。
+ */
+
 #include "cuda_runtime.h"
 #include "common.h"
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2,28,0)

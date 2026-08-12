@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/misc/socket.cc — socket 网络实现（TCP 收发）
+ * ----------------------------------------------------------------------------
+ * 实现 include/socket.h 声明的 TCP socket 抽象：连接建立、字节流收发、超时与地址
+ * 解析，是 bootstrap 引导与 net socket 后端的底层通道。
+ */
+
 #include "socket.h"
 #include "utils.h"
 #include "os.h"
@@ -66,8 +73,8 @@ static ncclResult_t socketProgress(int op, struct ncclSocket* sock, void* ptr, i
 static ncclResult_t socketWait(int op, struct ncclSocket* sock, void* ptr, int size, int* offset) {
   while (*offset < size) {
     NCCLCHECK(socketProgress(op, sock, ptr, size, offset));
-    // If we have more data to read or write, use the poll system call to wait
-    // until the socket becomes readable or writable again.
+    // 若 我们已有 more 数据 to 读取 或者 写入, 使用 the 轮询 系统 调用 to 等待
+    // 直到 the 套接字 becomes readable 或者 writable again.
     if ((*offset < size) && ncclParamPollTimeOut()) {
       ncclOsPollSocket(sock->socketDescriptor, op);
     }
@@ -118,7 +125,7 @@ ncclResult_t ncclSocketListen(struct ncclSocket* sock) {
   }
 
   if (ncclSocketToPort(&sock->addr)) {
-    // Port is forced by env. Make sure we get the port.
+    // 端口 is forced by env. 确保 we 获取 端口.
     int opt = 1;
 #if defined(NCCL_OS_LINUX)
     SYSCHECK(setsockopt(sock->socketDescriptor, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)), "setsockopt");
@@ -133,7 +140,7 @@ ncclResult_t ncclSocketListen(struct ncclSocket* sock) {
 #endif
   }
 
-  // addr port should be 0 (Any port)
+  // addr 端口 应当 0 (任意 端口)
   SYSCHECK(bind(sock->socketDescriptor, &sock->addr.sa, sock->salen), "bind");
 
   /* Get the assigned Port */
@@ -147,7 +154,7 @@ ncclResult_t ncclSocketListen(struct ncclSocket* sock) {
 
   SYSCHECK(listen(sock->socketDescriptor, 16384), "listen");
 
-  // Set acceptSocketDescriptor to the same value as socketDescriptor for listening sockets
+  // 设置 acceptSocketDescriptor to 相同 值 as socketDescriptor for listening 套接字
   sock->acceptSocketDescriptor = sock->socketDescriptor;
   sock->state = ncclSocketStateReady;
   return ncclSuccess;
@@ -190,36 +197,36 @@ int ncclEnvSocketFamily(void) {
 ncclResult_t ncclFindInterfaces(char* ifNames, union ncclSocketAddress* ifAddrs, int ifNameMaxSize, int maxIfs,
                                 int* nIfs) {
   static int shownIfName = 0;
-  // Allow user to force the INET socket family selection
+  // 允许 用户 to force the INET 套接字 family selection
   int sock_family = ncclEnvSocketFamily();
-  // User specified interface
+  // 用户 specified 接口
   const char* env = ncclGetEnv("NCCL_SOCKET_IFNAME");
   *nIfs = 0;
   if (env && strlen(env) > 1) {
     INFO(NCCL_ENV, "NCCL_SOCKET_IFNAME set by environment to %s", env);
-    // Specified by user : find or fail
+    // Specified by 用户 : 查找 或者 失败
     if (shownIfName++ == 0) INFO(NCCL_NET, "NCCL_SOCKET_IFNAME set to %s", env);
     NCCLCHECK(ncclOsFindInterfaces(env, ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
   } else {
-    // Try to automatically pick the right one
-    // Start with IB
+    // 尝试 automatically pick the 右 one
+    // 起始 with IB
     NCCLCHECK(ncclOsFindInterfaces("ib", ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
-    // else see if we can get some hint from COMM ID
+    // else 参见 若 我们可以 获取 一些 提示 from 通信域 ID
     if (*nIfs == 0) {
       const char* commId = ncclGetEnv("NCCL_COMM_ID");
       if (commId && strlen(commId) > 1) {
         INFO(NCCL_ENV, "NCCL_COMM_ID set by environment to %s", commId);
-        // Try to find interface that is in the same subnet as the IP in comm id
+        // 尝试 查找 接口 即 入 相同 subnet as the IP 入 通信域 id
         union ncclSocketAddress idAddr;
         NCCLCHECK(ncclSocketGetAddrFromString(&idAddr, commId));
         NCCLCHECK(ncclFindInterfaceMatchSubnet(ifNames, ifAddrs, &idAddr, ifNameMaxSize, nIfs));
       }
     }
-    // Then look for anything else (but not docker,lo, or virtual)
+    // Then look for anything else (但 不 docker,lo, 或者 虚)
     if (*nIfs == 0) {
       NCCLCHECK(ncclOsFindInterfaces("^docker,lo,virbr", ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
     }
-    // Finally look for docker, then lo.
+    // 最后查找 docker，然后是 lo。
     if (*nIfs == 0) {
       NCCLCHECK(ncclOsFindInterfaces("docker", ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
     }
@@ -241,7 +248,7 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
   /* Construct the sockaddress structure */
   if (!ipv6) {
     struct netIf ni;
-    // parse <ip_or_hostname>:<port> string, expect one pair
+    // parse <ip_or_hostname>:<端口> string, 期望 one pair
     if (parseStringList(ip_port_pair, &ni, 1) != 1) {
       WARN("Net : No valid <IPv4_or_hostname>:<port> pair found");
       return ncclInvalidArgument;
@@ -258,12 +265,12 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
       return ncclInvalidArgument;
     }
 
-    // use the first
+    // 使用 第一个
     if (p->ai_family == AF_INET) {
       struct sockaddr_in& sin = ua->sin;
       memcpy(&sin, p->ai_addr, sizeof(struct sockaddr_in));
       sin.sin_family = AF_INET;                        // IPv4
-      // inet_pton(AF_INET, ni.prefix, &(sin.sin_addr));  // IP address
+      // inet_pton(AF_INET, ni.prefix, &(sin.sin_addr));  // IP 地址
       sin.sin_port = htons(ni.port);                   // port
     } else if (p->ai_family == AF_INET6) {
       struct sockaddr_in6& sin6 = ua->sin6;
@@ -300,7 +307,7 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
     strncpy(port_str, ip_port_pair + i + 2, len - i - 1);
     int port = atoi(port_str);
     if (!global_scope) {
-      // If not global scope, we need the intf name
+      // 否则 全局的 scope, we 需要 the intf name
       strncpy(if_name, ip_port_pair + j + 1, i - j - 1);
     }
 
@@ -329,7 +336,7 @@ static ncclResult_t socketFinalizeAccept(struct ncclSocket* sock) {
   enum ncclSocketType type;
   int received;
   char line[SOCKET_NAME_MAXLEN + 1];
-  // once accepted, linux sockets do NOT inherit file status flags such as O_NONBLOCK (BSD ones do)
+  // 一旦 accepted, linux 套接字 执行 不 inherit 文件 status 标志 例如 O_NONBLOCK (BSD ones 执行)
   NCCLCHECK(ncclOsSocketSetFlags(sock));
 
   if (sock->asyncFlag == 0 || sock->finalizeCounter < sizeof(magic)) {
@@ -528,7 +535,7 @@ ncclResult_t ncclSocketAccept(struct ncclSocket* sock, struct ncclSocket* listen
   do {
     NCCLCHECKGOTO(socketProgressState(sock), ret, exit);
     if (sock->state == ncclSocketStateBadHandshake) {
-      // Most likely some issue with magic.  We will retry from the beginning, unless the caller requested not to.
+      // Most likely 一些 问题 with magic.  我们会 重试 从 beginning, 除非 调用方 requested 不 to.
       sock->state = ncclSocketStateAccepting;
       if (!retry) break;
     }
@@ -588,8 +595,8 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
       goto exit;
     }
     sock->salen = (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-    // in case of error, we close the descriptor before returning as it's unclear if the caller has to
-    // use ncclSocketClose for cleanup
+    // 若发生 错误, we close the descriptor 返回之前 as it's unclear 若 调用方 has to
+    // 使用 ncclSocketClose for cleanup
     NCCLCHECKGOTO(ncclOsSocketResetFd(sock), ret, fail);
   } else {
     memset(&sock->addr, 0, sizeof(union ncclSocketAddress));
@@ -689,7 +696,7 @@ ncclResult_t ncclSocketMultiOp(struct ncclSocketOp* ops, int numOps) {
   }
   return ncclSuccess;
 }
-// Receive or detect connection closed
+// 接收 或者 detect 连接 关闭
 ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int* closed, bool blocking) {
   int offset = 0;
   if (sock == NULL) {
@@ -697,7 +704,7 @@ ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int
     return ncclInvalidArgument;
   }
   *closed = 0;
-  // Block until connection closes or nbytes received
+  // 块 直到 连接 closes 或者 nbytes received
   if (blocking) {
     while (offset < size) {
       NCCLCHECK(ncclOsSocketProgressOpt(NCCL_SOCKET_RECV, sock, ptr, size, &offset, 0, closed));
@@ -707,13 +714,13 @@ ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int
     NCCLCHECK(ncclOsSocketProgressOpt(NCCL_SOCKET_RECV, sock, ptr, size, &offset, 0, closed));
     if (*closed) return ncclSuccess;
 
-    // If any bytes were received, block waiting for the rest
+    // 如果有的话 字节 were received, 块 waiting for 其余
     if (offset > 0) {
       while (offset < size) {
         NCCLCHECK(ncclOsSocketProgressOpt(NCCL_SOCKET_RECV, sock, ptr, size, &offset, 0, closed));
         if (*closed) return ncclSuccess;
       }
-      // No bytes were received, return ncclInProgress
+      // 无 字节 were received, 返回 ncclInProgress
     } else {
       return ncclInProgress;
     }

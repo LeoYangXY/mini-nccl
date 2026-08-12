@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/reduce_copy__impl.h — reduce + copy 实现
+ * ----------------------------------------------------------------------------
+ * 实现 nccl_device 框架 reduce/copy 原语的具体函数体（小数据/大数据分支），是设备
+ * 端规约搬运的核心实现。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_REDUCE_COPY__IMPL_H_
 #define _NCCL_DEVICE_REDUCE_COPY__IMPL_H_
 
@@ -20,9 +27,9 @@
 namespace nccl {
 namespace utility {
 
-// Helper Functions
+// 辅助 函数
 
-// Core Loop Implementation
+// Core 循环 实现
 
 template <int UNROLL_PACKS, int UNROLL_SOURCE, typename T, typename Pack, typename RedOp, typename IntCount,
           typename Coop, bool srcMultimem, bool dstMultimem, typename SrcLambda, typename DstLambda, bool CHECK_BOUNDS,
@@ -53,7 +60,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCoreImpl(Coop coop, SrcLambda srcLambd
 
   AccPackType acc[UNROLL_PACKS];
 
-  // Reduce phase - optimized fast path for LSA sources without bounds checking
+  // 规约 阶段 - optimized 快速 路径 for LSA 源文件 在没有 ... 的情况下 边界 checking
   if NCCL_IF_CONSTEXPR (!srcMultimem && !CHECK_BOUNDS) {
     if NCCL_IF_CONSTEXPR (SINGLE_SRC) {
       Pack* srcPtr0 = (Pack*)srcLambda(0);
@@ -67,7 +74,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCoreImpl(Coop coop, SrcLambda srcLambd
       AccRedOpType accRedOp{};
       Pack loaded[UNROLL_SOURCE][UNROLL_PACKS];
 
-      // Preseed acc[] with source 0 to avoid inner-loop branching.
+      // Preseed acc[] with 源文件 0 to 避免 inner-循环 branching.
       Pack* srcPtr = (Pack*)srcLambda(0);
       NVCC_PRAGMA_UNROLL(UNROLL_PACKS)
       for (int u = 0; u < UNROLL_PACKS; u++) {
@@ -95,7 +102,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCoreImpl(Coop coop, SrcLambda srcLambd
         }
       }
 
-      // Remaining passes over sources.
+      // 剩余的 passes over 源文件.
       for (int srcBase = UNROLL_SOURCE; srcBase < nSrc; srcBase += UNROLL_SOURCE) {
         NVCC_PRAGMA_UNROLL(UNROLL_SOURCE)
         for (int srcOffset = 0; srcOffset < srcCount; srcOffset++) {
@@ -134,7 +141,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCoreImpl(Coop coop, SrcLambda srcLambd
       AccRedOpType accRedOp{};
       Pack loaded[UNROLL_SOURCE][UNROLL_PACKS];
 
-      // Preseed acc[] with source 0 to avoid inner-loop branching.
+      // Preseed acc[] with 源文件 0 to 避免 inner-循环 branching.
       Pack* srcPtr = (Pack*)srcLambda(0);
       NVCC_PRAGMA_UNROLL(UNROLL_PACKS)
       for (int u = 0; u < UNROLL_PACKS; u++) {
@@ -174,7 +181,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCoreImpl(Coop coop, SrcLambda srcLambd
         }
       }
 
-      // Finish remaining sources.
+      // 完成 剩余的 源文件.
       for (int srcBase = UNROLL_SOURCE; srcBase < nSrc; srcBase += UNROLL_SOURCE) {
         Pack loaded[UNROLL_SOURCE][UNROLL_PACKS];
         NVCC_PRAGMA_UNROLL(UNROLL_SOURCE)
@@ -206,14 +213,14 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCoreImpl(Coop coop, SrcLambda srcLambd
     }
   }
 
-  // Broadcast phase - optimized fast path for LSA destinations without bounds checking
+  // 广播 阶段 - optimized 快速 路径 for LSA 目标 在没有 ... 的情况下 边界 checking
   if NCCL_IF_CONSTEXPR (!dstMultimem && !CHECK_BOUNDS) {
-    // Fast path: LSA destinations, no bounds checking - optimized for performance
-    // Hoist pointer calculations outside inner loop for better instruction scheduling
+    // 快速 路径: LSA 目标, 无 边界 checking - optimized for 性能
+    // Hoist 指针 calculations 外部 inner 循环 for 更好 instruction scheduling
     NVCC_PRAGMA_UNROLL(4)
     for (int dstIdx = 0; dstIdx < nDst; dstIdx++) {
       Pack* dstPtr = (Pack*)dstLambda(dstIdx);
-      // Explicit unroll with direct memory access - compiler can better schedule instructions
+      // Explicit unroll with direct 内存 access - 编译器 can 更好 schedule instructions
       NVCC_PRAGMA_UNROLL(UNROLL_PACKS)
       for (int u = 0; u < UNROLL_PACKS; u++) {
         IntCount packIdx = groupLanePackIdx + u * runtimeStride;
@@ -222,7 +229,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCoreImpl(Coop coop, SrcLambda srcLambd
       }
     }
   } else {
-    // General path: handles multimem and bounds checking
+    // General 路径: 句柄 multimem 并且 边界 checking
     NVCC_PRAGMA_UNROLL(4)
     for (int dstIdx = 0; dstIdx < nDst; dstIdx++) {
       Pack* dstPtr = (Pack*)dstLambda(dstIdx);
@@ -235,7 +242,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCoreImpl(Coop coop, SrcLambda srcLambd
 
         Pack result = castPack<PackEltType, AccEltType, Pack::Count>(acc[u]);
 
-        // Store pack (compile-time optimized based on dstMultimem)
+        // 存储 打包 (编译-time optimized 基于 dstMultimem)
         store<Pack, dstMultimem>(dstPtr + packIdx, result);
       }
     }
@@ -259,33 +266,33 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCore(Coop coop, SrcLambda srcLambda, i
     if (nSrc >= 4 && nSrc % 4 == 0) {
       constexpr int UNROLL_DIV4 = UNROLL_PACKS / 4;
       if NCCL_IF_CONSTEXPR (UNROLL_DIV4 > 0) {
-        // only needed for dead-code instantiation
+        // 仅 已需要 for dead-代码 instantiation
         constexpr int UNROLL_DIV4_SAFE = (UNROLL_DIV4 > 0) ? UNROLL_DIV4 : 1;
         return reduceCopyLoopCoreImpl<UNROLL_DIV4_SAFE, /*nSrc=*/4, T, Pack, RedOp, IntCount, Coop, srcMultimem,
                                       dstMultimem, SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/false>(
           coop, srcLambda, nSrc, dstLambda, nDst, redOp, totalPacks, basePackIdx);
       }
     }
-    // NOTE: nSrc % 3 and nSrc % 2 specializations marginally improve performance,
-    // but significantly increase build time due to extra template instantiations.
-    // Keep them disabled unless performance data warrants the extra compile cost.
-    // if (nSrc >= 3 && nSrc % 3 == 0) {
-    //   constexpr int UNROLL_DIV3 = UNROLL_PACKS / 3;
-    //   if NCCL_IF_CONSTEXPR (UNROLL_DIV3 > 0) {
-    //     constexpr int UNROLL_DIV3_SAFE = (UNROLL_DIV3 > 0) ? UNROLL_DIV3 : 1;  // only needed for dead-code
+    // 注意: nSrc % 3 并且 nSrc % 2 specializations marginally improve 性能,
+    // 但 significantly increase 构建 time 由于 额外的 模板 instantiations.
+    // 保留它们 禁用 除非 性能 数据 warrants the 额外的 编译 代价.
+    // 若 (nSrc >= 3 && nSrc % 3 == 0) {
+    //   constexpr 整型 UNROLL_DIV3 = UNROLL_PACKS / 3;
+    //   若 NCCL_IF_CONSTEXPR (UNROLL_DIV3 > 0) {
+    //     constexpr 整型 UNROLL_DIV3_SAFE = (UNROLL_DIV3 > 0) ? UNROLL_DIV3 : 1;  // 仅 已需要 for dead-代码
     //                                                                            // instantiation
-    //     return reduceCopyLoopCoreImpl<UNROLL_DIV3_SAFE, /*nSrc=*/3, T, Pack, RedOp, IntCount, Coop, srcMultimem,
-    //                                   dstMultimem, SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/false>(
+    //     返回 reduceCopyLoopCoreImpl<UNROLL_DIV3_SAFE, /*nSrc=*/3, T, 打包, RedOp, IntCount, Coop, srcMultimem,
+    //                                   dstMultimem, SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/假>(
     //         coop, srcLambda, nSrc, dstLambda, nDst, redOp, totalPacks, basePackIdx);
     //   }
     // }
-    // if (nSrc >= 2 && nSrc % 2 == 0) {
-    //   constexpr int UNROLL_DIV2 = UNROLL_PACKS / 2;
-    //   if NCCL_IF_CONSTEXPR (UNROLL_DIV2 > 0) {
-    //     constexpr int UNROLL_DIV2_SAFE = (UNROLL_DIV2 > 0) ? UNROLL_DIV2 : 1;  // only needed for dead-code
+    // 若 (nSrc >= 2 && nSrc % 2 == 0) {
+    //   constexpr 整型 UNROLL_DIV2 = UNROLL_PACKS / 2;
+    //   若 NCCL_IF_CONSTEXPR (UNROLL_DIV2 > 0) {
+    //     constexpr 整型 UNROLL_DIV2_SAFE = (UNROLL_DIV2 > 0) ? UNROLL_DIV2 : 1;  // 仅 已需要 for dead-代码
     //                                                                            // instantiation
-    //     return reduceCopyLoopCoreImpl<UNROLL_DIV2_SAFE, /*nSrc=*/2, T, Pack, RedOp, IntCount, Coop, srcMultimem,
-    //                                   dstMultimem, SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/false>(
+    //     返回 reduceCopyLoopCoreImpl<UNROLL_DIV2_SAFE, /*nSrc=*/2, T, 打包, RedOp, IntCount, Coop, srcMultimem,
+    //                                   dstMultimem, SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/假>(
     //         coop, srcLambda, nSrc, dstLambda, nDst, redOp, totalPacks, basePackIdx);
     //   }
     // }
@@ -295,7 +302,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCore(Coop coop, SrcLambda srcLambda, i
   }
 }
 
-// Helper struct to calculate loop iteration counts
+// 辅助 结构体 to 计算 循环 迭代 counts
 template <int UNROLL_PACKS, typename Pack, typename IntCount>
 struct ReduceCopyLoopParams {
   IntCount totalPacks;
@@ -318,22 +325,22 @@ struct ReduceCopyLoopParams {
         effectiveUnrollPacks = UNROLL_PACKS / 4;
       }
     }
-    // NOTE: Keep nSrc % 3 and nSrc % 2 unrolls disabled (see note above).
-    // else if (nSrc >= 3 && nSrc % 3 == 0) {
-    //   if NCCL_IF_CONSTEXPR (UNROLL_PACKS / 3 > 0) {
+    // 注意: 保留 nSrc % 3 并且 nSrc % 2 unrolls 禁用 (参见 注意 上方).
+    // else 若 (nSrc >= 3 && nSrc % 3 == 0) {
+    //   若 NCCL_IF_CONSTEXPR (UNROLL_PACKS / 3 > 0) {
     //     effectiveUnrollPacks = UNROLL_PACKS / 3;
     //   }
-    // } else if (nSrc >= 2 && nSrc % 2 == 0) {
-    //   if NCCL_IF_CONSTEXPR (UNROLL_PACKS / 2 > 0) {
+    // } else 若 (nSrc >= 2 && nSrc % 2 == 0) {
+    //   若 NCCL_IF_CONSTEXPR (UNROLL_PACKS / 2 > 0) {
     //     effectiveUnrollPacks = UNROLL_PACKS / 2;
     //   }
     // }
 
-    // Compute packs per iteration: numGroups * (stride * UNROLL_PACKS)
+    // 计算 packs 每个 迭代: numGroups * (stride * UNROLL_PACKS)
     const int numGroups = (coopSize + stride - 1) / stride;
     packsPerIteration = numGroups * (stride * effectiveUnrollPacks);
 
-    // Calculate number of unchecked and checked rounds
+    // 计算 数量： unchecked 并且 checked rounds
     if NCCL_IF_CONSTEXPR (Pack::Count > 0) {
       numFullChunks = totalPacks / packsPerIteration;
       remainingPacks = totalPacks - numFullChunks * packsPerIteration;
@@ -355,7 +362,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoop(Coop coop, SrcLambda srcLambda, int n
   constexpr int defaultStride = CoopStride<Coop>::value;
   const int stride = (defaultStride != 0) ? defaultStride : min(coopSize, warpSize);
 
-  // Calculate loop parameters
+  // 计算 循环 参数
   ReduceCopyLoopParams<UNROLL_PACKS, Pack, IntCount> params(count, coopSize, stride, nSrc);
   if (params.totalPacks == 0) {
     return 0;
@@ -380,15 +387,15 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoop(Coop coop, SrcLambda srcLambda, int n
   return processedElts;
 }
 
-// Scalar Loop Implementation (for scalar remainder sections)
-// Uses reduceCopyLoop with EltPack<T, 1> as the Pack type and UNROLL_PACKS=1
+// 标量 循环 实现 (for 标量 remainder sections)
+// 使用 reduceCopyLoop with EltPack<T, 1> as the 打包 类型 并且 UNROLL_PACKS=1
 template <typename T, typename RedOp, typename IntCount, typename Coop, bool srcMultimem, bool dstMultimem,
           typename SrcLambda, typename DstLambda>
 NCCL_DEVICE_INLINE void reduceCopyScalarLoop(Coop coop, SrcLambda srcLambda, int nSrc, DstLambda dstLambda, int nDst,
                                              RedOp const& redOp, IntCount count) {
   if (count == 0) return;
 
-  // Default scalar path: one element per pack.
+  // 默认 标量 路径: one 元素 每个 打包.
   using Pack = EltPack<T, 1>;
   auto srcScalarLambda = [=] __device__(int i) -> Pack* {
     T* basePtr = srcLambda(i);
@@ -399,8 +406,8 @@ NCCL_DEVICE_INLINE void reduceCopyScalarLoop(Coop coop, SrcLambda srcLambda, int
     return reinterpret_cast<Pack*>(basePtr);
   };
 
-  // Use reduceCopyLoop with EltPack<T, 1> as Pack and UNROLL_PACKS=1
-  // This handles chunking and bounds checking properly
+  // 使用 reduceCopyLoop with EltPack<T, 1> as 打包 并且 UNROLL_PACKS=1
+  // 此 句柄 chunking 并且 边界 checking properly
   constexpr int UNROLL_PACKS = 1;
 
   reduceCopyLoop<UNROLL_PACKS, T, Pack, RedOp, IntCount, Coop, srcMultimem, dstMultimem, decltype(srcScalarLambda),
@@ -408,15 +415,15 @@ NCCL_DEVICE_INLINE void reduceCopyScalarLoop(Coop coop, SrcLambda srcLambda, int
                                                                 redOp, count);
 }
 
-// Main Entry Point (Internal - Not Public API)
+// Main Entry Point (内部 - 不 公有 API)
 
 template <typename T, typename RedOp, typename Coop, bool srcMultimem, bool dstMultimem, typename SrcLambda,
           typename DstLambda, typename IntCount, int UNROLL_ELTS>
 NCCL_DEVICE_INLINE void reduceCopy(Coop coop, SrcLambda srcLambda, int nSrc, DstLambda dstLambda, int nDst,
                                    RedOp const& redOp, IntCount count, IntCount alignOffset = 0,
                                    int maxPackBytes = 16) {
-  // Step 1: Process scalar prefix to achieve alignment (if needed)
-  // alignOffset is already computed by the alignment functions - use it directly
+  // 步骤 1: 处理 标量 prefix to achieve 对齐 (如有需要)
+  // alignOffset is 已经 computed 由 对齐 函数 - 使用 it directly
   IntCount processedElts = 0;
   if (alignOffset > 0 && alignOffset < count) {
     reduceCopyScalarLoop<T, RedOp, IntCount, Coop, srcMultimem, dstMultimem>(coop, srcLambda, nSrc, dstLambda, nDst,
@@ -424,33 +431,33 @@ NCCL_DEVICE_INLINE void reduceCopy(Coop coop, SrcLambda srcLambda, int nSrc, Dst
     processedElts = alignOffset;
   }
 
-  // Step 2: Process aligned bulk - match all_reduce.cuh strategy: check relative alignment and try pack sizes
-  // sequentially
+  // 步骤 2: 处理 已对齐 bulk - match all_reduce.cuh strategy: 检查 relative 对齐 并且 尝试 打包 sizes
+  // 顺序地
   IntCount remainingElts = count - processedElts;
   if (remainingElts == 0) {
     return;
   }
 
-  // Create lambdas for remaining work
+  // 创建 lambdas for 剩余的 work
   auto srcRemaining = [=] __device__(int i) -> T* { return srcLambda(i) + processedElts; };
   auto dstRemaining = [=] __device__(int i) -> T* { return dstLambda(i) + processedElts; };
 
-  // Check relative alignment of first source and destination pointers (like all_reduce.cuh)
-  // all_reduce.cuh checks: (input.offset - output.offset)%16 == 0
-  // This determines which pack sizes we can use
+  // 检查 relative 对齐 of 第一 源文件 并且 目标 指针 (like all_reduce.cuh)
+  // all_reduce.cuh 检查: (输入.偏移 - 输出.偏移)%16 == 0
+  // 此 determines 该 打包 sizes 我们可以 使用
   void* srcPtr0 = (nSrc > 0) ? (void*)srcRemaining(0) : nullptr;
   void* dstPtr0 = (nDst > 0) ? (void*)dstRemaining(0) : nullptr;
   uintptr_t srcOffset = (srcPtr0 != nullptr) ? reinterpret_cast<uintptr_t>(srcPtr0) : 0;
   uintptr_t dstOffset = (dstPtr0 != nullptr) ? reinterpret_cast<uintptr_t>(dstPtr0) : 0;
-  // Calculate relative alignment: (srcOffset - dstOffset) mod packSize
-  // Note: We need signed difference to match all_reduce.cuh behavior
+  // 计算 relative 对齐: (srcOffset - dstOffset) mod packSize
+  // 注意: We 需要 signed difference to match all_reduce.cuh behavior
   intptr_t relOffset16 = static_cast<intptr_t>(srcOffset) - static_cast<intptr_t>(dstOffset);
 
   IntCount vectorizedElts = 0;
   constexpr int scalarSize = sizeof(T);
 
-  // Step 2a: Try 16-byte packs first if relative alignment is good (matching all_reduce.cuh)
-  // all_reduce.cuh checks: (input.offset - output.offset)%16 == 0
+  // 步骤 2a: 尝试 16-字节 packs 第一 若 relative 对齐 is 良好 (matching all_reduce.cuh)
+  // all_reduce.cuh 检查: (输入.偏移 - 输出.偏移)%16 == 0
   if (maxPackBytes >= 16 && relOffset16 % 16 == 0 && remainingElts * scalarSize >= 16) {
     using Pack16 = nccl::utility::EltPackForBytes<T, 16>;
     if NCCL_IF_CONSTEXPR (Pack16::Count > 0) {
@@ -467,25 +474,25 @@ NCCL_DEVICE_INLINE void reduceCopy(Coop coop, SrcLambda srcLambda, int nSrc, Dst
     }
   }
 
-  // Step 2b: Try 4-byte packs on remainder (if 16-byte worked) or all remaining (if 16-byte didn't work)
-  // all_reduce.cuh checks: sizeof(T) == 4 || (sizeof(T) < 4 && (input.offset - output.offset)%4 == 0)
+  // 步骤 2b: 尝试 4-字节 packs on remainder (若 16-字节 worked) 或者 所有 剩余的 (若 16-字节 didn't work)
+  // all_reduce.cuh 检查: sizeof(T) == 4 || (sizeof(T) < 4 && (输入.偏移 - 输出.偏移)%4 == 0)
   IntCount remainingAfter16 = remainingElts - vectorizedElts;
   if (maxPackBytes >= 4 && remainingAfter16 > 0) {
-    // Recalculate alignment for Pack4 after Pack16 processing
+    // Recalculate 对齐 for Pack4 之后 Pack16 处理
     void* srcPtrAfter16 = (nSrc > 0) ? (void*)(srcRemaining(0) + vectorizedElts) : nullptr;
     void* dstPtrAfter16 = (nDst > 0) ? (void*)(dstRemaining(0) + vectorizedElts) : nullptr;
     uintptr_t srcOffsetAfter16 = (srcPtrAfter16 != nullptr) ? reinterpret_cast<uintptr_t>(srcPtrAfter16) : 0;
     uintptr_t dstOffsetAfter16 = (dstPtrAfter16 != nullptr) ? reinterpret_cast<uintptr_t>(dstPtrAfter16) : 0;
     intptr_t relOffset4After16 = static_cast<intptr_t>(srcOffsetAfter16) - static_cast<intptr_t>(dstOffsetAfter16);
 
-    // Check individual pointer alignment for Pack4 (always 4-byte alignment requirement)
-    // getAlignment returns bytes to next aligned address (0 = already aligned)
+    // 检查 individual 指针 对齐 for Pack4 (always 4-字节 对齐 要求)
+    // getAlignment 返回 字节 to 下一个 已对齐 地址 (0 = 已经 已对齐)
     using Pack4 = nccl::utility::EltPackForBytes<T, 4>;
     constexpr unsigned pack4Align = 4;  // Pack4 always requires 4-byte alignment
     bool srcAligned4 = (srcPtrAfter16 == nullptr) || (nccl::utility::getAlignment(srcPtrAfter16, pack4Align) == 0);
     bool dstAligned4 = (dstPtrAfter16 == nullptr) || (nccl::utility::getAlignment(dstPtrAfter16, pack4Align) == 0);
 
-    // Check if Pack4 can be used: relative alignment must be divisible by 4, and individual pointers must be aligned
+    // 检查 若 Pack4 可以 已使用: relative 对齐 必须为 divisible by 4, 并且 individual 指针 必须为 已对齐
     if (sizeof(T) == 4 || (sizeof(T) < 4 && relOffset4After16 % 4 == 0 && srcAligned4 && dstAligned4)) {
       if (remainingAfter16 * scalarSize >= 4) {
         if NCCL_IF_CONSTEXPR (Pack4::Count > 0) {
@@ -506,13 +513,13 @@ NCCL_DEVICE_INLINE void reduceCopy(Coop coop, SrcLambda srcLambda, int nSrc, Dst
     }
   }
 
-  // Step 3: Scalar remainder
+  // 步骤 3: 标量 remainder
   IntCount scalarRemainder = remainingElts - vectorizedElts;
   if (scalarRemainder > 0) {
     auto srcScalar = [=] __device__(int i) -> T* { return srcRemaining(i) + vectorizedElts; };
     auto dstScalar = [=] __device__(int i) -> T* { return dstRemaining(i) + vectorizedElts; };
 
-    // Process scalar remainder - always use scalar loop with EltPack<T, 1>
+    // 处理 标量 remainder - always 使用 标量 循环 with EltPack<T, 1>
     reduceCopyScalarLoop<T, RedOp, IntCount, Coop, srcMultimem, dstMultimem>(coop, srcScalar, nSrc, dstScalar, nDst,
                                                                              redOp, scalarRemainder);
   }

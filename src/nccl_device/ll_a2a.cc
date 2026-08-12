@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/nccl_device/ll_a2a.cc — 设备端 LL all-to-all 辅助实现
+ * ----------------------------------------------------------------------------
+ * 实现 Low-Latency(LL) 协议的 all-to-all 辅助计算：ncclLLA2ACalcSlots 等计算 LL
+ * 协议所需的 slot 数量，供 LL/LL128 协议的 device kernel 使用。
+ */
+
 #include "core.h"
 #include "nccl_device/impl/ll_a2a__funcs.h"
 

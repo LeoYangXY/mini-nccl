@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/barrier__types.h — barrier 类型定义
+ * ----------------------------------------------------------------------------
+ * 定义 nccl_device 框架设备 barrier 的类型（ncclDeviceBarrierHandle 等），被
+ * barrier__funcs.h 引用。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_BARRIER__TYPES_H_
 #define _NCCL_DEVICE_BARRIER__TYPES_H_
 #include "../barrier.h"

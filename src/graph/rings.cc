@@ -25,17 +25,17 @@
 void dumpLine(int* values, int nranks, const char* prefix) {
   constexpr int line_length = 128;
   char line[line_length];
-  int num_width = snprintf(nullptr, 0, "%d", nranks - 1);  // safe as per "man snprintf"
+  // 先算出最大 rank 编号占几位，用于对齐输出；传 nullptr 只求长度是 snprintf 的标准用法
+  int num_width = snprintf(nullptr, 0, "%d", nranks - 1);  // 按 "man snprintf" 说明，这样调用是安全的
   int n = snprintf(line, line_length, "%s", prefix);
   for (int i = 0; i < nranks && n < line_length - 1; i++) {
     n += snprintf(line + n, line_length - n, " %*d", num_width, values[i]);
-    // At this point n may be more than line_length-1, so don't use it
-    // for indexing into "line".
+    // 注意：此处 n 可能已经超过 line_length-1(snprintf 返回的是“本应写入的长度”)，
+    // 所以绝对不能再用 n 去索引 line 数组，否则会越界。
   }
   if (n >= line_length) {
-    // Sprintf wanted to write more than would fit in the buffer. Assume
-    // line_length is at least 4 and replace the end with "..." to
-    // indicate that it was truncated.
+    // snprintf 想写入的内容超出了缓冲区容量，说明输出被截断了。
+    // 这里假定 line_length 至少为 4，把末尾 3 个字符换成 "..." 以显式标明截断。
     snprintf(line + line_length - 4, 4, "...");
   }
   INFO(NCCL_INIT, "%s", line);
@@ -63,23 +63,27 @@ ncclResult_t ncclBuildRings(int nrings, int* rings, int rank, int nranks, int* p
     sprintf(prefix, "[%d] Channel %d Next : ", rank, r);
     dumpLine(next+r*nranks, nranks, prefix);*/
 
+    // 从本 rank 出发，沿着 next 指针一路走 nranks 步，把整条环“摊平”成线性序列
     int current = rank;
     for (int i = 0; i < nranks; i++) {
+      // 在位图中标记 current 已被访问：current/64 定位到第几个 64 位字，current%64 定位到具体某一位
       rankFound[current / 64] |= (1ULL << (current % 64));
-      rings[r * nranks + i] = current;
-      current = next[r * nranks + current];
+      rings[r * nranks + i] = current;          // 记录第 r 条环第 i 个位置上的 rank
+      current = next[r * nranks + current];     // 跳到环上的下一个 rank
     }
     snprintf(prefix, sizeof(prefix), "Channel %02d/%02d :", r, nrings);
     if (rank == 0) dumpLine(rings + r * nranks, nranks, prefix);
+    // 走完 nranks 步后必须回到出发点，否则说明这不是一个闭合的环(链接关系有错)
     if (current != rank) {
       WARN("Error : ring %d does not loop back to start (%d != %d)", r, current, rank);
       ret = ncclInternalError;
       goto end;
     }
-    // Check that all ranks are there
+    // 校验环是否覆盖了全部 rank(不能有遗漏，也不能重复导致漏掉别人)
     for (int i = 0; i < nranks; i++) {
       uint64_t bits = rankFound[i / 64], mask = 1ULL << (i % 64);
-      // Fast check 64 ranks at a time
+      // 快速路径：当 i 正好落在某个 64 位字的起始位(mask==1)且该字全为 1，
+      // 说明这 64 个 rank 都已找到，直接跳过 63 个，省去逐位检查
       if (mask == 1 && bits == 0xffffffffffffffff) {
         i += 63;
         continue;

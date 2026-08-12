@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/gin/gin_device_common.h — [GIN 相关] GIN 设备公共定义
+ * ----------------------------------------------------------------------------
+ * 定义 GIN(第三方 GPU 内部接口库)设备侧公共类型与常量，被其他 gin 设备头引用。
+ * GIN 由 Meta 引入，mini-nccl 精简版下多被 stub。
+ */
+
 #ifndef _NCCL_GIN_DEVICE_COMMON_H_
 #define _NCCL_GIN_DEVICE_COMMON_H_
 
@@ -48,11 +55,11 @@ enum ncclGinOptFlags {
    ((NCCL_GIN_GDAKI_ENABLE) ? 1u : 0u) << (unsigned)NCCL_NET_DEVICE_GIN_GDAKI | \
    ((NCCL_GIN_GPI_ENABLE) ? 1u : 0u) << (unsigned)NCCL_NET_DEVICE_GIN_GPI)
 
-// Resource sharing mode for a given ncclGin/ncclGin_C *instance*.
-// This mode is selected at construction time and is carried by the ncclGin
-// object, then copied into ncclGinCtx for each call. It is not stored as
-// persistent per-context state in the communicator (i.e., different ncclGin
-// instantiations that target the same contextIndex may use different modes).
+// Resource sharing 模式 for a 给定的 ncclGin/ncclGin_C *instance*.
+// 此 模式 is selected at construction time 并且 is carried 由 ncclGin
+// object, then copied into ncclGinCtx for 每个 调用. 这是 不 stored as
+// persistent 每个-上下文 状态 在 ... 中 通信器 (i.e., 不同 ncclGin
+// instantiations 那个 target 相同 contextIndex may 使用 不同 模式).
 enum ncclGinResourceSharingMode : uint8_t {
   NCCL_GIN_RESOURCE_SHARING_GPU = 0,
   NCCL_GIN_RESOURCE_SHARING_CTA = 1,

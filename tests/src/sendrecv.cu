@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/sendrecv.cu — SendRecv 性能/功能测试
+ * ----------------------------------------------------------------------------
+ * 实现 sendrecv_perf 基准：演示 NCCL Send/Recv 点对点 API 的成对收发用法与字节
+ * 计数计算。取自 nccl-tests 并裁剪。
+ */
+
 #include "cuda_runtime.h"
 #include "common.h"
 

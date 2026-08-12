@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/gin/gdaki/gin_gdaki.h — [GIN 相关] GDAKI 设备 API
+ * ----------------------------------------------------------------------------
+ * 定义 GDAKI(GPU Direct Async Kernel Interface)的设备侧 API，是 GIN 的异步内核
+ * 交互层。GIN 由 Meta 引入，mini-nccl 精简版下多被 stub。
+ */
+
 #ifndef _NCCL_DEVICE_GIN_GDAKI_H_
 #define _NCCL_DEVICE_GIN_GDAKI_H_
 
@@ -89,8 +96,8 @@ NCCL_DEVICE_INLINE static void putImplMode(
       counter_laddr.key = loadConst(&gdaki->sink_buffer_lkey);
     }
 
-    // cuda::thread_scope_system has the lowest value
-    // DOCA guarantees SCOPE_GPU. Only add another release if SCOPE_SYSTEM is required.
+    // CUDA::thread_scope_system has the lowest 值
+    // DOCA guarantees SCOPE_GPU. 仅 add 另一个 释放 若 SCOPE_SYSTEM 需要.
     if ((required == cuda::thread_scope_system) && (given > required)) {
       doca_gpu_dev_verbs_fence_release<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
     }
@@ -181,8 +188,8 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
       sig_laddr.key = loadConst(&gdaki->sink_buffer_lkey);
     }
 
-    // cuda::thread_scope_system has the lowest value
-    // DOCA guarantees SCOPE_GPU. Only add another release if SCOPE_SYSTEM is required.
+    // CUDA::thread_scope_system has the lowest 值
+    // DOCA guarantees SCOPE_GPU. 仅 add 另一个 释放 若 SCOPE_SYSTEM 需要.
     if ((required == cuda::thread_scope_system) && (given > required)) {
       doca_gpu_dev_verbs_fence_release<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
     }
@@ -277,7 +284,7 @@ NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer, 
     doca_gpu_dev_verbs_ticket_t out_ticket;
     uint32_t codeOpt = nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags);
     doca_gpu_dev_verbs_get<doca_sharing_mode>(qp, raddr, laddr, bytes, uninitialized_daddr, &out_ticket, codeOpt);
-    // +1 so 0 means no gets; must be after get to avoid race with concurrent flushes
+    // +1 所以 0 means 无 gets; 必须为 之后 获取 to 避免 竞态 with 并发的 flushes
     atomicMaxAtIndex<gin_sharing_mode>(loadConst(&gdaki->last_issued_get), peer, out_ticket + 1);
   }
   coop.sync();
@@ -322,7 +329,7 @@ NCCL_DEVICE_INLINE static void flushAsyncImpl(ncclGinCtx ctx, int peer, ncclGinR
     doca_gpu_dev_verbs_ticket_t mcstWqeIdx;
     doca_gpu_dev_verbs_mcst<doca_sharing_mode, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, daddr, &mcstWqeIdx);
     req->sq_rsvd_index = mcstWqeIdx + 1;
-     // Must be after mcst to avoid race with concurrent flushes
+     // 必须为 之后 mcst to 避免 竞态 with 并发的 flushes
     atomicMaxAtIndex<gin_sharing_mode>(lastVisibleGetArr, peer, mcstWqeIdx + 1);
   } else {
     const uint64_t n = doca_gpu_dev_verbs_atomic_read<uint64_t, doca_sharing_mode>(&qp->sq_rsvd_index);

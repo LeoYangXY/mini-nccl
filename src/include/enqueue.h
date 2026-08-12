@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/enqueue.h — enqueue 调度层接口声明
+ * ----------------------------------------------------------------------------
+ * 声明 ncclEnqueueCheck 等入队/调度入口，以及调度阶段用到的 planner(计划器)结构。
+ * 用户调用 collective 后，参数经 collectives.cc 打包成 ncclInfo，再由本层切分
+ * channel、生成 devWork 并启动 kernel。
+ */
+
 #ifndef NCCL_ENQUEUE_H_
 #define NCCL_ENQUEUE_H_
 

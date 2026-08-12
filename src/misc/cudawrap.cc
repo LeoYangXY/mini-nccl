@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/misc/cudawrap.cc — CUDA 驱动 API 包装实现
+ * ----------------------------------------------------------------------------
+ * 通过 dlopen 动态加载 libcuda，把 CUDA 驱动 API（cuXXX 系列）封装成全局函数指针
+ * 并解析符号；提供 cuMem/cuStream 等统一入口，使 NCCL 可在无 CUDA 开发环境时编译。
+ */
+
 #include "alloc.h"
 #include "nccl.h"
 #include "debug.h"
@@ -12,15 +19,15 @@
 #include "cudawrap.h"
 #include <mutex>
 
-// This env var (NCCL_CUMEM_ENABLE) toggles cuMem API usage
+// 此 env var (NCCL_CUMEM_ENABLE) toggles cuMem API usage
 NCCL_PARAM(CuMemEnable, "CUMEM_ENABLE", -2);
 NCCL_PARAM(CuMemHostEnable, "CUMEM_HOST_ENABLE", -1);
-// Handle type used for cuMemCreate()
+// 句柄 类型 用于 cuMemCreate()
 CUmemAllocationHandleType ncclCuMemHandleType = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 
 static int ncclCuMemSupported = 0;
 
-// Determine whether CUMEM & VMM RDMA is supported on this platform
+// Determine whether CUMEM & VMM RDMA is 受支持的 on 此 platform
 int ncclIsCuMemSupported() {
 #if CUDART_VERSION < 11030 || defined(NCCL_OS_WINDOWS)
   return 0;
@@ -35,7 +42,7 @@ int ncclIsCuMemSupported() {
   CUDACHECKGOTO(cudaGetDevice(&cudaDev), ret, error);
   if (CUPFN(cuMemCreate) == NULL) return 0;
   CUCHECKGOTO(cuDeviceGet(&currentDev, cudaDev), ret, error);
-  // Query device to see if CUMEM VMM support is available
+  // Query 设备 to 参见 若 CUMEM VMM 支持 可用
   CUCHECKGOTO(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED, currentDev), ret,
               error);
   if (!flag) return 0;
@@ -45,7 +52,7 @@ error:
 }
 
 int ncclCuMemEnable() {
-  // NCCL_CUMEM_ENABLE=-2 means auto-detect CUMEM support
+  // NCCL_CUMEM_ENABLE=-2 means auto-detect CUMEM 支持
   int param = ncclParamCuMemEnable();
   return param >= 0 ? param : (param == -2 && ncclCuMemSupported);
 }
@@ -68,8 +75,8 @@ int ncclCuMemHostEnable() {
     if (paramValue != -1) ncclCumemHostEnable = paramValue;
     else ncclCumemHostEnable = (cudaDriverVersion >= 12060) ? 1 : 0;
     if (ncclCumemHostEnable) {
-      // Verify that host allocations actually work.  Docker in particular is known to disable "get_mempolicy",
-      // causing such allocations to fail (this can be fixed by invoking Docker with "--cap-add SYS_NICE").
+      // 校验 那个 主机 分配 actually work.  Docker 特别是 is 已知的 to disable "get_mempolicy",
+      // causing 此类 分配 to 失败 (此 可以 已修复 by invoking Docker with "--cap-add SYS_NICE").
       int cudaDev;
       CUdevice currentDev;
       int cpuNumaNodeId = -1;
@@ -282,8 +289,8 @@ static void initOnceFunc() {
   INFO(NCCL_INIT, "cudaDriverVersion %d", driverVersion);
 
   if (driverVersion < CUDA_DRIVER_MIN_VERSION) {
-    // WARN("CUDA Driver version found is %d. Minimum requirement is %d", driverVersion, CUDA_DRIVER_MIN_VERSION);
-    // Silently ignore version check mismatch for backwards compatibility
+    // WARN("CUDA Driver 版本 已找到 is %d. 最小 要求 is %d", driverVersion, CUDA_DRIVER_MIN_VERSION);
+    // 静默忽略 版本 检查 mismatch for backwards compatibility
     goto error;
   }
 
@@ -294,7 +301,7 @@ static void initOnceFunc() {
   }
 #endif
 
-  // Determine whether we support the cuMem APIs or not
+  // Determine whether we 支持 the cuMem APIs 或者 不
   ncclCuMemSupported = ncclIsCuMemSupported();
 
   /* To use cuMem* for host memory allocation, we need to create context on each visible device.
@@ -321,7 +328,7 @@ ncclResult_t ncclCudaLibraryInit() {
   return initResult;
 }
 
-// Wrapper for cuStreamBatchMemOp that handles the 255 operations per call limit
+// Wrapper for cuStreamBatchMemOp 那个 句柄 the 255 操作 每个 调用 限制
 ncclResult_t ncclCuStreamBatchMemOp(cudaStream_t stream, unsigned int numOps, CUstreamBatchMemOpParams* batchParams) {
   ncclResult_t ret = ncclSuccess;
   const unsigned int maxOpsPerBatch = 255;

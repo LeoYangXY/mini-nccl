@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/init_nvtx.cc — NVTX 初始化（注册 payload schema）
+ * ----------------------------------------------------------------------------
+ * 在 comm 初始化时注册 NVTX payload schema（操作类型/数据类型/算法等枚举），使
+ * Nsight 等工具能解析 NCCL 注入的性能标记。无 NVTX 构建时为空操作。
+ */
+
 #include "nccl.h"
 #include "nvtx.h"
 #include "param.h"
@@ -15,9 +22,9 @@ static constexpr const nvtxPayloadEnum_t NvtxEnumRedSchema[] = {
 
 NCCL_PARAM(NvtxDisable, "NVTX_DISABLE", 0);
 
-// Must be called before the first call to any reduction operation.
+// 必须为 被调用 在 ... 之前 第一 调用 to 任意 规约 操作.
 void initNvtxRegisteredEnums() {
-  // Register schemas and strings
+  // 寄存器 schemas 并且 strings
   if (ncclParamNvtxDisable()) {
     return;
   }

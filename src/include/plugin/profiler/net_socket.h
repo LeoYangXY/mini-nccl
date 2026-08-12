@@ -5,6 +5,12 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/plugin/profiler/net_socket.h — Profiler 网络(socket)插件聚合头 [NVIDIA 插件接口/第三方]
+ * ----------------------------------------------------------------------------
+ * 汇总 socket 网络性能剖析插件的接口（含 net_socket_v1）。
+ */
+
 #ifndef NET_SOCKET_H_
 #define NET_SOCKET_H_
 

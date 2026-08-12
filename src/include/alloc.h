@@ -5,6 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/alloc.h — 内存分配管理器
+ * ----------------------------------------------------------------------------
+ * 提供 NCCL 统一的设备/主机内存分配封装（cudaMalloc 包装、对齐、缓存、统计），
+ * 以及内存池/allocator 抽象。被 comm 建立时的 buffer 分配、用户注册 buffer 等
+ * 多处复用，保证分配路径统一且带错误检查。
+ */
+
 #ifndef NCCL_ALLOC_H_
 #define NCCL_ALLOC_H_
 
@@ -40,7 +48,7 @@ constexpr size_t ncclSizeOfT<void>() {
   return 1;
 }
 
-// C++14-compatible wrapper that captures function pointers through template parameters.
+// C++14-compatible wrapper 那个 captures 函数 指针 through 模板 参数.
 template <typename FunctionPtr, FunctionPtr Function>
 struct ncclDeleterWrapper {
   template <typename... Args>
@@ -242,13 +250,13 @@ ncclResult_t ncclReallocDebug(T** ptr, size_t oldNelem, size_t nelem, const char
 #include <cuda.h>
 #include "cudawrap.h"
 
-// Helper function to map memory and set access permissions for a device
+// 辅助 函数 to 映射 内存 并且 设置 access permissions for a 设备
 static inline ncclResult_t ncclCuMemMapAndSetAccess(void* ptr, size_t size, CUmemGenericAllocationHandle handle,
                                                     int cudaDev) {
   ncclResult_t result = ncclSuccess;
-  // Map the virtual address range to the physical allocation
+  // 映射 the 虚 地址 范围 到 physical 分配
   CUCHECK(cuMemMap((CUdeviceptr)ptr, size, 0, handle, 0));
-  // Set access permissions for the device
+  // 设置 access permissions for 该设备
   CUmemAccessDesc accessDesc = {};
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = cudaDev;
@@ -257,7 +265,7 @@ static inline ncclResult_t ncclCuMemMapAndSetAccess(void* ptr, size_t size, CUme
   return result;
 }
 
-// ncclCuMemAllocAddr takes memory handle and size and returns the mapped address pointer
+// ncclCuMemAllocAddr takes 内存 句柄 并且 大小 并且 返回 the mapped 地址 指针
 static inline ncclResult_t ncclCuMemAllocAddr(void** ptr, CUmemGenericAllocationHandle* handleIn, size_t size) {
   ncclResult_t result = ncclSuccess;
   size_t granularity = 0;
@@ -286,7 +294,7 @@ static inline ncclResult_t ncclCuMemFreeAddr(void* ptr, struct ncclMemManager* m
     totalSize += segmentSize;
   }
 
-  // Untrack from memory manager
+  // Untrack from 内存 管理器
   if (manager != nullptr) {
     NCCLCHECK(ncclMemUntrack(manager, ptr, totalSize));
   }
@@ -311,7 +319,7 @@ static inline ncclResult_t ncclCuMemAlloc(void** ptr, CUmemGenericAllocationHand
   prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   prop.requestedHandleTypes = type;
   prop.location.id = currentDev;
-  // Query device to see if RDMA support is available
+  // Query 设备 to 参见 若 RDMA 支持 可用
   CUCHECK(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED, currentDev));
   if (flag) prop.allocFlags.gpuDirectRDMACapable = 1;
   CUCHECK(cuMemGetAllocationGranularity(&granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
@@ -348,7 +356,7 @@ static inline ncclResult_t ncclCuMemFree(void* ptr, struct ncclMemManager* manag
     totalSize += segmentSize;
   }
 
-  // Update tracking with total size after processing all segments
+  // Update tracking with 总计 大小 之后 处理 所有 段
   if (manager != nullptr) {
     NCCLCHECK(ncclMemUntrack(manager, ptr, totalSize));
   }
@@ -357,7 +365,7 @@ static inline ncclResult_t ncclCuMemFree(void* ptr, struct ncclMemManager* manag
   return result;
 }
 
-// Get the base and size of all segments that span a given user buffer
+// 获取 base 并且 大小 of 所有 段 那个 span a 给定的 用户 缓冲区
 static inline ncclResult_t ncclCuMemGetAddressRange(CUdeviceptr userBuff, size_t userBuffSize,
                                                     CUdeviceptr* mappedPtrBase, size_t* totalMappedBufferSize,
                                                     int* numSegments, bool* hasSysmemSegment = nullptr) {
@@ -389,7 +397,7 @@ static inline ncclResult_t ncclCuMemGetAddressRange(CUdeviceptr userBuff, size_t
     }
 
     if (*totalMappedBufferSize == 0) {
-      // Workaround for CPU backed buffers since baseSend can be 0 in some CUDA driver versions
+      // 变通方案 for CPU backed 缓冲区 自 baseSend 可以 0 入 一些 CUDA driver 版本
       if (baseSend == 0) {
         *mappedPtrBase = userBuffStart;
       } else {
@@ -397,7 +405,7 @@ static inline ncclResult_t ncclCuMemGetAddressRange(CUdeviceptr userBuff, size_t
       }
     }
     *totalMappedBufferSize += baseSendSize;
-    // Workaround for CPU backed buffers since baseSend can be 0 in some CUDA driver versions
+    // 变通方案 for CPU backed 缓冲区 自 baseSend 可以 0 入 一些 CUDA driver 版本
     if (baseSend == 0) {
       mappedPtrEnd = mappedPtrEnd + baseSendSize;
     } else {
@@ -475,7 +483,7 @@ ncclResult_t ncclCudaCallocDebug(T** ptr, size_t nelem, const char* file, int li
   *ptr = nullptr;
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (nelem > 0) {
-    // Need a side stream so as not to interfere with graph capture.
+    // 需要 a side 流 所以 as 不 to interfere with 图 capture.
     cudaStream_t stream;
     CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), result, finish);
     if (ncclCuMemEnable()) {
@@ -530,7 +538,7 @@ ncclResult_t ncclCudaMemcpy(T* dst, T* src, size_t nelem) {
   ncclResult_t result = ncclSuccess;
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
-  // Need a side stream so as not to interfere with graph capture.
+  // 需要 a side 流 所以 as 不 to interfere with 图 capture.
   cudaStream_t stream;
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), result, finish);
   NCCLCHECKGOTO(ncclCudaMemcpyAsync(dst, src, nelem, stream), result, finish);
@@ -573,9 +581,9 @@ finish:
   return result;
 }
 
-// Allocate memory to be potentially ibv_reg_mr'd. This needs to be
-// allocated on separate pages as those pages will be marked DONTFORK
-// and if they are shared, that could cause a crash in a child process
+// 分配 内存 to be potentially ibv_reg_mr'd. 此 需要 be
+// 已分配 on separate 页 as 那些 页 将会 marked DONTFORK
+// 并且 若y are shared, 那个 could 导致 a crash 入 a 子 处理
 inline ncclResult_t ncclIbMallocDebug(void** ptr, size_t size, const char* file, int line, const char* callerFunc) {
   if (size > 0) {
     void* p = NULL;

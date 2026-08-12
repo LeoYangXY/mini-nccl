@@ -5,6 +5,15 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/graph/search.cc — 拓扑搜索与算法图生成（核心）
+ * ----------------------------------------------------------------------------
+ * 实现 ncclTopoCompute / ncclTopoSearch：依据 ncclTopoSystem 的带宽模型，为每种算法
+ * (ring/tree/nvls/collnet) 计算最优的 channel 数(nChannels) 与每 channel 的
+ * ring/tree 排列(intra[])。支持 NCCL_GRAPH_FILE 从 XML 直接载入预计算图、或
+ * NCCL_TOPO_FILE 用自定义拓扑绕过探测。是“算法图”的来源（后续会做详细逐行注释）。
+ */
+
 #include "comm.h"
 #include "core.h"
 #include "graph.h"
@@ -15,8 +24,8 @@
 
 NCCL_PARAM(CrossNic, "CROSS_NIC", 2);
 
-// Initialize system->maxBw. This is the per-channel (i.e. per-SM)
-// max bw.
+// 初始化 系统->maxBw。它表示单个 通道(即单个 SM)所能达到的
+// 最大带宽。
 static float getMaxBw(struct ncclTopoSystem* system, struct ncclTopoNode* dev, int type) {
   float maxBw = 0.0;
   for (int i = 0; i < system->nodes[type].count; i++) {
@@ -54,8 +63,8 @@ ncclResult_t ncclTopoSearchInit(struct ncclTopoSystem* system) {
 }
 
 ncclResult_t ncclTopoComputeCommCPU(struct ncclComm* comm) {
-  // We assume there is at least one CPU and that the CPUs have the same
-  // architecture and vendor.
+  // 此处假定系统中至少有一个 CPU，且所有 CPU 具有相同的
+  // 架构与厂商。
   const struct ncclTopoNodeSet* cpus = &comm->topo->nodes[CPU];
   comm->cpuArch = cpus->nodes[0].cpu.arch;
   comm->cpuVendor = cpus->nodes[0].cpu.vendor;
@@ -75,7 +84,7 @@ static ncclResult_t findRevLink(struct ncclTopoNode* node1, struct ncclTopoNode*
   return ncclInternalError;
 }
 
-// This is unfortunately needed since manipulating floats often results in rounding errors.
+// 不得不这样处理：浮点运算经常产生舍入误差，需要做容差比较。
 #define SUB_ROUND(a, b) (a = roundf((a - b) * 1000) / 1000)
 
 static ncclResult_t followPath(struct ncclTopoLinkList* path, struct ncclTopoNode* start, int maxSteps, float bw,
@@ -84,7 +93,7 @@ static ncclResult_t followPath(struct ncclTopoLinkList* path, struct ncclTopoNod
   for (int step = 0; step < path->count; step++) {
     struct ncclTopoNode* node = path->list[step]->remNode;
     if (node->type == CPU) {
-      // Account for P2P inefficiency through Intel CPU RC
+      // 计入经由 Intel CPU 根联合体(根 Complex)转发 P2P 时的效率损失
       if (path->type == PATH_PHB && start->type == GPU && node->cpu.arch == NCCL_TOPO_CPU_ARCH_X86 &&
           node->cpu.vendor == NCCL_TOPO_CPU_VENDOR_INTEL) {
         pciBw = INTEL_P2P_OVERHEAD(bw);
@@ -106,9 +115,9 @@ static ncclResult_t followPath(struct ncclTopoLinkList* path, struct ncclTopoNod
       if (revLink == NULL) NCCLCHECK(findRevLink(node, link->remNode, link->type, &revLink));
       revBw += fwBw;
     }
-    // Coverity thinks that revLink could be NULL below.  However, we access it only if revBw is non-0, and the
-    // logic of the code is that revBw can become non-0 only if revLink is non-NULL (see the "if" statement right
-    // above).
+    // Coverity 认为下面的 revLink 可能为 NULL。但实际上只有 revBw 非 0 时才会访问它，而且
+    // 代码逻辑保证了：只有 revLink 非 NULL 时 revBw 才可能变为非 0(参见紧随其后的 若 语句
+    // 上方).
     // coverity[var_deref_op]
     if (link->bw < fwBw || (revBw && revLink->bw < revBw)) {
       *steps = step;
@@ -122,11 +131,11 @@ static ncclResult_t followPath(struct ncclTopoLinkList* path, struct ncclTopoNod
   return ncclSuccess;
 }
 
-// Try to go from node type1/index1 to no type2/index2. mult indicates whether we are counting the
-// bandwidth (1) or undoing (-1).
+// 尝试从节点 type1/index1 走到 type2/index2。mult 参数指示我们是要累加
+// 带宽累加(1)或回退(-1)。
 static ncclResult_t ncclTopoFollowPath(struct ncclTopoSystem* system, struct ncclTopoGraph* graph, int type1,
                                        int index1, int type2, int index2, float mult, struct ncclTopoNode** node) {
-  // First handle easy cases
+  // 先处理简单情形
   *node = system->nodes[type2].nodes + index2;
   if (type1 == -1) return ncclSuccess;
   struct ncclTopoNode* node1 = system->nodes[type1].nodes + index1;
@@ -139,7 +148,7 @@ static ncclResult_t ncclTopoFollowPath(struct ncclTopoSystem* system, struct ncc
     return ncclInternalError;
   }
 
-  // Now check link type
+  // 现在检查链路类型
   *node = NULL;
   int intra = (type1 == GPU || type1 == NVS) && (type2 == GPU || type2 == NVS);
   float bw = intra ? graph->bwIntra : graph->bwInter;
@@ -155,18 +164,18 @@ static ncclResult_t ncclTopoFollowPath(struct ncclTopoSystem* system, struct ncc
 
   bw *= mult;
 
-  // Check there is enough bandwidth on paths.
+  // 检查路径上是否有足够的可用带宽。
   int step = 0;
   NCCLCHECK(followPath(path, node1, path->count, bw, &step));
   if (step < path->count) goto rewind;
 
-  // Enough bandwidth : return destination node.
+  // 带宽足够：返回目标节点。
   graph->nHops += mult * path->count;
   *node = system->nodes[type2].nodes + index2;
   return ncclSuccess;
 
 rewind:
-  // Not enough bandwidth : rewind and exit.
+  // 带宽不足：回退已占用的带宽并退出。
   NCCLCHECK(followPath(path, node1, step, -bw, &step));
   return ncclSuccess;
 }
@@ -278,10 +287,10 @@ ncclResult_t ncclTopoSearchNextGpuSort(struct ncclTopoSystem* system, struct ncc
     count++;
   }
 
-  // Sort GPUs
+  // 对 GPU 排序
   qsort(scores, count, sizeof(struct ncclGpuScore), cmpScore);
 
-  // Check if all have the same intra-node score in which case we go reverse for sortNet = -1
+  // 检查是否所有节点的节点内评分都相同；若相同则在 sortNet = -1 时反向排序
   if (sortNet == -1 && cmpIntraScores(scores, count) == 0) {
     for (int i = 0; i < count; i++) next[i] = scores[count - 1 - i].g;
   } else {
@@ -291,7 +300,7 @@ ncclResult_t ncclTopoSearchNextGpuSort(struct ncclTopoSystem* system, struct ncc
   *countPtr = count;
 
   if (system->nodes[NVS].count) {
-    // NVSwitches prefer when we talk to a limited set of peers. Try to use neighbors first.
+    // NVSwitch 更适合与有限数量的对端通信。因此优先尝试就近的邻居。
     int index = gpu - system->nodes[GPU].nodes;
     int i;
     int prevGpu = (index - 1 + ngpus) % ngpus;
@@ -328,7 +337,7 @@ ncclResult_t ncclTopoSearchNextGpuSort(struct ncclTopoSystem* system, struct ncc
 ncclResult_t ncclTopoSearchRec(struct ncclTopoSystem* system, struct ncclTopoGraph* graph,
                                struct ncclTopoGraph* saveGraph, int* time);
 
-// Try to keep all searchs within one second
+// 尽量把整个搜索过程控制在 1 秒以内
 #define NCCL_SEARCH_GLOBAL_TIMEOUT (1ULL << 19)
 #define NCCL_SEARCH_TIMEOUT (1 << 14)
 #define NCCL_SEARCH_TIMEOUT_TREE (1 << 14)
@@ -385,7 +394,7 @@ ncclResult_t ncclTopoSearchTryCollnetDirect(struct ncclTopoSystem* system, struc
       NCCLCHECK(ncclTopoFollowPath(system, graph, GPU, bwdg, GPU, g, mul, &gpu));
     } while (gpu && ++bwdg < system->nodes[GPU].count);
     if (gpu != NULL) {
-      // Both directions worked. Now we already have head, so pop the all other intra ranks.
+      // 两个方向都成功了。此时 头 已确定，于是弹出其余所有节点内 rank。
       int step = 1;
       for (int index = 0; index < ngpus; ++index) {
         if (index != g) {
@@ -427,7 +436,7 @@ ncclResult_t ncclTopoSearchTryNvls(struct ncclTopoSystem* system, struct ncclTop
     if (nvs == NULL) {
       d1--;
     } else {
-      // Both directions worked. Move on to the next path.
+      // 两个方向都成功了。继续处理下一条路径。
       NCCLCHECK(ncclTopoSearchRecGpu(system, graph, saveGraph, NULL, ngpus, -1, -1, 0, time));
     }
     while (d1) {
@@ -444,30 +453,30 @@ ncclResult_t ncclTopoSearchTryNvls(struct ncclTopoSystem* system, struct ncclTop
 
 ncclResult_t ncclTopoCompareGraphs(struct ncclTopoSystem* system, struct ncclTopoGraph* graph,
                                    struct ncclTopoGraph* refGraph, int* copy) {
-  // 1. Try to get the same nChannels between Rings and Trees
+  // 1. 首先尝试让 环 与 树 使用相同的 通道 数量
   if (graph->nChannels < graph->minChannels) return ncclSuccess;
 
   if (graph->pattern == NCCL_TOPO_PATTERN_NVLS) {
-    // NVLS channels correspond to GPUs pulling from NVLS. So the more the better.
+    // NVLS 的 通道 对应各 GPU 从 NVLS 拉取数据，因此数量越多越好。
     if (graph->nChannels > refGraph->nChannels && graph->nChannels <= system->nodes[GPU].count) *copy = 1;
     if (graph->nChannels * graph->bwInter > refGraph->nChannels * refGraph->bwInter) *copy = 1;
     return ncclSuccess;
   }
-  // 2. Try to get better bandwidth
+  // 2. 其次尝试争取更高的带宽
   if (graph->nChannels * graph->bwIntra > refGraph->nChannels * refGraph->bwIntra) {
     *copy = 1;
     return ncclSuccess;
   }
   if (graph->nChannels * graph->bwIntra < refGraph->nChannels * refGraph->bwIntra) return ncclSuccess;
 
-  // 3. Less hops
+  // 3. 跳数更少
   if (graph->pattern == refGraph->pattern && graph->crossNic == refGraph->crossNic && graph->nHops < refGraph->nHops) {
     *copy = 1;
   }
   return ncclSuccess;
 }
 
-// Add the preferred NICs ordered by GPU first
+// 按“GPU 优先”的顺序添加首选网卡
 static ncclResult_t ncclTopoPrefNetsGpuFirst(struct ncclTopoSystem* system, int gpu, int nets[NCCL_TOPO_MAX_NODES],
                                              int* netCount) {
   const int nGpus = (gpu == -1) ? system->nodes[GPU].count : 1;
@@ -485,15 +494,15 @@ static ncclResult_t ncclTopoPrefNetsGpuFirst(struct ncclTopoSystem* system, int 
       struct ncclTopoNode* gpu = system->nodes[GPU].nodes + gpuIds[g];
       NCCLCHECK(ncclTopoGetLocalNet(system, gpu->gpu.rank, c, &netId, NULL));
       NCCLCHECK(ncclTopoIdToIndex(system, NET, netId, &localNet));
-      // store the first net found for each GPU in case of duplicates
+      // 为每个 GPU 记录找到的第一块网卡，以便处理重复情况
       if (c == 0) firstNets[g] = localNet;
-      // if the NET has already been returned for channel 0, that GPU is done
+      // 如果该网卡已在 通道 0 上被选用过，则该 GPU 处理完毕
       if (c > 0 && firstNets[g] == localNet) {
         gpuIds[g] = -1;
         gpuCount--;
         continue;
       }
-      // only add it to the list if it doesn't already exist
+      // 仅当列表中尚不存在时才加入
       int found = 0;
       while (found < (*netCount) && nets[found] != localNet) found++;
       if (found == (*netCount)) nets[(*netCount)++] = localNet;
@@ -503,7 +512,7 @@ static ncclResult_t ncclTopoPrefNetsGpuFirst(struct ncclTopoSystem* system, int 
   return ncclSuccess;
 }
 
-// Add the preferred NICs ordered by channels first
+// 按“通道 优先”的顺序添加首选网卡
 static ncclResult_t ncclTopoPrefNetsChannelFirst(struct ncclTopoSystem* system, int gpu, int nets[NCCL_TOPO_MAX_NODES],
                                                  int* netCount) {
   for (int g = 0; g < system->nodes[GPU].count; g++) {
@@ -517,7 +526,7 @@ static ncclResult_t ncclTopoPrefNetsChannelFirst(struct ncclTopoSystem* system, 
       if (localNetCount > 0 && localNets[localNetCount] == localNets[0]) break;
       localNetCount++;
     }
-    // Append NICs to list
+    // 把网卡追加到列表中
     for (int i = 0; i < localNetCount; i++) {
       int n = localNets[i];
       int found = 0;
@@ -528,32 +537,32 @@ static ncclResult_t ncclTopoPrefNetsChannelFirst(struct ncclTopoSystem* system, 
   return ncclSuccess;
 }
 
-// Build a sorted list of the NETs to try, the list will follow the NETDEVS_POLICY set by the user.
+// 构建一个待尝试网卡的有序列表，其排序遵循用户设置的 NETDEVS_POLICY 策略。
 //
-// The value of "gpu" can be set to -1 to build a list suitable for all GPUs (for example for the search start).
-// The value of "gpu" can be set to the desired index when trying to get back to the NIC.
+// 参数 GPU 可设为 -1，表示构建一个适用于所有 GPU 的通用列表(例如用于搜索的起点)。
+// 当需要回溯到网卡时，可把 GPU 设为目标 GPU 的索引。
 //
-// The list is built the following way:
-// 1. First gather the preferred NETs for each of the GPU(s), based on the NETDEVS_POLICY and the connection.
-// 2. If the NETDEV_policy allows it, add all the other NETs satisfying typeInter but not already in
-//    the list of preferred NETs.
+// 该列表的构建方式如下：
+// 1. 首先根据 NETDEVS_POLICY 策略与连接情况，收集每个 GPU 的首选网卡。
+// 2. 如果策略允许，再把其余满足 typeInter 条件、且尚未出现在首选列表中的
+//    the 列表 of preferred NETs.
 NCCL_PARAM(ScatterEnable, "MNNVL_SCATTER_NETS_ENABLE", 1);
 ncclResult_t ncclTopoSelectNets(struct ncclTopoSystem* system, int typeInter, int gpu, int nets[NCCL_TOPO_MAX_NODES],
                                 int* netCountRet) {
   ncclResult_t ret = ncclSuccess;
   int netCount = 0;
 
-  // First add the preferred NETs.
+  // 先加入首选网卡。
   if (system->nHosts > 1 && ncclParamScatterEnable()) {
-    // For MNNVL systems, we sort the devices by GPU first, then by channel
+    // 对于 MNNVL 系统，先按 GPU 排序，再按 通道 排序
     NCCLCHECK(ncclTopoPrefNetsGpuFirst(system, gpu, nets, &netCount));
   } else {
-    // For other systems, we sort the devices by channel first, then by GPU
+    // 对于其它系统，先按 通道 排序，再按 GPU 排序
     NCCLCHECK(ncclTopoPrefNetsChannelFirst(system, gpu, nets, &netCount));
   }
 
-  // Get the maximum of network devices allowed, depending on the policy.
-  // If the policy is not MAX, then allow all devices.
+  // 根据策略获取允许使用的网络设备数量上限。
+  // 若策略不是 最大值，则允许使用全部设备。
   int maxDevCount = 0;
   enum netDevsPolicy netDevsPolicy;
   NCCLCHECK(ncclTopoGetNetDevsPolicy(&netDevsPolicy, &maxDevCount));
@@ -561,10 +570,10 @@ ncclResult_t ncclTopoSelectNets(struct ncclTopoSystem* system, int typeInter, in
   if (netDevsPolicy != NETDEVS_POLICY_MAX) maxDevCount = NCCL_TOPO_MAX_NODES;
   if (netCount >= maxDevCount) goto exit;
 
-  // Then add others satisfying typeInter
+  // 然后加入其它满足 typeInter 条件的网卡
   for (int t = 0; t <= typeInter; t++) {
     for (int g = 0; g < system->nodes[GPU].count; g++) {
-      // do not consider this GPU is it's not the GPU we asked for
+      // 若不是我们指定的那个 GPU，则跳过不予考虑
       if (gpu != -1 && gpu != g) continue;
       int localNetCount = 0, localNets[MAXCHANNELS];
       struct ncclTopoNode* gpu = system->nodes[GPU].nodes + g;
@@ -572,7 +581,7 @@ ncclResult_t ncclTopoSelectNets(struct ncclTopoSystem* system, int typeInter, in
       for (int n = 0; n < system->nodes[NET].count && n < MAXCHANNELS; n++) {
         if (paths[n].type == t) localNets[localNetCount++] = n;
       }
-      // Append NICs to list
+      // 把网卡追加到列表中
       for (int i = 0; i < localNetCount; i++) {
         int n = localNets[i];
         int found = 0;
@@ -593,7 +602,7 @@ NCCL_PARAM(MnnvlRailPerHost, "MNNVL_RAIL_PER_HOST", 0);
 static bool ncclTopoSearchCheckNet(struct ncclTopoSystem* system, struct ncclTopoGraph* graph,
                                    struct ncclTopoNode* startNet, int n, int step) {
   struct ncclTopoNode* net = system->nodes[NET].nodes + n;
-  // always forbid connections between different networking planes (if both planes are defined).
+  // 始终禁止不同网络平面之间的连接(若两个平面都已定义)。
   if (net->net.planeId != NCCL_TOPO_UNDEF && startNet->net.planeId != NCCL_TOPO_UNDEF &&
       net->net.planeId != startNet->net.planeId) {
     return false;
@@ -605,7 +614,7 @@ static bool ncclTopoSearchCheckNet(struct ncclTopoSystem* system, struct ncclTop
     if (net->net.railId != NCCL_TOPO_UNDEF && startNet->net.railId != NCCL_TOPO_UNDEF) {
       if (net->net.railId != startNet->net.railId) return false;
     } else if (ncclParamMnnvlRailPerHost() && NCCL_TOPO_ID_SYSTEM_ID(net->id) != NCCL_TOPO_ID_SYSTEM_ID(startNet->id)) {
-      // Different hosts in an MNNVL system: rail are per host and identified with the PCI id.
+      // MNNVL 系统中的不同主机：rail(轨道)是按主机划分的，用 PCI id 来标识。
       if (net->net.pciId != startNet->net.pciId || net->net.port != startNet->net.port) return false;
     } else {
       if (net->net.asic != startNet->net.asic || net->net.port != startNet->net.port) return false;
@@ -626,7 +635,7 @@ ncclResult_t ncclTopoSearchRecGpu(struct ncclTopoSystem* system, struct ncclTopo
 
   int ngpus = system->nodes[GPU].count;
   if (step == ngpus) {
-    // Determine whether we found a better solution or not
+    // 判断本次是否找到了更优的方案
     int copy = 0;
     graph->nChannels++;
     NCCLCHECK(ncclTopoCompareGraphs(system, graph, saveGraph, &copy));
@@ -644,7 +653,7 @@ ncclResult_t ncclTopoSearchRecGpu(struct ncclTopoSystem* system, struct ncclTopo
   int g = gpu - system->nodes[GPU].nodes;
   int nets[NCCL_TOPO_MAX_NODES];
   if (step == backToNet) {
-    // first get back to NIC
+    // 先回溯到网卡
     if (system->inter) {
       int startNetIndex;
       NCCLCHECK(getNetIndex(system, graph->inter[graph->nChannels * 2], &startNetIndex));
@@ -654,11 +663,11 @@ ncclResult_t ncclTopoSearchRecGpu(struct ncclTopoSystem* system, struct ncclTopo
       for (int i = 0; i < netCount; i++) {
         int n = nets[i];
         if (!ncclTopoSearchCheckNet(system, graph, startNet, n, step)) continue;
-        // Balanced Tree : count half of the bandwidth on first two GPUs
+        // 平衡树：把带宽的一半计入前两个 GPU
         int nextBackToNet = -1;
         float bwInterSave = graph->bwInter;
         if (graph->pattern == NCCL_TOPO_PATTERN_BALANCED_TREE) {
-          // Count half of the bandwidth on each of the first two GPUs
+          // 在前两个 GPU 上各计入一半带宽
           if (step == 0) nextBackToNet = 1;
           graph->bwInter /= 2;
         }
@@ -682,19 +691,19 @@ ncclResult_t ncclTopoSearchRecGpu(struct ncclTopoSystem* system, struct ncclTopo
   } else if (graph->pattern == NCCL_TOPO_PATTERN_COLLNET_DIRECT) {
     NCCLCHECK(ncclTopoSearchTryCollnetDirect(system, graph, saveGraph, g, ngpus, time));
   } else if (step < system->nodes[GPU].count - 1) {
-    // Go to next GPU
+    // 前进到下一个 GPU
     int next[NCCL_TOPO_MAX_NODES];
     int count;
     if (forcedOrder == FORCED_ORDER_PCI) {
-      // Try the PCI order
+      // 尝试按 PCI 顺序
       next[0] = step + 1;
       count = 1;
     } else if (forcedOrder == FORCED_ORDER_REPLAY) {
-      // Try last channel order
+      // 尝试上次的 通道 顺序
       NCCLCHECK(ncclTopoReplayGetGpu(system, graph, step, next));
       count = 1;
     } else {
-      // Normal search
+      // 常规搜索
       NCCLCHECK(ncclTopoSearchNextGpuSort(system, graph, gpu, next, &count,
                                           backToNet == -1       ? 0 :
                                           backToNet == step + 1 ? 1 :
@@ -705,7 +714,7 @@ ncclResult_t ncclTopoSearchRecGpu(struct ncclTopoSystem* system, struct ncclTopo
                                      GPU, g, next[i]));
     }
   } else if (step == backToFirstRank) {
-    // Find first GPU and loop back to it
+    // 找到第一个 GPU 并绕回到它(闭合成环)
     int p;
     NCCLCHECK(getGpuIndex(system, graph->intra[graph->nChannels * ngpus], &p));
     struct ncclTopoNode* firstGpu;
@@ -715,7 +724,7 @@ ncclResult_t ncclTopoSearchRecGpu(struct ncclTopoSystem* system, struct ncclTopo
       NCCLCHECK(ncclTopoFollowPath(system, graph, GPU, g, GPU, p, -1, &firstGpu));
     }
   } else {
-    // Next path
+    // 下一条路径
     NCCLCHECK(ncclTopoSearchRecGpu(system, graph, saveGraph, gpu, ngpus, -1, -1, forcedOrder, time));
   }
   return ncclSuccess;
@@ -752,12 +761,12 @@ ncclResult_t ncclTopoSearchRecNet(struct ncclTopoSystem* system, struct ncclTopo
     }
 
     if (graph->pattern == NCCL_TOPO_PATTERN_NVLS || graph->pattern == NCCL_TOPO_PATTERN_COLLNET_DIRECT) {
-      // NVLS search only tries to find NIC:GPU combinations to compute the heads.
+      // NVLS 搜索只尝试找出 网卡:GPU 的组合，以计算出各 头。
       if (graph->nChannels < netCount) {
         int gpu = net->net.localGpu;
         if (gpu != -1) {
           int duplicate = 0;
-          // check whether there is duplicate head when one GPU connects with multiple NICs
+          // 检查当一张 GPU 连接多个网卡时是否出现了重复的 头
           for (int gc = 0; gc < graph->nChannels; gc++) {
             if (graph->intra[gc * system->nodes[GPU].count] == system->nodes[GPU].nodes[gpu].gpu.rank) {
               duplicate = 1;
@@ -773,21 +782,21 @@ ncclResult_t ncclTopoSearchRecNet(struct ncclTopoSystem* system, struct ncclTopo
       }
     } else {
       if (graph->nChannels > 0 && graph->sameChannels == 1) {
-        // Try to replay the last channel
+        // 尝试复用上次的 通道
         int g;
         NCCLCHECK(ncclTopoReplayGetGpu(system, graph, -1, &g));
         NCCLCHECK(ncclTopoSearchTryGpu(system, graph, saveGraph, 0, backToNet, backToFirstRank, FORCED_ORDER_REPLAY,
                                        time, NET, n, g));
       } else {
         if (graph->nChannels == 0 && system->nodes[NVS].count == 0) {
-          // Always try the PCI order first to set a reference, but don't count in the timeout nor let it run for long
+          // 总是先按 PCI 顺序试一遍作为基准，但不计入超时、也不让它跑太久
           int t = 1 << 10;
           NCCLCHECK(ncclTopoSearchTryGpu(system, graph, saveGraph, 0, backToNet, backToFirstRank, FORCED_ORDER_PCI, &t,
                                          NET, n, 0));
           if (t == -1) *time = -1;
         }
 
-        // Then try the most local GPUs
+        // 然后尝试最靠近本地的 GPU
         int localGpu = net->net.localGpu;
         if (localGpu != -1) {
           NCCLCHECK(ncclTopoSearchTryGpu(system, graph, saveGraph, 0, backToNet, backToFirstRank, 0, time, NET, n,
@@ -795,7 +804,7 @@ ncclResult_t ncclTopoSearchRecNet(struct ncclTopoSystem* system, struct ncclTopo
         }
         int localGpus[NCCL_TOPO_MAX_NODES], localGpuCount, pathType;
         NCCLCHECK(ncclTopoGetLocal(system, NET, n, GPU, localGpus, &localGpuCount, &pathType));
-        // if no GPUs are connected, skip this net
+        // 若没有任何 GPU 相连，则跳过这张网卡
         if (pathType == PATH_DIS) continue;
         for (int g = 0; g < localGpuCount; ++g) {
           if (localGpus[g] == localGpu) continue; // We already tried this one
@@ -851,27 +860,27 @@ ncclResult_t ncclTopoSearchRec(struct ncclTopoSystem* system, struct ncclTopoGra
   int backToNet, backToFirstRank;
   NCCLCHECK(ncclTopoSearchParams(system, graph->pattern, &backToNet, &backToFirstRank));
   if (system->inter) {
-    // Start from NET
+    // 从网卡(网络)开始
     ncclTopoSearchRecNet(system, graph, saveGraph, backToNet, backToFirstRank, time);
   } else {
-    // Intra-node only.
+    // 仅节点内。
     if (graph->pattern == NCCL_TOPO_PATTERN_NVLS) {
       NCCLCHECK(ncclTopoSearchTryGpu(system, graph, saveGraph, 0, backToNet, backToFirstRank, 0, time, -1, -1,
                                      graph->nChannels));
       return ncclSuccess;
     } else if (graph->nChannels == 0) {
-      // Try PCI order first
+      // 先尝试 PCI 顺序
       NCCLCHECK(ncclTopoSearchTryGpu(system, graph, saveGraph, 0, backToNet, backToFirstRank, FORCED_ORDER_PCI, time,
                                      -1, -1, 0));
     } else {
-      // Also try to replay previous channel
+      // 同时也尝试复用上次的 通道
       int g;
       NCCLCHECK(ncclTopoReplayGetGpu(system, graph, -1, &g));
       NCCLCHECK(ncclTopoSearchTryGpu(system, graph, saveGraph, 0, backToNet, backToFirstRank, FORCED_ORDER_REPLAY, time,
                                      -1, -1, g));
     }
     if (graph->sameChannels == 0 || graph->nChannels == 0) {
-      // Finally, try all other possibilities unless we are forced to use the same channels
+      // 最后尝试所有其它可能，除非被强制要求使用相同的 通道
       for (int g = 0; g < system->nodes[GPU].count; g++) {
         NCCLCHECK(ncclTopoSearchTryGpu(system, graph, saveGraph, 0, backToNet, backToFirstRank, 0, time, -1, -1, g));
       }
@@ -1096,7 +1105,7 @@ ncclResult_t ncclTopoCompute(ncclTopoSystem* system, struct ncclTopoGraph* graph
     NCCLCHECK(ncclTopoGetGpuMaxPath(system, NET, &maxTypeInter));
     maxTypeIntra = maxTypeInter;
   }
-  // Ampere relies on BALANCED_TREE which sometimes needs to come back through SYS or PHB.
+  // Ampere 架构依赖 BALANCED_TREE，它有时需要经 SYS 或 PHB 绕回。
   if (ccMin < 90) maxTypeInter = PATH_SYS;
 
   graph->typeIntra = minTypeIntra;
@@ -1122,7 +1131,7 @@ ncclResult_t ncclTopoCompute(ncclTopoSystem* system, struct ncclTopoGraph* graph
   }
 
   if (graph->pattern == NCCL_TOPO_PATTERN_NVLS && (system->nodes[NVS].count == 0 || ccMin < 90)) return ncclSuccess;
-  // NVLS and COLLNET_DIRECT search must have ngpus heads at most.
+  // NVLS 与 COLLNET_DIRECT 搜索最多只能有 ngpus 个 头。
   if (graph->pattern == NCCL_TOPO_PATTERN_NVLS) {
     graph->maxChannels = std::min(NCCL_MAX_NVLS_ARITY, system->nodes[GPU].count);
   }
@@ -1133,23 +1142,23 @@ ncclResult_t ncclTopoCompute(ncclTopoSystem* system, struct ncclTopoGraph* graph
   if (ngpus == 1 && graph->pattern != NCCL_TOPO_PATTERN_RING) graph->pattern = NCCL_TOPO_PATTERN_TREE;
 
   if (system->inter == 0 && graph->pattern == NCCL_TOPO_PATTERN_NVLS) {
-    // Force intra-node NVLS algorithm to pull evenly from all GPUs.
+    // 强制节点内的 NVLS 算法从所有 GPU 均匀地拉取数据。
     graph->minChannels = graph->maxChannels;
   }
 
   int splitNvLink;
   NCCLCHECK(ncclTopoSplitNvLink(system, &splitNvLink));
   if (graph->pattern == NCCL_TOPO_PATTERN_RING && splitNvLink) {
-    // We have two sockets with NVLink and a slower link in between (typically QPI).
-    // Tree is likely going to work better but it needs at least 2 channels.
-    // Since Tree needs to have the same number of channels as Ring, also force Ring to use 2 channels.
+    // 我们有两个 CPU 插槽，之间有 NVLink 相连、但中间还隔着一条较慢的链路(通常是 QPI)。
+    // 树 算法很可能会表现更好，但它至少需要 2 个 通道。
+    // 由于 树 与 环 需要使用相同数量的 通道，因此也强制 环 使用 2 个 通道。
     if (graph->maxChannels >= 2 && graph->minChannels == 1) graph->minChannels = 2;
   }
 
   struct ncclTopoGraph tmpGraph;
   memcpy(&tmpGraph, graph, sizeof(struct ncclTopoGraph));
 
-  // First try crossnic, then decrease bw and finally increase bwIntra.
+  // 先尝试 crossnic，然后降低带宽(bw)，最后再提高节点内带宽(bwIntra)。
   int nspeeds = 0;
   float* speedArray = NULL;
   if (system->inter == 0) {
@@ -1164,7 +1173,7 @@ ncclResult_t ncclTopoCompute(ncclTopoSystem* system, struct ncclTopoGraph* graph
   float maxBw = system->maxBw;
   float totalBw = system->totalBw;
 
-  // algo other than RING do not need to close to the starting NET, so increase the NVLink bw artificially
+  // 非 环 算法不要求回到起始网卡，因此可以人为提高 NVLink 带宽以放宽约束
   if (ndevs > 1 && graph->pattern != NCCL_TOPO_PATTERN_RING) totalBw *= ndevs * 1.0 / (ndevs - 1);
 
   while ((speedArray[speedIndex] > maxBw || speedArray[speedIndex] * graph->minChannels > totalBw) &&
@@ -1193,14 +1202,14 @@ search:
     printf("\n");
   }
 #endif
-  // Optimal solution, stop here
+  // 找到最优解，就此停止
   if (time == -1) goto done;
   if (graph->nChannels * graph->bwInter >= system->totalBw) goto done;
 
   if (pass == 1) {
-    // First pass, we don't have a solution yet ; try other options
+    // 第一遍搜索：尚未得到任何解，尝试其它选项
 
-    // Try having different channels (except when going through AMD CPUs)
+    // 尝试使用不同的 通道(经过 AMD CPU 时除外)
     if (tmpGraph.sameChannels == 1 && !(cpuArch == NCCL_TOPO_CPU_ARCH_X86 && cpuVendor == NCCL_TOPO_CPU_VENDOR_AMD &&
                                         tmpGraph.typeIntra == PATH_SYS)) {
       tmpGraph.sameChannels = 0;
@@ -1212,7 +1221,7 @@ search:
     else globalTimeout = NCCL_SEARCH_GLOBAL_TIMEOUT;
     if (globalTimeout < 0 && graph->nChannels) goto done;
 
-    // Try a simpler tree
+    // 尝试用更简单的树
     if (ccMin >= 90 && tmpGraph.pattern == NCCL_TOPO_PATTERN_BALANCED_TREE) {
       tmpGraph.pattern = NCCL_TOPO_PATTERN_TREE;
       goto search;
@@ -1235,13 +1244,13 @@ search:
 
     if (crossNic == 2 && tmpGraph.crossNic == 0 &&
         (graph->pattern == NCCL_TOPO_PATTERN_RING || graph->pattern == NCCL_TOPO_PATTERN_BALANCED_TREE)) {
-      // Try again with crossNic if permitted
+      // 若允许，则改用 crossNic 再试一次
       tmpGraph.crossNic = 2;
       goto search;
     }
     tmpGraph.crossNic = crossNic == 1 ? 1 : 0;
 
-    // Decrease bw until we find a solution
+    // 逐步降低带宽直到找到解
     if ((speedIndex < nspeeds - 1) && (graph->nChannels == 0 || (speedArray[speedIndex + 1] / graph->bwInter > .49))) {
       tmpGraph.bwInter = tmpGraph.bwIntra = speedArray[++speedIndex];
       goto search;
@@ -1252,7 +1261,7 @@ search:
   }
 
 done:
-  // We have a solution. Start from that solution and move to pass 2.
+  // 已有可行解。以此为起点进入第二遍搜索。
   if (pass == 1) {
     time = -1;
     NCCLCHECK(ncclTopoDupChannels(graph, ccMin, ngpus));
@@ -1265,10 +1274,10 @@ done:
   }
 
   if (pass == 2) {
-    // See if we can increase bw
+    // 看看能否提高带宽
     if (time != 0 && speedIndex > 0) {
       if (graph->pattern == NCCL_TOPO_PATTERN_RING) {
-        // increase bw for Ring
+        // 提高 环 的带宽
         tmpGraph.bwIntra = tmpGraph.bwInter = speedArray[--speedIndex];
         goto search;
       } else if (graph->pattern == NCCL_TOPO_PATTERN_NVLS && tmpGraph.bwInter == graph->bwInter &&
@@ -1277,7 +1286,7 @@ done:
         tmpGraph.bwInter = speedArray[--speedIndex];
         goto search;
       } else if (tmpGraph.bwIntra == graph->bwIntra && tmpGraph.bwIntra < tmpGraph.bwInter * 2) {
-        // increase bwIntra for trees (2 nodes or collnet)
+        // 提高树的节点内带宽(2 节点或 collnet 场景)
         tmpGraph.bwIntra = speedArray[--speedIndex];
         goto search;
       }
@@ -1312,7 +1321,7 @@ done:
   return ncclSuccess;
 }
 
-// Max chars per GPU entry: " GPU/xxxxxxxxxxxxxxxx-xxxxxxxxxxxxxxxx" (~40 chars)
+// 每个 GPU 条目的字符上限：" GPU/xxxxxxxxxxxxxxxx-xxxxxxxxxxxxxxxx"(约 40 字符)
 #define CHARS_PER_GPU_ENTRY 48
 
 ncclResult_t ncclTopoPrintGraph(struct ncclTopoSystem* system, struct ncclTopoGraph* graph) {
@@ -1368,7 +1377,7 @@ fail:
 }
 
 #include "comm.h"
-// NVLS channels aren't compute channels. Find which NIC corresponds to our rank being the head
+// NVLS 的 通道 不是计算用 通道。找出在我们这个 rank 作为 头 时所对应的那张网卡
 ncclResult_t getNvlsNetDev(struct ncclComm* comm, struct ncclTopoGraph* graph, int channelId, int64_t* netId) {
   ncclResult_t ret = ncclSuccess;
   int localRanks = comm->topo->nodes[GPU].count;
@@ -1394,7 +1403,7 @@ fail:
   goto exit;
 }
 
-// 0: don't use PXN for P2P, 1: use PXN if needed, 2: use PXN as much as possible to maximize aggregation
+// 0：P2P 不使用 PXN；1：必要时使用 PXN；2：尽可能使用 PXN 以最大化聚合度
 NCCL_PARAM(P2pPxnLevel, "P2P_PXN_LEVEL", 2);
 
 ncclResult_t ncclTopoGetNetDev(struct ncclComm* comm, int rank, struct ncclTopoGraph* graph, int channelId,
@@ -1402,7 +1411,7 @@ ncclResult_t ncclTopoGetNetDev(struct ncclComm* comm, int rank, struct ncclTopoG
   int64_t netId = -1;
   int netDev = -1;
   if (graph) {
-    // Honor the net device in the graph
+    // 尊重拓扑图中指定的网络设备
     int channel = channelId % graph->nChannels;
     int ngpus = comm->topo->nodes[GPU].count;
     int index = graph->intra[channel * ngpus] == rank ? 0 : 1;
@@ -1418,16 +1427,16 @@ ncclResult_t ncclTopoGetNetDev(struct ncclComm* comm, int rank, struct ncclTopoG
   } else if (peerRank == -1) {
     return ncclInternalError;
   } else {
-    // Start with our local NIC and local Rank
+    // 从本地的网卡与本地 rank 开始
     NCCLCHECK(ncclTopoGetLocalNet(comm->topo, rank, channelId, &netId, &netDev));
     if (dev) *dev = netDev;
     if (id) *id = netId;
     *proxyRank = rank;
 
     int pxnLevel = ncclPxnDisable(comm) == 1 ? 0 : ncclParamP2pPxnLevel();
-    // See whether we can use the remote rank preferred device.
+    // 看看能否使用对端 rank 偏好的设备。
     if (ncclParamCrossNic() == 0 || (pxnLevel != 0)) {
-      // Find local NIC number close to local nvmlDev
+      // 找到与本地的 nvmlDev 最接近的本地网卡编号
       int nvmlDev = comm->peerInfo[peerRank].nvmlDev;
       int localRank;
       if (ncclTopoDevToRank(comm->topo, comm->topo->systemId, nvmlDev, /*warn=*/false, &localRank) != ncclSuccess) {
@@ -1435,7 +1444,7 @@ ncclResult_t ncclTopoGetNetDev(struct ncclComm* comm, int rank, struct ncclTopoG
       }
       NCCLCHECK(ncclTopoGetLocalNet(comm->topo, localRank, channelId, &netId, &netDev));
 
-      // Check that device exists on our node
+      // 检查该设备是否确实存在于本节点上
       if (ncclParamCrossNic() == 0) {
         if (dev) *dev = netDev;
         if (id) *id = netId;
@@ -1445,14 +1454,14 @@ ncclResult_t ncclTopoGetNetDev(struct ncclComm* comm, int rank, struct ncclTopoG
         NCCLCHECK(ncclTopoRankToIndex(comm->topo, rank, &g, /*showWarn=*/true));
         NCCLCHECK(ncclTopoIdToIndex(comm->topo, NET, netId, &n));
         struct ncclTopoNode* gpu = comm->topo->nodes[GPU].nodes + g;
-        // No need to check for GDR here, PATH_PXN is only set if GDR is enabled between the peer GPU and the NET.
+        // 此处无需专门检查 GDR，因为 PATH_PXN 只在“对端 GPU 与网卡之间已启用 GDR”时才会被设置。
         if (gpu->paths[NET][n].type <= PATH_PXN) {
           if (dev) *dev = netDev;
           if (id) *id = netId;
           NCCLCHECK(ncclTopoGetIntermediateRank(comm->topo, rank, *dev, proxyRank));
         }
       } else if (pxnLevel == 2) {
-        // Check which local GPU corresponds to that NIC and see if we can use PXN.
+        // 检查哪张本地 GPU 对应那张网卡，并判断能否使用 PXN。
         int n, g1, g2;
         NCCLCHECK(ncclTopoIdToIndex(comm->topo, NET, netId, &n));
         NCCLCHECK(ncclTopoRankToIndex(comm->topo, rank, &g1, /*showWarn=*/true));

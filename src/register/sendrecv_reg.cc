@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/register/sendrecv_reg.cc — P2P/sendrecv buffer 注册实现
+ * ----------------------------------------------------------------------------
+ * 实现点对点(send/recv)通信的 buffer 注册：ncclRegisterP2pNetBuffer 等把用户 buffer
+ * 登记为可被 P2P/网络传输直接访问，并返回注册句柄。
+ */
+
 #include "register.h"
 #include "transport.h"
 

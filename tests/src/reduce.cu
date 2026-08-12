@@ -4,6 +4,13 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/reduce.cu — Reduce 性能/功能测试
+ * ----------------------------------------------------------------------------
+ * 实现 reduce_perf 基准：把所有 rank 的数据规约到一个 root rank，演示 NCCL Reduce
+ * API 用法与字节计数计算。取自 nccl-tests 并裁剪。
+ */
+
 #include "cuda_runtime.h"
 #include "common.h"
 

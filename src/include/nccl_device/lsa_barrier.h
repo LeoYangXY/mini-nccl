@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/lsa_barrier.h — LSA barrier 设备 API
+ * ----------------------------------------------------------------------------
+ * 声明 nccl_device 框架的 LSA(Latency-Sensitive Allocator) barrier 接口与
+ * ncclLsaBarrierHandle，用于设备端高效的跨线程块屏障。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_MEM_BARRIER_H_
 #define _NCCL_DEVICE_MEM_BARRIER_H_
 #include "impl/core__types.h"

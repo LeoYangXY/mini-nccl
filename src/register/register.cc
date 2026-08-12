@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/register/register.cc — 用户 buffer 注册实现（ncclCommRegister）
+ * ----------------------------------------------------------------------------
+ * 实现 ncclCommRegister/ncclCommDeregister：把用户 host/device 内存登记为可被
+ * transport 直接访问的段（Pinned/IPC/GDR），并维护注册表与引用计数。
+ */
+
 #include "argcheck.h" // Need some checks here since we access comm
 #include "nccl.h"
 #include "comm.h"
@@ -45,8 +52,8 @@ ncclResult_t ncclRegister(struct ncclComm* comm, void* data, size_t size, bool i
     if (memType == CU_MEMORYTYPE_HOST) {
       hasSysmemSegment = true;
     } else {
-      // Check for a Sysmem segment is only valid with cuMem based allocators, so a IS_LEGACY_CUDA_IPC check is
-      // required to ensure that we're calling ncclCuMemGetAddressRange only when necessary.
+      // 检查 for a Sysmem 段 is 仅 合法的 with cuMem based allocators, 所以 a IS_LEGACY_CUDA_IPC 检查 is
+      // 所需 to 确保 那个 we're calling ncclCuMemGetAddressRange 仅 当 necessary.
       CUCHECK(cuPointerGetAttribute((void*)&legacyIpcCap, CU_POINTER_ATTRIBUTE_IS_LEGACY_CUDA_IPC_CAPABLE,
                                     (CUdeviceptr)base));
       if (!legacyIpcCap) {
@@ -66,7 +73,7 @@ ncclResult_t ncclRegister(struct ncclComm* comm, void* data, size_t size, bool i
   for (int slot = 0; /*true*/; slot++) {
     if ((slot == cache->population) || (begAddr < cache->slots[slot]->begAddr)) {
       if (cache->population == cache->capacity) {
-        // must grow cache
+        // must grow 缓存
         cache->capacity = cache->capacity < 32 ? 32 : 2 * cache->capacity;
         NCCLCHECK(ncclRealloc(&cache->slots, cache->population, cache->capacity));
       }

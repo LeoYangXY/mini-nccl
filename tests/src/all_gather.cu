@@ -4,6 +4,14 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 
+/*
+ * tests/src/all_gather.cu — AllGather 性能/功能测试
+ * ----------------------------------------------------------------------------
+ * 实现 all_gather_perf 基准：把各 rank 的数据片段聚合成完整结果分发到所有 rank，
+ * 演示 NCCL AllGather API 的使用与字节计数计算(GetCollByteCount)。取自 nccl-tests
+ * 并裁剪。
+ */
+
 #include "cuda_runtime.h"
 #include "common.h"
 

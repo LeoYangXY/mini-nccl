@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/nccl_device/impl/ll_a2a__funcs.h — LL all-to-all 函数实现
+ * ----------------------------------------------------------------------------
+ * 实现 nccl_device 框架下 LL(低延迟) all-to-all 的函数体（ncclLLA2ACalcSlots 等），
+ * 供设备 kernel 完成低延迟全交换。属 NVIDIA 官方设备 API 头。
+ */
+
 #ifndef _NCCL_DEVICE_LL_A2A__FUNCS_H_
 #define _NCCL_DEVICE_LL_A2A__FUNCS_H_
 #include "ll_a2a__types.h"

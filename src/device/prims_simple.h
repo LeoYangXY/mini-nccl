@@ -32,39 +32,58 @@ enum primsMode {
   primsModePatAg = 2
 };
 
-// Simple 协议的 Primitives 特化类：封装 AllReduce 在 GPU 上“收-规约-发”的底层动作。
+// Simple 协议的 Primitives 特化类：封装 全规约 在 GPU 上“收-规约-发”的底层动作。
 // T=数据类型, RedOp=规约算子, Fan=邻居集合, ProtoSimple=Simple 协议参数。
-// 它的 directSend/directRecv/directCopy 等方法就是跨卡 load/store 的具体实现。
+// 它的 directSend/directRecv/directCopy 等方法就是跨卡 加载/存储 的具体实现。
 template <typename T, typename RedOp, typename Fan, int Direct, int SlicePerChunk, int StepPerSlice, int Unroll,
           int P2p, int MultimemSrcs, int MultimemDsts, bool isNetOffload>
 class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice, Unroll, MultimemSrcs, MultimemDsts>,
                  P2p, isNetOffload> {
-  static constexpr int MaxRecv = Fan::MaxRecv, MaxSend = Fan::MaxSend;
-  static constexpr int Input = 0, Output = 1;
+  static constexpr int MaxRecv = Fan::MaxRecv, MaxSend = Fan::MaxSend;  // 最大接收源数/发送目标数
+  static constexpr int Input = 0, Output = 1;                           // 输入/输出缓冲区的数组下标
+  /* 角色(Role)标志位：这是理解 NCCL kernel 线程模型的关键。
+   *
+   * 一个线程块内的线程并非都干同样的活，而是被划分成不同角色分工协作：
+   *   - RoleInput/RoleOutput : 负责持有输入/输出缓冲区指针
+   *   - RoleWaitRecv         : 等待对端把数据放进 FIFO(消费者侧的“等数据到”)
+   *   - RoleWaitSend         : 等待对端腾出 FIFO 空间(生产者侧的“等有位置写”)
+   *   - RolePostRecv         : 数据消费完后，通知对端“这块空间可以复用了”(归还信用)
+   *   - RolePostSend         : 数据写完后，通知对端“数据已就绪，可以来取”
+   * 其余标志位是状态/模式标记：
+   *   - Aborted              : 通信被中止(如出错或超时)
+   *   - NetRegMode           : 网络注册内存模式
+   *   - ConnFifoEnabled      : 启用了连接 FIFO
+   *   - DirectWrite/DirectRead : 直连写/直连读(P2P 可直接访问对端显存，省去中转)
+   *   - PatMode              : PAT 算法模式
+   *   - NvlsMinPolling       : NVLS 场景下用 multimem 指令做最小值轮询
+   *   - NetDeviceUnpack      : 需要设备端解包(网络设备卸载场景)
+   * 少量线程做同步(Wait/Post)，大量线程做搬运，这样同步开销被摊薄，是高带宽的关键。
+   */
   static constexpr int RoleInput = 0x01, RoleOutput = 0x02, RoleWaitRecv = 0x04, RoleWaitSend = 0x08,
                        RolePostSend = 0x10, RolePostRecv = 0x20, Aborted = 0x40, NetRegMode = 0x80,
                        ConnFifoEnabled = 0x100, DirectWrite = 0x200, DirectRead = 0x400, PatMode = 0x800,
                        NvlsMinPolling = 0x1000, NetDeviceUnpack = 0x2000, AnyNetDeviceUnpack = 0x4000;
-  const int tid, tidInBlock;
-  const int nthreads;
-  int nworkers;
-  const int stepSize;
-  Fan fan;
-  int index; // Peer index I'm responsible for
-  int flags;
-  int group;
-  uint64_t step;
-  struct ncclConnInfo* conn = NULL;
-  struct ncclConnFifo* connFifo = NULL;
-  T* connEltsFifo;
-  T* directBuff = NULL;
-  uint64_t* connStepPtr;
-  uint64_t connStepCache; // Cache last seen value of (*connStepPtr)
-  int connStepSize; // Connection step size
-  void* netDeviceHandle;
-  uint64_t accSize;
+  const int tid, tidInBlock;   // tid：本原语组内的线程号；tidInBlock：在整个线程块中的线程号
+  const int nthreads;          // 本原语组的线程总数(含同步线程)
+  int nworkers;                // 其中真正参与数据搬运的“工作线程”数量
+  const int stepSize;          // 一个 step 对应的元素个数(FIFO 单个槽位的容量)
+  Fan fan;                     // 扇形拓扑描述：记录有几个接收源、几个发送目标
+  int index;                   // 本线程负责的对端序号(每个 Wait/Post 线程盯一个对端)
+  int flags;                   // 本线程的角色与状态标志位(上面那些 Role* 的按位组合)
+  int group;                   // 同步组编号：不同组使用不同的 barrier，互不干扰
+  uint64_t step;               // 本连接当前推进到的步数(单调递增，用作 FIFO 的逻辑时钟)
+  struct ncclConnInfo* conn = NULL;         // 连接信息(指针、FIFO 地址等)
+  struct ncclConnFifo* connFifo = NULL;     // 连接的 FIFO 元数据数组
+  T* connEltsFifo;                          // FIFO 的实际数据缓冲区
+  T* directBuff = NULL;                     // 直连缓冲区：可直接读写的对端显存地址
+  uint64_t* connStepPtr;                    // 指向对端步数计数器的指针(跨卡可见，用于同步)
+  uint64_t connStepCache;                   // 缓存上次读到的 (*connStepPtr) 值，减少昂贵的远程读取
+  int connStepSize;                         // 连接的步长(每步搬运多少元素)
+  void* netDeviceHandle;                    // 网络设备句柄(设备端网络卸载用)
+  uint64_t accSize;                         // 已累计处理的数据量
 
-  // Don't use barrier 0 as it's used by the final sync
+  // 组内同步屏障。注意不要使用 0 号 屏障：它被保留给 内核 结束时的最终同步。
+  // 这里用 15-组 来给每个组分配独立的 屏障 编号，避免不同组互相干扰。
   __device__ void barrier() {
     if (nthreads == WARP_SIZE) __syncwarp();
     else {
@@ -80,7 +99,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
     }
   }
 
-  // PAT uses a single barrier across all groups
+  // PAT 算法在所有分组之间共用同一个屏障
   __device__ void patBarrier() {
     barrier_sync(15, NCCL_PAT_NWORKERS);
   }
@@ -113,24 +132,26 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
       return ans;
     }
 #endif
-    // volatile is faster than acquire but not as correct. Make sure reduceCopy
-    // loads data using volatile so it doesn't see stale data in L1.
+    // 这里刻意使用 易变的 而非 获取 语义：易变的 更快，但内存序保证较弱。
+    // 之所以可以这样做，是因为我们保证了 reduceCopy 也用 易变的 方式读取数据，
+    // 从而绕过 L1 缓存、不会读到陈旧数据。这是用“弱内存序 + 全链路一致的访问方式”
+    // 换取性能的典型手法：只要读写双方都不走 L1，就不会出现可见性问题。
     return ld_volatile_global(ptr);
   }
 
   template <int DirectRecv, int DirectSend, int Recv, int Send, int Src, int Dst>
   __device__ __forceinline__ void waitPeer(intptr_t srcIx, intptr_t dstIx, int offset, int nelts) {
     const bool isSendNotRecv = (Send && Recv) ? (flags & RoleWaitSend) : Send;
-    // Yes, for some template arguments this code will be unreachable.  That's fine.
+    // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
     // coverity[dead_error_line]
     if ((flags & (Recv * RoleWaitRecv)) || (flags & (Send * RoleWaitSend))) {
       int spins = 0;
       while (connStepCache + (isSendNotRecv ? NCCL_STEPS : 0) < step + StepPerSlice) {
         connStepCache = loadStepValue(connStepPtr);
         if (checkAbort(flags, Aborted, spins)) break;
-        // if (spins == 0) {
-        //   printf("r=%d b=%d t=%d SPUN OUT got=%d want=%d\n", ncclShmem.comm.rank, blockIdx.x, threadIdx.x,
-        //          int(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0)), int(step+StepPerSlice));
+        // 若 (spins == 0) {
+        //   printf("r=%d b=%d t=%d SPUN 出 已获取=%d 想要=%d\n", ncclShmem.通信域.rank, blockIdx.x, threadIdx.x,
+        //          整型(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0)), 整型(步骤+StepPerSlice));
         // }
       }
     }
@@ -157,7 +178,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
         if (flags & DirectWrite) {
           ptrs[index] = directBuff + dstIx + offset;
         } else if (flags & DirectRead) {
-          // empty send
+          // 空发送(无数据可发)
           ptrs[index] = nullptr;
         } else {
           ptrs[index] = connEltsFifo + (step % NCCL_STEPS) * connStepSize;
@@ -171,7 +192,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
           ptrs[index] = connEltsFifo + (step % NCCL_STEPS) * connStepSize;
         }
       } else {
-        // Yes, for some template arguments this code will be unreachable.  That's fine.
+        // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
         // coverity[dead_error_line]
         ptrs[index] = connEltsFifo + (step % NCCL_STEPS) * connStepSize;
       }
@@ -207,33 +228,35 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
     int offset = 0;
 
     if (tid < nworkers && offset < nelem && !isNetOffload) {
-      // Worker-only loop for non-empty slices. Non-workers and empty slices are
-      // processed in the loop following this if block. The benefit of splitting
-      // the loop like this is we pull two branches out of the critical path.
-      // Using "number of branch insns (taken or not) encountered dynamically"
-      // as the performance metric, then:
-      //   perf_orig = 2*numslices
-      //   perf_new = 2+numslices
-      // So the new code and old code behave the same for numslices=2, and for
-      // numslices>2 the new code is superior. And note that in the case
-      // numslices=1, the loop is trivially unrollable (single iteration) so we
-      // don't incur that that tail branch and we still have perf_new=2.
-      //
-      // ORIGINAL CODE:
-      //   unrolled for(slices) {
-      //     if(worker) { // This branch removed
-      //       wait();
-      //       subBarrier();
-      //       if(slice not empty) // This branch removed
-      //         ReduceCopyMulti();
-      //     }
-      //     barrier();
-      //     post();
-      //   } // Since we no longer unroll, new branch added here
+      /* 这个循环专供“工作线程 + 非空 slice”使用。非工作线程以及空 slice
+       * 由紧随本 if 块之后的那个循环来处理。
+       *
+       * 为什么要把一个循环拆成两个？为了把两个分支判断移出关键路径。
+       * 以“动态执行到的分支指令条数(无论是否跳转)”作为性能度量：
+       *   原实现：perf_orig = 2 * numslices  (每个 slice 都要判断 2 次)
+       *   新实现：perf_new  = 2 + numslices  (2 次判断只在循环外做一次)
+       * 因此 numslices=2 时两者持平，numslices>2 时新写法更优。
+       * 而 numslices=1 时循环可被平凡展开(只有一次迭代)，不会产生尾部分支，
+       * 新写法依然是 perf_new=2，不吃亏。
+       *
+       * 原始代码形态如下(供对照理解)：
+       *   unrolled for(slices) {
+       *     if(worker) {                // 这个分支被提到了循环外
+       *       wait();
+       *       subBarrier();
+       *       if(slice not empty)       // 这个分支也被消除了
+       *         ReduceCopyMulti();
+       *     }
+       *     barrier();
+       *     post();
+       *   }                             // 由于不再展开，这里新增了一个循环分支
+       */
 #if __CUDA_ARCH__ < 700
-      // Above doesn't matter on older hardware.
+      // 在 Volta 之前的老硬件上，上述分支优化收益不明显(分支预测与调度机制不同)，
+      // 因此这里仍然让编译器完全展开循环，用代码膨胀换取更少的循环开销。
       NVCC_PRAGMA_UNROLL(SlicePerChunk)
 #else
+      // Volta 及以后：禁止展开，配合上面的循环拆分获得更少的动态分支数
       NVCC_PRAGMA_UNROLL_DISABLED
 #endif
       do {
@@ -253,7 +276,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
           ncclNetDeviceUnpack<Recv>(tid, tidInBlock, nworkers, group,
                                     ncclShmem.groups[group].devicePlugin.unpack.unpackNetDeviceIndexMask, Src,
                                     workSize);
-          // Sync here to make sure all workers are reading from the updated srcs)
+          // 在此同步，确保所有工作线程读取到的都是更新后的 srcs 指针
           subBarrier();
         }
 
@@ -262,14 +285,14 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
             /* NVLS can have srcs[0] == dsts[0], but we cannot enter this "if branch",
              * so we need to check whether MultimemSrcs and MultimemDsts are 0. */
             && MultimemSrcs == 0 && MultimemDsts == 0 && !Src) {
-          // We can only have one direct receive. Since srcs[0] == dstPtr+offset, skip one copy
+          // 直连接收最多只能有一个。由于 srcs[0] == dstPtr+偏移(源和目标是同一块地址)，可以省掉一次拷贝
           if (Send && Dst && ncclShmem.groups[group].srcs[0] != ncclShmem.groups[group].dsts[1]) {
             reduceCopy<Unroll, RedOp, T, 0, 1, 1, 0, 1, MaxSend, /*PreOpSrcs*/ 0>(
               tid, nworkers, /*redArg*/ 0, /*postOp*/ false, 1, ncclShmem.groups[group].srcs, fan.nsend(),
               ncclShmem.groups[group].dsts + 1, workSize);
           }
         } else if (DirectSend && !DirectRecv && SrcBuf != Input && ncclShmem.groups[group].dsts[Dst] == nullptr) {
-          // For broadcast in CollNet to do empty send
+          // 用于 CollNet 广播场景下执行空发送
           reduceCopy<Unroll, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs*/ 0>(tid, nworkers,
                                                                           ncclShmem.groups[group].redOpArgs, postOp,
                                                                           Recv, ncclShmem.groups[group].srcs, Dst,
@@ -277,7 +300,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
         } else if (ncclShmem.groups[group].srcs[0] && ncclShmem.groups[group].dsts[0]) {
           constexpr int PreOpSrcs = SrcBuf != Input ? 0 : 1;
           if (Send && Dst && ncclShmem.groups[group].dsts[1] == nullptr) {
-            // this case should only be directCopySend() with registered buffers and send to net peer
+            // 这种情况只应出现在：使用已注册缓冲区的 directCopySend()，且发送目标是网络对端
             reduceCopy<Unroll, RedOp, T, 0, Recv + Src, Recv * MaxRecv + Src, 0, 1, 1, PreOpSrcs>(
               tid, nworkers, ncclShmem.groups[group].redOpArgs, postOp, Recv * fan.nrecv() + Src,
               ncclShmem.groups[group].srcs, 1, ncclShmem.groups[group].dsts, workSize);
@@ -289,29 +312,29 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
                                                         workSize);
           }
         } else {
-          // we will come here when calling prims.directSend with net peer,
-          // in this case, ncclShmem.groups[group].dsts[0] == NULL, so we
-          // skip data flush.
+          // 当对网络对端调用 prims.directSend 时会走到这里，
+          // 此时 ncclShmem.组[组].dsts[0] 为 NULL，因此我们
+          // 跳过数据刷新。
           workSize = 0;
         }
         barrier(); // This barrier has a counterpart in following loop
         postPeer<Recv, Send>(0 < workSize);
         offset += sliceSize;
         slice += 1;
-        // Yes, for some template arguments this code will be unreachable.  That's fine.
+        // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
         // coverity[dead_error_line]
       } while (slice < SlicePerChunk && offset < nelem);
     }
 
-    // Non-workers come straight here. Workers too but only once the remaining
-    // slices are all empty. Since empty slices are the uncommon case, and
-    // worker perf is the limiter, perf-wise this loop is effectively unentered,
-    // hence just a single branch insn.
+    // 非工作线程会直接执行到这里。工作线程也会来，但仅当剩余的
+    // slice 全部为空时才会到达。由于空 slice 属于少见情况，而且
+    // 性能瓶颈在工作线程一侧，因此从性能角度看这个循环基本等同于不会进入，
+    // 因此只需一条分支指令。
     NVCC_PRAGMA_UNROLL_DISABLED
     while (slice < SlicePerChunk) {
       sliceSize = sliceSize < nelem - offset ? sliceSize : nelem - offset;
       { // Only workers could have Wait roles so we know the slice must be empty
-        // since we've exited the loop above.
+        // 因为我们已经从上面的循环退出了。
         waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(0, 0, 0, sliceSize);
       }
       barrier(); // Has couterpart in preceding worker-only loop.
@@ -362,7 +385,7 @@ public:
               if (flags & DirectWrite) {
                 ptrs[index] = directBuff;
               } else if (flags & DirectRead) {
-                // empty send
+                // 空发送(无数据可发)
                 ptrs[index] = nullptr;
               } else {
                 ptrs[index] = connEltsFifo + (step % NCCL_STEPS) * connStepSize;
@@ -400,7 +423,7 @@ public:
       barrier();
       int32_t dstSize = 0;
       if (flags & Send * RolePostSend) {
-        // Yes, for some template arguments this code will be unreachable.  That's fine.
+        // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
         // coverity[dead_error_begin]
         dstSize = ncclShmem.groups[group].dstSizes[index];
         ncclShmem.groups[group].dstSizes[index] = 0;
@@ -420,9 +443,9 @@ public:
   }
 
 private:
-  // Scatter/Gather generic op
-  // skip: my own rank order in the buffer chunks
-  // shift: peer offset to avoid all ranks sending to or receiving from same peer
+  // 散播/收集 通用操作
+  // skip：本 rank 在缓冲区分块中的次序
+  // shift：对端偏移量，用于避免所有 rank 同时向同一个对端收发(打散热点)
   template <int DirectRecv1, int DirectSend1, int Recv, int Send>
   __device__ __forceinline__ void ScatterGatherOp(intptr_t inpIx, intptr_t outIx, ssize_t totalElem, int peerElem,
                                                   ssize_t peerOffset, int skip, int shift, bool postOp) {
@@ -438,18 +461,18 @@ private:
       bool fenceNeeded = false;
       if (tid < nworkers) {
         if (Send) {
-          // Scatter pre-scales data of input buffer only in non-Direct case
+          // 仅在非直连(non-Direct)场景下，散播 才会对输入缓冲区的数据做预缩放
           constexpr int PreOpSrcs = DirectSend ? 0 : 1;
           if (tid == 0) ncclShmem.groups[group].srcs[0] = (T*)ncclShmem.groups[group].userInput + inpIx + offset;
-          // realSize is not accurate here; but intra-node does not rely on sizes FIFO
+          // 此处的 realSize 并不精确；但节点内通信不依赖 sizes FIFO，因此无妨
           waitPeer<0, DirectSend, 0, 1, 1, 0>(0, inpIx, offset, realSize);
           subBarrier();
           NVCC_PRAGMA_UNROLL_AUTO
-          // Loop over peers
+          // 遍历所有对端
           for (int j = 0; j < fan.nsend(); j++) {
             int i = (j + shift) % fan.nsend();
             ssize_t pOffset = i * peerOffset;
-            // Skip the data I am responsible of reducing myself
+            // 跳过由我自己负责规约的那部分数据
             if (skip >= 0 && i >= skip) pOffset += peerOffset;
             void* src0 = (T*)ncclShmem.groups[group].srcs[0] + pOffset;
             ssize_t realPeerSize = min(realSize, totalElem - pOffset);
@@ -458,7 +481,7 @@ private:
                                                                         ncclShmem.groups[group].redOpArgs, false, 1,
                                                                         &src0, 1, ncclShmem.groups[group].dsts + i,
                                                                         realPeerSize);
-              // Mark for threadfence at the end
+              // 打标记：在结尾处需要执行 threadfence(内存栅栏)
               fenceNeeded |= true;
             }
           }
@@ -466,7 +489,7 @@ private:
           if (tid == 0) ncclShmem.groups[group].dsts[0] = (T*)ncclShmem.groups[group].userOutput + outIx + offset;
           ssize_t pOffset = index * peerOffset;
           if (skip >= 0 && index >= skip) pOffset += peerOffset;
-          // Adjust remote index with peer offset in case we are directly pulling from peer's output buffer
+          // 用对端偏移量修正远程下标，以应对“直接从对端输出缓冲区拉取数据”的情形
           waitPeer<DirectRecv, 0, 1, 0, 0, 1>(outIx + pOffset, outIx + pOffset, offset, realSize);
           subBarrier();
           NVCC_PRAGMA_UNROLL_AUTO
@@ -495,9 +518,9 @@ private:
                                                int netRegFlag) {
     conn = &peer->recv[connIndex];
     if (conn->netDeviceHandle.netDeviceType == NCCL_NET_DEVICE_UNPACK) {
-      // handle must be a device ptr
+      // 句柄 必须是设备指针
       netDeviceHandle = conn->netDeviceHandle.handle;
-      // Cache the handle
+      // 缓存该句柄
       ncclNetDeviceUnpackSetup(netDeviceHandle, group, index);
       flags |= NetDeviceUnpack;
     }
@@ -508,7 +531,7 @@ private:
       *connStepPtr = step; // Return credits in case we rounded up.
     }
     if (flags & RoleWaitRecv) {
-      // WaitRecv role saves since that's who needs it in setDataPtrs()
+      // 由 WaitRecv 角色的线程保存，因为在 setDataPtrs() 中正是它需要用到
       if ((flags & PatMode) == 0) ncclShmem.groups[group].recvConns[index] = conn;
       flags |= (conn->flags & NCCL_NVLS_MIN_POLL) ? NvlsMinPolling : 0;
       connStepPtr = conn->tail;
@@ -521,7 +544,7 @@ private:
       }
       if (Direct) {
         if (ipcRegFlag) {
-          // User buffers have been registered
+          // 用户缓冲区已经注册
           if (conn->flags & (NCCL_P2P_READ | NCCL_P2P_WRITE)) {
             if (P2p) {
               flags |= conn->flags & NCCL_P2P_WRITE ? DirectWrite : DirectRead;
@@ -559,7 +582,7 @@ private:
       connEltsFifo = (T*)conn->buffs[NCCL_PROTO_SIMPLE];
     }
     if (flags & RoleWaitSend) {
-      // WaitSend role saves since that's who needs it in setDataPtrs()
+      // 由 WaitSend 角色的线程保存，因为在 setDataPtrs() 中正是它需要用到
       if ((flags & PatMode) == 0) ncclShmem.groups[group].sendConns[index] = conn;
       flags |= (conn->flags & NCCL_NVLS_MIN_POLL) ? NvlsMinPolling : 0;
       connStepPtr = conn->head;
@@ -568,7 +591,7 @@ private:
       connEltsFifo = (T*)conn->buffs[NCCL_PROTO_SIMPLE];
       if (Direct) {
         if (ipcRegFlag) {
-          // User buffers have been registered
+          // 用户缓冲区已经注册
           if (conn->flags & (NCCL_P2P_WRITE | NCCL_P2P_READ)) {
             if (P2p) {
               flags |= conn->flags & NCCL_P2P_WRITE ? DirectWrite : DirectRead;
@@ -602,12 +625,12 @@ public:
     flags = 0;
     index = -1;
     if (mode == primsModeDefault) {
-      // Connect to ranks in sendPeers/recvPeers
-      // For send operations, we need an extra warp to overlap the threadfence and the copy
+      // 与 sendPeers/recvPeers 中的各个 rank 建立连接
+      // 对于发送操作，需要额外一个 线程束，以便让 threadfence 与数据拷贝相互重叠
       this->nworkers = nthreads - (MaxSend > 0 && nthreads >= NCCL_SIMPLE_EXTRA_GROUP_IF_NTHREADS_GE ? WARP_SIZE : 0);
 
       int nrecv = 0, nsend = 0;
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_line]
       while (nrecv < MaxRecv && recvPeers[nrecv] != -1) nrecv++;
       // coverity[dead_error_line]
@@ -615,7 +638,7 @@ public:
       this->fan = Fan(nrecv, nsend);
 
       constexpr int ThreadPerSync =
-        // NVLS may have an arity > 8. In that case increase the size of the groups
+        // NVLS 的扇出可能超过 8。这种情况下需要增大分组的规模
         MaxSend >= 16 || MaxRecv >= 16 ?
           32 :
         MaxSend >= 8 || MaxRecv >= 8 ?
@@ -624,16 +647,16 @@ public:
       static_assert(MaxSend <= ThreadPerSync && MaxRecv <= ThreadPerSync, "Not enough threads to cover all peers");
 
       assert(2 * (nrecv + nsend) <= nthreads); // Ensure no thread is assigned more than one role.
-      // Coverity assumes that index will equal tid based on the line below, but it doesn't consider the setting
-      // of flags.  This results in multiple false positive overruns being reported here and in all_reduce.h.
-      // Unfortunately, we've been unsuccessful in trying to silence them with a single directive here so
-      // instead it's being done at the callers.
-      // coverity[assignment:FALSE]
+      // Coverity 会根据下面这行代码推断 索引 等于 tid，但它没有考虑到
+      // 标志 的设置逻辑。这导致它在此处以及 all_reduce.h 中报出多处越界误报。
+      // 遗憾的是，我们未能用一条指令统一屏蔽这些误报，因此
+      // 这项工作改由调用方完成。
+      // coverity[assignment:假]
       if (tid < nrecv) {
         flags |= RoleWaitRecv;
         index = tid;
       }
-      // Yes, for some template arguments this code will be unreachable.  That's fine.
+      // 是的，对于某些模板实参而言这段代码不可达，这是预期行为(模板实例化的正常现象)。
       // coverity[dead_error_begin]
       else if (tid < nrecv + nsend) {
         flags |= RoleWaitSend;
@@ -649,8 +672,8 @@ public:
       if (flags & (RoleWaitRecv | RolePostRecv)) peer = recvPeers[index];
       if (flags & (RoleWaitSend | RolePostSend)) peer = sendPeers[index];
 
-      // Coverity thinks that index could be -1 here but that's not actually the case.
-      // coverity[negative_returns:FALSE]
+      // Coverity thinks 那个 索引 可能为 -1 here 但 那个's 不 actually the 情形.
+      // coverity[negative_returns:假]
       int sendIpcReg;
       int recvIpcReg;
       int sendNetReg;
@@ -665,31 +688,31 @@ public:
         recvNetReg = sendNetReg = collWork ? collWork->netRegUsed : 0;
       }
 
-      // coverity[overrun-call] => Coverity think prims.index can be greater than 1
+      // coverity[overrun-调用] => Coverity 认为 prims.索引 可以 greater than 1
       if (flags & (RoleWaitRecv | RolePostRecv))
         loadRecvConn(ncclShmem.channel.peers[peer], connIndexRecv, collWork ? collWork->direct : 0, recvIpcReg,
                      recvNetReg);
-      // coverity[overrun-call] => Coverity think prims.index can be greater than 1
+      // coverity[overrun-调用] => Coverity 认为 prims.索引 可以 greater than 1
       if (flags & (RoleWaitSend | RolePostSend))
         loadSendConn(ncclShmem.channel.peers[peer], connIndexSend, collWork ? collWork->direct : 0, sendIpcReg,
                      sendNetReg);
 
-      // coverity[negative_returns:FALSE] => coverity thinks that index could be -1 but that's not actually the case
-      // coverity[var_deref_model] => coverity thinks work can dereferenced if NULL but this is not the case
+      // coverity[negative_returns:假] => coverity thinks 那个 索引 可能为 -1 但 那个's 不 actually the 情形
+      // coverity[var_deref_model] => coverity thinks work can dereferenced 若 NULL 但 这是 不 the 情形
       setDataPtrs(inputBuf, outputBuf, redOpArg, (struct ncclDevWorkCollReg*)collWork, sendIpcReg || recvIpcReg, peer);
-      // coverity[uninit_member] => coverity thinks fan.n is not initialized
+      // coverity[uninit_member] => coverity thinks fan.n is 不 已初始化
 
       if (barrierAny(flags & NetDeviceUnpack)) {
         flags |= AnyNetDeviceUnpack;
-        // RoleWaitRecv starts at tid=0, so this creates the bitmask of which recv peers
-        // have NetDeviceUnpack.
+        // RoleWaitRecv 从 tid=0 开始，因此这里构建出“哪些接收对端”的位掩码，
+        // 它们启用了 NetDeviceUnpack。
         uint32_t mask = __ballot_sync(~0u, ((flags & RoleWaitRecv) && (flags & NetDeviceUnpack)) ? 1 : 0);
         if (tid == 0) {
           ncclShmem.groups[this->group].devicePlugin.unpack.unpackNetDeviceIndexMask = mask;
         }
       }
     } else if (mode == primsModePatRs || mode == primsModePatAg) {
-      // Connect to all ranks +/- 2^n
+      // 连接到所有距离为 ±2^n 的 rank(指数阶梯，分散链路)
       flags |= PatMode;
       const int roles[5] = {RoleWaitRecv, RolePostRecv, RoleWaitSend, RolePostSend, RoleInput | RoleOutput};
       if (tid < 5) flags |= roles[tid];
@@ -698,7 +721,7 @@ public:
       if (tid < 32 && ((1UL << tid) < nranks)) {
         int rank = ncclShmem.comm.rank;
         uint32_t delta = 1 << tid;
-        // Load recv peer
+        // 加载接收对端信息
         int recvPeer = mode == primsModePatRs ? (rank - delta + nranks) % nranks : (rank + delta) % nranks;
         struct ncclPatPeer* peer = ((struct ncclPatPeer*)recvPeers) + tid;
         struct ncclConnInfo* conn = peer->conn = ncclShmem.channel.peers[recvPeer]->recv + connIndexRecv;
@@ -708,7 +731,7 @@ public:
         peer->headPtr = conn->head;
         peer->accSize = 0;
         peer->connStepSize = conn->stepSize / sizeof(T);
-        // Load send peer
+        // 加载发送对端信息
         int sendPeer = mode == primsModePatAg ? (rank - delta + nranks) % nranks : (rank + delta) % nranks;
         peer = ((struct ncclPatPeer*)sendPeers) + tid;
         conn = peer->conn = ncclShmem.channel.peers[sendPeer]->send + connIndexSend;
@@ -731,12 +754,12 @@ public:
 
   __device__ ~Primitives() {
     if (flags & PatMode) return;
-    // Save steps for the next operation
+    // 为下一次操作保存 步骤 进度
     if (flags & (RolePostSend | RolePostRecv)) conn->step = step;
     if ((flags & NetRegMode) && (flags & RoleWaitSend)) {
-      // Make sure we wait until the proxy has sent data before we return.
-      // We don't want the next CUDA kernel to overwrite the send buffer which
-      // was accessed directly.
+      // 确保在返回之前，代理 已经把数据发送出去。
+      // 我们不希望下一个 CUDA 内核 覆盖发送缓冲区——
+      // 该缓冲区是被(对端)直接访问的。
       uint64_t prevStep = step - StepPerSlice;
       volatile ssize_t* ptr = &(connFifo[prevStep % NCCL_STEPS].size);
       int spins = 0;
@@ -749,14 +772,14 @@ public:
       ncclNetDeviceSaveHead(netDeviceHandle, group, index);
     }
 
-    // Make sure all threads are done writing back conn->step and done using
-    // ncclShmem.groups[group]
+    // 确保所有线程都已完成对 conn->步骤 的回写，并且不再使用
+    // ncclShmem.组[组]。
     barrier();
 
     if ((flags & DirectRead) && (flags & RoleWaitSend) && P2p) {
-      // For sendrecv DirectRead, sender needs to wait for receiver reading data from src.
-      // This has to be done after barrier() since post thread might have contention with
-      // this check.
+      // 对于 sendrecv 的 DirectRead，发送方需要等待接收方从 源 读完数据。
+      // 这必须在 屏障() 之后进行，因为 后 线程可能与
+      // 本次检查存在竞争。
       int spins = 0;
       volatile uint64_t* tail = conn->tail;
       volatile uint64_t* head = conn->head;
@@ -777,13 +800,13 @@ public:
     if (Direct && ipcReg) {
       bool recvProvider = (flags & RoleWaitRecv) && (flags & DirectWrite);
       bool sendAcceptor = (flags & RoleWaitSend) && (flags & DirectWrite);
-      // sender provides direct buffer (to be fetched)
+      // 发送方提供直连缓冲区(供对端拉取)
       bool sendProvider = (flags & RoleWaitSend) && (flags & DirectRead);
       bool recvAcceptor = (flags & RoleWaitRecv) && (flags & DirectRead); // receiver accepts direct buffer
       if (recvProvider) {
         int spins = 0;
         void* volatile* slot = ncclShmem.groups[group].recvConns[index]->ptrExchange;
-        // Wait for consumer to consume previous value before trampling it.
+        // 在覆盖旧值之前，等待消费者先消费完它。
         if (slot) {
           T* exchgPtr;
           directBuff = (T*)outputBuf;
@@ -791,9 +814,9 @@ public:
           if (P2p) {
             exchgPtr = (T*)outputBuf;
           } else {
-            // For cross-clique P2P, use peer rank directly to avoid localRank conflicts between cliques
+            // For 跨-clique P2P, 使用 对等端 rank directly to 避免 localRank conflicts 之间 cliques
             int localPeer = ncclShmem.comm.p2pCrossClique ? peer : ncclShmem.comm.rankToLocalRank[peer];
-            // coverity[deref_parm:FALSE] => work cannot be NULL if ipcReg != NULL
+            // coverity[deref_parm:假] => work cannot be NULL 若 ipcReg != NULL
             exchgPtr = (T*)(work->coll.recvbuffOffset + work->coll.recvbuffRmtAddrs[localPeer]);
           }
           *slot = reinterpret_cast<void*>(exchgPtr);
@@ -819,17 +842,17 @@ public:
       if (sendProvider) {
         int spins = 0;
         void* volatile* slot = ncclShmem.groups[group].sendConns[index]->ptrExchange;
-        // Wait for consumer to consume previous value before trampling it.
+        // 在覆盖旧值之前，等待消费者先消费完它。
         if (slot) {
           T* exchgPtr;
           while ((*slot != nullptr) && !checkAbort(flags, Aborted, spins));
-          // If there is no recv, then we are directly pulling from input buffer (e.g. directScatter)
-          // Otherwise, we are pulling from output buffer (e.g. recvCopyDirectSend)
+          // 若无接收方，则是直接从输入缓冲区拉取(例如 directScatter)，
+          // 否则是从输出缓冲区拉取(例如 recvCopyDirectSend)
           directBuff = MaxRecv == 0 ? (T*)inputBuf : (T*)outputBuf;
           if (P2p) {
             exchgPtr = MaxRecv == 0 ? (T*)inputBuf : (T*)outputBuf;
           } else {
-            // For cross-clique P2P, use peer rank directly to avoid localRank conflicts between cliques
+            // For 跨-clique P2P, 使用 对等端 rank directly to 避免 localRank conflicts 之间 cliques
             int localPeer = ncclShmem.comm.p2pCrossClique ? peer : ncclShmem.comm.rankToLocalRank[peer];
             if (MaxRecv == 0)
               // coverity[var_deref_op]
@@ -839,7 +862,7 @@ public:
               exchgPtr = (T*)(work->coll.recvbuffOffset + work->coll.recvbuffRmtAddrs[localPeer]);
           }
 
-          // Exchange pre-scalers for use in direct pull
+          // 交换预缩放因子，供直连拉取时使用
           *slot = reinterpret_cast<T*>(exchgPtr);
         }
       }
@@ -856,9 +879,9 @@ public:
           directBuff = reinterpret_cast<T*>(ptr);
           *slot = nullptr;
         } else {
-          // Coverity complains about work being possibly NULL below.  However, slot
-          // being NULL means that the NVLS buffer is registered (regUsed == 1)
-          // so work can't be NULL in this code path.
+          // Coverity complains about work being possibly NULL 下方.  然而, slot
+          // being NULL means 那个 the NVLS 缓冲区 is 已注册 (regUsed == 1)
+          // 所以 work can't be NULL 入 此 代码 路径.
           // coverity[var_deref_op]
           directBuff = (T*)work->dnInputs[index];
         }
@@ -952,7 +975,7 @@ public:
   }
   __device__ __forceinline__ void recvReduceCopyDirectSend(intptr_t inpIx, intptr_t outIx, int eltN,
                                                            bool postOp = false) {
-    // Direct is only for the send part
+    // 直连仅适用于发送部分
     genericOp<0, 1, 1, 1, Input, Output>(inpIx, outIx, eltN, postOp);
   }
   __device__ __forceinline__ void directRecvReduceCopyDirectSend(intptr_t inpIx, intptr_t outIx, ssize_t eltN,
@@ -1019,23 +1042,23 @@ public:
       ncclShmem.groups[group].dsts[0] =
         ((T*)peer->buff) + ((step + ps->stepOffset) % NCCL_STEPS) * peer->connStepSize + ps->sendOffset;
       if (peer->accSize < ps->sendOffset + nelem + (step + ps->stepOffset) * peer->connStepSize) {
-        // New data, add our own data to it.
+        // 是新数据，把自己的数据加进去(规约)。
         ncclShmem.groups[group].srcs[1] = userInput + ps->inpIx;
       } else {
-        // There is already data in there, accumulate instead of writing to it.
+        // 里面已有数据，应当累加而不是覆盖写入。
         ncclShmem.groups[group].srcs[1] = ncclShmem.groups[group].dsts[0];
       }
     }
     long long int localAccSize = shmem->localAccSize;
     if (ps->sendDim < 0 && (flags & RoleOutput)) {
-      // Destination is our own local buffer
+      // 目标是本地的本地缓冲区
       ncclShmem.groups[group].dsts[0] = userOutput + ps->outIx;
       if (localAccSize < ps->outIx + nelem) {
-        // New data, add our own data to it.
+        // 是新数据，把自己的数据加进去(规约)。
         ncclShmem.groups[group].srcs[1] = userInput + ps->inpIx;
         localAccSize = ps->outIx + nelem;
       } else {
-        // There is already data in there, accumulate instead of writing to it.
+        // 里面已有数据，应当累加而不是覆盖写入。
         ncclShmem.groups[group].srcs[1] = ncclShmem.groups[group].dsts[0];
       }
     }
@@ -1053,7 +1076,7 @@ public:
                                                                     /*postOp=*/false, nSrcs, srcs, 1,
                                                                     ncclShmem.groups[group].dsts, workSize);
 
-    // Store conn step here inside the two barriers to make sure next reload will see the update.
+    // 在两个屏障之间保存 conn 步骤，确保下次重载能看到更新。
     if (postSend && (flags & RolePostSend)) {
       if (peer->connFifo) {
         peer->connFifo[step % NCCL_STEPS].size = (ps->sendOffset + nelem) * sizeof(T);
@@ -1066,7 +1089,7 @@ public:
       st_relaxed_sys_global(&peer->conn->step, step); // Also save in global mem for next op
     }
 
-    // Update accSize
+    // 更新已累计处理的数据量 accSize
     if (ps->sendDim < 0 && (flags & RoleOutput)) atomicMax(&shmem->localAccSize, localAccSize);
     if (ps->sendDim >= 0 && (flags & RoleWaitSend))
       atomicMax(&peer->accSize, ps->sendOffset + nelem + (step + ps->stepOffset) * peer->connStepSize);
@@ -1115,7 +1138,7 @@ public:
         if (checkAbort(flags, Aborted, spins)) break;
       }
       if (peer->accSize < ps->recvOffset + nelem + (step + ps->stepOffset) * peer->connStepSize) {
-        // New data, copy to our output buffer.
+        // 是新数据，拷贝到输出缓冲区。
         ncclShmem.groups[group].dsts[1] = userOutput + ps->outIx;
       } else {
         ncclShmem.groups[group].dsts[1] = ncclShmem.groups[group].srcs[0]; // Already done
@@ -1131,14 +1154,14 @@ public:
     }
     long long int localAccSize = shmem->localAccSize;
     if (ps->recvDim < 0 && (flags & RoleInput)) {
-      // Source is our own local buffer
+      // 源是本地的本地缓冲区
       ncclShmem.groups[group].srcs[0] = userInput + ps->inpIx;
       if (localAccSize < ps->inpIx + nelem) {
-        // New data, copy to our output buffer.
+        // 是新数据，拷贝到输出缓冲区。
         ncclShmem.groups[group].dsts[1] = userOutput + ps->outIx;
         localAccSize = ps->inpIx + nelem;
       } else {
-        // Already done
+        // 已完成，跳过
         ncclShmem.groups[group].dsts[1] = ncclShmem.groups[group].srcs[0];
       }
     }
@@ -1157,7 +1180,7 @@ public:
                                                                     /*postOp=*/false, 1, ncclShmem.groups[group].srcs,
                                                                     nDsts, dsts, workSize);
 
-    // Store conn step here inside the two barriers to make sure next reload will see the update.
+    // 在两个屏障之间保存 conn 步骤，确保下次重载能看到更新。
     if (postSend && (flags & RolePostSend)) {
       if (peer->connFifo) {
         peer->connFifo[step % NCCL_STEPS].size = (ps->sendOffset + nelem) * sizeof(T);
@@ -1170,7 +1193,7 @@ public:
       st_relaxed_sys_global(&peer->conn->step, step); // Also save in global mem for next op
     }
 
-    // Update accSize
+    // 更新已累计处理的数据量 accSize
     if (ps->recvDim < 0 && (flags & RoleInput)) atomicMax(&shmem->localAccSize, localAccSize);
     if (ps->recvDim >= 0 && (flags & RoleWaitRecv))
       atomicMax(&peer->accSize, ps->recvOffset + nelem + (step + ps->stepOffset) * peer->connStepSize);

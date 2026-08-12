@@ -1,0 +1,92 @@
+nohup: ignoring input
+make -C src lib BUILDDIR=/home/leo/mini-nccl/build
+make[1]: Entering directory '/home/leo/mini-nccl/src'
+NVCC_GENCODE is -gencode=arch=compute_90,code=sm_90
+Compiling  bootstrap.cc                        > /home/leo/mini-nccl/build/obj/bootstrap.o
+Compiling  channel.cc                          > /home/leo/mini-nccl/build/obj/channel.o
+Compiling  collectives.cc                      > /home/leo/mini-nccl/build/obj/collectives.o
+Compiling  debug.cc                            > /home/leo/mini-nccl/build/obj/debug.o
+Compiling  enqueue.cc                          > /home/leo/mini-nccl/build/obj/enqueue.o
+Compiling  group.cc                            > /home/leo/mini-nccl/build/obj/group.o
+Compiling  init.cc                             > /home/leo/mini-nccl/build/obj/init.o
+Compiling  proxy.cc                            > /home/leo/mini-nccl/build/obj/proxy.o
+Compiling  transport.cc                        > /home/leo/mini-nccl/build/obj/transport.o
+Compiling  mnnvl.cc                            > /home/leo/mini-nccl/build/obj/mnnvl.o
+Compiling  allocator.cc                        > /home/leo/mini-nccl/build/obj/allocator.o
+Compiling  dev_runtime.cc                      > /home/leo/mini-nccl/build/obj/dev_runtime.o
+Compiling  dev_runtime_segments.cc             > /home/leo/mini-nccl/build/obj/dev_runtime_segments.o
+Compiling  sym_kernels.cc                      > /home/leo/mini-nccl/build/obj/sym_kernels.o
+Compiling  ce_coll.cc                          > /home/leo/mini-nccl/build/obj/ce_coll.o
+Compiling  mem_manager.cc                      > /home/leo/mini-nccl/build/obj/mem_manager.o
+transport.cc:13:28: warning: "/*" within comment [-Wcomment]
+   13 |  * 图”与“具体建链(transport/*.cc)”之间的分发枢纽。
+      |                             
+Compiling  graph/connect.cc                    > /home/leo/mini-nccl/build/obj/graph/connect.o
+Compiling  graph/paths.cc                      > /home/leo/mini-nccl/build/obj/graph/paths.o
+Compiling  graph/rings.cc                      > /home/leo/mini-nccl/build/obj/graph/rings.o
+Compiling  graph/search.cc                     > /home/leo/mini-nccl/build/obj/graph/search.o
+Compiling  graph/topo.cc                       > /home/leo/mini-nccl/build/obj/graph/topo.o
+Compiling  graph/tuning.cc                     > /home/leo/mini-nccl/build/obj/graph/tuning.o
+Compiling  graph/xml.cc                        > /home/leo/mini-nccl/build/obj/graph/xml.o
+Compiling  misc/argcheck.cc                    > /home/leo/mini-nccl/build/obj/misc/argcheck.o
+Compiling  misc/cudawrap.cc                    > /home/leo/mini-nccl/build/obj/misc/cudawrap.o
+Compiling  misc/gdrwrap.cc                     > /home/leo/mini-nccl/build/obj/misc/gdrwrap.o
+Compiling  misc/shmutils.cc                    > /home/leo/mini-nccl/build/obj/misc/shmutils.o
+Compiling  misc/socket.cc                      > /home/leo/mini-nccl/build/obj/misc/socket.o
+Compiling  misc/utils.cc                       > /home/leo/mini-nccl/build/obj/misc/utils.o
+Compiling  transport/coll_net.cc               > /home/leo/mini-nccl/build/obj/transport/coll_net.o
+Compiling  transport/generic.cc                > /home/leo/mini-nccl/build/obj/transport/generic.o
+Compiling  transport/net.cc                    > /home/leo/mini-nccl/build/obj/transport/net.o
+Compiling  transport/net_socket.cc             > /home/leo/mini-nccl/build/obj/transport/net_socket.o
+Compiling  transport/nvls.cc                   > /home/leo/mini-nccl/build/obj/transport/nvls.o
+Compiling  transport/p2p.cc                    > /home/leo/mini-nccl/build/obj/transport/p2p.o
+Compiling  transport/profiler.cc               > /home/leo/mini-nccl/build/obj/transport/profiler.o
+Compiling  transport/shm.cc                    > /home/leo/mini-nccl/build/obj/transport/shm.o
+Compiling  register/coll_reg.cc                > /home/leo/mini-nccl/build/obj/register/coll_reg.o
+Compiling  register/register.cc                > /home/leo/mini-nccl/build/obj/register/register.o
+Compiling  register/sendrecv_reg.cc            > /home/leo/mini-nccl/build/obj/register/sendrecv_reg.o
+Compiling  nccl_device/core.cc                 > /home/leo/mini-nccl/build/obj/nccl_device/core.o
+Compiling  nccl_device/ll_a2a.cc               > /home/leo/mini-nccl/build/obj/nccl_device/ll_a2a.o
+Compiling  nccl_device/lsa_barrier.cc          > /home/leo/mini-nccl/build/obj/nccl_device/lsa_barrier.o
+Compiling  scheduler/allgatherv_sched.cc       > /home/leo/mini-nccl/build/obj/scheduler/allgatherv_sched.o
+Compiling  scheduler/symmetric_sched.cc        > /home/leo/mini-nccl/build/obj/scheduler/symmetric_sched.o
+Compiling  devcomm/devcomm_v22902.cc           > /home/leo/mini-nccl/build/obj/devcomm/devcomm_v22902.o
+Compiling  devcomm/devcomm_v22907.cc           > /home/leo/mini-nccl/build/obj/devcomm/devcomm_v22907.o
+Compiling  devcomm/devcomm_v23000.cc           > /home/leo/mini-nccl/build/obj/devcomm/devcomm_v23000.o
+Compiling  param/c_api.cc                      > /home/leo/mini-nccl/build/obj/param/c_api.o
+Compiling  os/linux.cc                         > /home/leo/mini-nccl/build/obj/os/linux.o
+Compiling  os/linux_ipcsocket.cc               > /home/leo/mini-nccl/build/obj/os/linux_ipcsocket.o
+Compiling  os/linux_stubs.cc                   > /home/leo/mini-nccl/build/obj/os/linux_stubs.o
+make[2]: Entering directory '/home/leo/mini-nccl/src/device'
+NVCC_GENCODE is -gencode=arch=compute_90,code=sm_90
+Dependencies    build/obj/device/gensrc/all_reduce.cu
+Dependencies    src/device/onerank.cu
+Compiling  misc/git_version.cc                 > /home/leo/mini-nccl/build/obj/misc/git_version.o
+Dependencies    src/device/common.cu
+NVCC_GENCODE is -gencode=arch=compute_90,code=sm_90
+Compiling       build/obj/device/gensrc/all_reduce_minmax_bf16.cu
+Compiling       build/obj/device/gensrc/all_reduce_minmax_f64.cu
+Compiling       build/obj/device/gensrc/all_reduce_minmax_f8e4m3.cu
+Compiling       build/obj/device/gensrc/all_reduce_minmax_f32.cu
+Compiling       src/device/onerank.cu
+Compiling       src/device/common.cu
+Compiling       build/obj/device/gensrc/all_reduce_minmax_f8e5m2.cu
+Compiling       build/obj/device/gensrc/all_reduce_minmax_u32.cu
+Compiling       build/obj/device/gensrc/all_reduce_minmax_f16.cu
+Compiling       build/obj/device/gensrc/all_reduce_minmax_u64.cu
+Compiling       build/obj/device/gensrc/all_reduce_minmax_u8.cu
+Compiling       build/obj/device/gensrc/all_reduce_premulsum_bf16.cu
+Compiling       build/obj/device/gensrc/all_reduce_premulsum_f16.cu
+Compiling       build/obj/device/gensrc/all_reduce_premulsum_f32.cu
+Compiling       build/obj/device/gensrc/all_reduce_premulsum_f64.cu
+Compiling       build/obj/device/gensrc/all_reduce_premulsum_f8e4m3.cu
+Compiling       build/obj/device/gensrc/all_reduce_premulsum_f8e5m2.cu
+Compiling       build/obj/device/gensrc/all_reduce_premulsum_u32.cu
+Compiling       build/obj/device/gensrc/all_reduce_premulsum_u64.cu
+Compiling       build/obj/device/gensrc/all_reduce_premulsum_u8.cu
+Compiling       build/obj/device/gensrc/all_reduce_prod_bf16.cu
+Compiling       build/obj/device/gensrc/all_reduce_prod_f16.cu
+Compiling       build/obj/device/gensrc/all_reduce_prod_f32.cu
+Compiling       build/obj/device/gensrc/all_reduce_prod_f64.cu
+Compiling       build/obj/device/gensrc/all_reduce_prod_f8e4m3.cu
+Compiling       build/obj/device/gensrc/all_reduce_prod_f8e5m2.cu

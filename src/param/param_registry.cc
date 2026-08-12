@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/param/param_registry.cc — 参数注册表(registry)实现
+ * ----------------------------------------------------------------------------
+ * 实现 ncclParam 的全局注册表：持有所有已注册参数的状态实例，供查询/枚举。通过
+ * ncclParamRegistryInstance() 暴露单例。
+ */
+
 #include "param/param_registry.h"
 #include "debug.h"
 

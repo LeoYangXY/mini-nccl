@@ -5,6 +5,22 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * src/include/param/param.h — 参数系统主头
+ * ----------------------------------------------------------------------------
+ * 定义 NCCL 可调参数（如 NCCL_SOCKET_IFNAME、NCCL_DEBUG 等）的读取接口。
+ * 对外提供 ncclParam<Name> 形式的全局参数对象，运行时从环境变量/配置读取。
+ * 依赖 param/common.h、utils.h、parsers.h、param_registry.h。
+ */
+
+/*
+ * src/include/param/param.h — 参数系统主头
+ * ----------------------------------------------------------------------------
+ * 定义 NCCL 可调参数（如 NCCL_SOCKET_IFNAME、NCCL_DEBUG 等）的读取接口。
+ * 对外提供 ncclParam<Name> 形式的全局参数对象，运行时从环境变量/配置读取。
+ * 依赖 param/common.h、utils.h、parsers.h、param_registry.h。
+ */
+
 #ifndef PARAM_H_INCLUDED
 #define PARAM_H_INCLUDED
 
@@ -19,21 +35,21 @@
 #include <cstring>
 #include <string>
 #include <mutex>
-// using C++ atomic because we don't include compiler.h here
+// 使用 C++ 原子 因为 we don't 包含 编译器.h here
 #include <atomic>
 #include <memory>
 
 // ============================================================================
-// Main Macros
+// Main 宏
 // ============================================================================
 
-// Defining and Using (Including) a ncclParam
-// Usage: DEFINE_NCCL_PARAM(name, type, key, default, flags, parser, desc)
-// Generate global symbols for key to make compiler check for the uniqueness of the key.
-// The check will happen at both compile and link time.
-// Define parameter in .cc files
-// Note: NCCL_DEFINE_PARAM is not designed to be put inside of a namespace. This can be
-// changed if there is a need.
+// Defining 并且 使用 (Including) a ncclParam
+// Usage: DEFINE_NCCL_PARAM(name, 类型, key, 默认, 标志, parser, desc)
+// Generate 全局的 symbols for key to 使 编译器 检查 为了 uniqueness 的 key.
+// The 检查 will happen at 两者 编译 并且 链路 time.
+// 定义 参数 入 .cc 文件
+// 注意: NCCL_DEFINE_PARAM is 不 designed to be 放置 inside of a 命名空间. 此 可以
+// changed 若re is a 需要.
 #define DEFINE_NCCL_PARAM(name, type, key, default, flags, parser, desc) \
   namespace key_guards { \
   struct guard_##key {}; \
@@ -41,12 +57,12 @@
   extern constexpr char name##Key[] = #key; \
   ncclParam<type> name{name##Key, default, parser, #type, flags, desc};
 
-// Usage: USE_NCCL_PARAM(name, type)
-// name and type must match the DEFINE_NCCL_PARAM.
+// Usage: USE_NCCL_PARAM(name, 类型)
+// name 并且 类型 must match the DEFINE_NCCL_PARAM.
 #define USE_NCCL_PARAM(name, type) extern ncclParam<type> name;
 
 // ============================================================================
-// ncclParam Template
+// ncclParam 模板
 // ============================================================================
 
 template <typename T>
@@ -55,8 +71,8 @@ struct ncclParam : public ncclParamInterface {
   const T defaultValue;
 
   T value;
-  // cstrData adds 24B overhead to ncclParam for non-const-char* parameters.
-  // This is a trade-off for not using complex template stuff.
+  // cstrData adds 24B 开销 to ncclParam for non-常量-char* 参数.
+  // 这是 a 权衡 for 不 使用 complex 模板 stuff.
   std::string cstrData{};
 
   const char* srcStr = nullptr;
@@ -78,18 +94,18 @@ struct ncclParam : public ncclParamInterface {
     ncclParamRegistry::add(info.key, info, this);
   }
 
-  // Prevent copy/move assignment
+  // 防止 拷贝/move assignment
   ncclParam& operator=(const ncclParam&) = delete;
   ncclParam& operator=(ncclParam&&) = delete;
 
-  // Main access function for parameter value through function call-like interface
-  // This handles non-const-char* types, for const char *, see specializations below
+  // Main access 函数 for 参数 值 through 函数 调用-like 接口
+  // 此 句柄 non-常量-char* 类型, for 常量 char *, 参见 specializations 下方
   T operator()() {
     auto lock = ensureLoaded();
     return value;
   }
 
-  // C API accessor of raw parameter value
+  // C API accessor of raw 参数 值
   ncclResult_t getRawData(void* out, int maxLen, int* len) override {
     if (!out || !len || maxLen <= 0) return ncclInvalidArgument;
     auto lock = ensureLoaded();
@@ -112,9 +128,9 @@ struct ncclParam : public ncclParamInterface {
     std::string defaultStr = parser.toString(defaultValue);
     std::string flagStr = nccl::param::utils::flagsStr(info.flags);
 
-    // Line 1: Key (type) [flags] desc
-    // Line 2: Current value, set_by=srcStr and default value
-    // Line 3+: Accepted values
+    // 行 1: Key (类型) [标志] desc
+    // 行 2: 当前的 值, set_by=srcStr 并且 默认 值
+    // 行 3+: Accepted 值
     using nccl::param::utils::stringFormat;
     return stringFormat("%s (%s) [%s] %s\n"
                         "    Current value=%s set_by=%s default=%s\n"
@@ -125,13 +141,13 @@ struct ncclParam : public ncclParamInterface {
   }
 
 private:
-  // Core function to make sure value is loaded, check against all conditions including
+  // Core 函数 to 确保 值 is loaded, 检查 against 所有 conditions including
   // NCCL_NO_CACHE
   std::unique_lock<std::mutex> ensureLoaded() {
     if (NCCL_PARAM_COMPILER_EXPECT(loaded.load(std::memory_order_relaxed), true)) {
       if ((info.flags & NCCL_PARAM_FLAG_CACHED) &&
           NCCL_PARAM_COMPILER_EXPECT(!ncclParamIsCacheDisabled(info.key), true)) {
-        // fast path for cached parameters
+        // 快速 路径 for cached 参数
         return {};
       } else {
         std::unique_lock<std::mutex> lock(mtx);
@@ -148,9 +164,9 @@ private:
     }
   }
 
-  // Load value from environment variable via EnvPlugin chain
+  // 加载 值 from environment 变量 via EnvPlugin chain
   void loadValue() {
-    // Special params with NO_ENVPLUGIN_INIT flag do not try init EnvPlugin
+    // 特殊的 params with NO_ENVPLUGIN_INIT 标志 执行 不 尝试 初始化 EnvPlugin
     bool tryEnvPluginInit = !(info.flags & NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT);
     const char* envPluginValue = ncclParamEnvPluginGet(info.key, tryEnvPluginInit);
     if (envPluginValue != nullptr) {
@@ -163,14 +179,14 @@ private:
       }
     }
 
-    // env is empty or parsing is failed
+    // env is 空的 或者 parsing is 已失败
     srcStr = nccl::param::utils::srcDefault();
     value = defaultValue;
   }
 };
 
 // ============================================================================
-// const char* specializations, it need special version for some functions
+// 常量 char* specializations, it 需要 特殊的 版本 for 一些 函数
 // ============================================================================
 
 template <>
@@ -184,7 +200,7 @@ inline const char* ncclParam<const char*>::operator()() {
 
 template <>
 inline void ncclParam<const char*>::loadValue() {
-  // Special params with NO_ENVPLUGIN_INIT flag do not try init EnvPlugin
+  // 特殊的 params with NO_ENVPLUGIN_INIT 标志 执行 不 尝试 初始化 EnvPlugin
   bool tryEnvPluginInit = !(info.flags & NCCL_PARAM_FLAG_NO_ENVPLUGIN_INIT);
   const char* envPluginValue = ncclParamEnvPluginGet(info.key, tryEnvPluginInit);
   if (envPluginValue != nullptr) {

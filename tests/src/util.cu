@@ -3,6 +3,14 @@
  *
  * See LICENSE.txt for license information
  ************************************************************************/
+
+/*
+ * tests/src/util.cu — 测试工具实现
+ * ----------------------------------------------------------------------------
+ * 实现测试共用的工具：同时向 stdout 与 json 文件输出结果（采用基于 libc 的自研
+ * JSON 写入，避免引入外部 JSON 库依赖），以及输出格式化辅助。
+ */
+
 // This contains an utlities to handle output both to stdout and to
 // json files.
 //

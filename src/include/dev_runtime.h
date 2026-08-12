@@ -5,6 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+/*
+ * include/dev_runtime.h — device runtime(kernel 运行时/版本兼容)接口
+ * ----------------------------------------------------------------------------
+ * 定义 device 端 runtime 抽象：处理不同 CUDA 版本下 kernel 启动与设备函数的兼容，
+ * 使 NCCL 能在多种 CUDA toolkit 上编译运行（devcomm/ 提供各版本实现）。
+ */
+
 #ifndef NCCL_DEVICE_RUNTIME_H_
 #define NCCL_DEVICE_RUNTIME_H_
 #include "nccl.h"
@@ -15,7 +22,7 @@
 #include "utils.h"
 
 ////////////////////////////////////////////////////////////////////////////////
-// ncclDevr[_]: runtime implements for symmetric API.
+// ncclDevr[_]：对称 API 的运行时实现。
 
 struct ncclDevrMemory;
 struct ncclDevrWindow {
@@ -48,9 +55,9 @@ struct ncclDevrCommCreateTask {
 };
 
 struct ncclDevrState {
-  // Like localRank/localRanks except "lsa" ranks must be consecutive in the world
-  // and all lsa subsets have the same number of ranks. If any condition is
-  // false then the lsa team is just the singleton of self.
+  // Like localRank/localRanks except "lsa" ranks 必须为 consecutive 在 ... 中 world
+  // 并且 所有 lsa subsets have 相同 数量： ranks. 如果有的话 condition is
+  // 假 那么 lsa team is 仅 the singleton of 自身.
   int lsaSelf;
   int lsaSize;
   int* lsaRankList;
@@ -81,18 +88,18 @@ struct ncclDevCommCompat {
   ncclResult_t (*devCommCopyOldToNew)(ncclComm_t comm, struct ncclDevComm* newDevComm, void const* oldDevComm);
 };
 
-// Check if GIN resources have been requested as part of `reqs`.
+// 检查 若 GIN resources 已经 requested as part of `reqs`.
 bool ncclGinResourcesRequested(struct ncclDevCommRequirements const* reqs);
 
-// Check if there is only one LSA team. This function uses the cached value of comm or computes the
-// value from the comm topology.
+// 检查 若re is 仅 one LSA team. 该函数 使用 the cached 值 of 通信域 或者 computes the
+// 值 从 通信域 拓扑.
 bool ncclDevrIsOneLsaTeam(struct ncclComm* comm);
 
-// We assume ncclComm has a `ncclDevrState symState` member.
+// We 假设 ncclComm has a `ncclDevrState symState` 成员.
 ncclResult_t ncclDevrInitOnce(struct ncclComm* comm);
 ncclResult_t ncclDevrFinalize(struct ncclComm* comm);
 
-// If found *outWinHost will be populated and *outWinId >= 0, otherwise *outWinId == -1
+// 若 已找到 *outWinHost 将会 populated 并且 *outWinId >= 0, 否则 *outWinId == -1
 ncclResult_t ncclDevrFindWindow(struct ncclComm* comm, void const* userPtr, struct ncclDevrWindow** outWin);
 
 ncclResult_t ncclDevrWindowRegisterInGroup(struct ncclComm* comm, void* ptr, size_t size, int winFlags,
@@ -106,20 +113,20 @@ void freeDevCommRequirements(struct ncclDevCommRequirements* reqs);
 bool ncclDevrWindowIsMultiSegment(struct ncclDevrWindow* win);
 bool ncclDevrWindowHasSysmemSegment(struct ncclDevrWindow* win);
 
-// Get the corresponding pointer in another lsa rank's symmetric memory window
+// 获取 corresponding 指针 入 另一个 lsa rank's symmetric 内存 window
 ncclResult_t ncclDevrGetLsaRankPtr(struct ncclComm* comm, struct ncclDevrWindow* winHost, size_t offset, int lsaRank,
                                    void** outPtr);
 
-// Convert a world rank to an LSA rank.
+// 将 ... 转换 world rank to an LSA rank.
 ncclResult_t ncclDevrWorldToLsaRank(struct ncclComm* comm, int peerWorldRank, int* peerLsaRank);
 
-// Get the RMA window handle for a specific context
+// 获取 RMA window 句柄 for a 特定的 上下文
 void* ncclDevrGetRmaWin(struct ncclDevrWindow* winHost, int ctx);
 
-// Get the multicast address for a given team
+// 获取 multicast 地址 for a 给定的 team
 ncclResult_t ncclDevrGetLsaTeamPtrMC(struct ncclComm* comm, struct ncclDevrWindow* winHost, size_t offset,
                                      struct ncclTeam lsaTeam, void** outPtr);
 
-// Copies the devComm data from "rank" to "lsaBarrier".  Assumes the same memory layout at source and destination.
+// 拷贝 the devComm 数据 from "rank" to "lsaBarrier".  Assumes 相同 内存 布局 at 源文件 并且 目标.
 void ncclDevCommCopyLsaData(void* dstRankPtr, void const* srcRankPtr);
 #endif
