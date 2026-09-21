@@ -63,8 +63,11 @@ ncclResult_t ncclNetSocketInit(void** ctx, uint64_t commId, ncclNetCommConfig_t*
     if (ncclNetIfs == -1) {
       char names[MAX_IF_NAME_SIZE * MAX_IFS];
       union ncclSocketAddress addrs[MAX_IFS];
-      NCCLCHECK(ncclFindInterfaces(names, addrs, MAX_IF_NAME_SIZE, MAX_IFS, &ncclNetIfs));
-      if (ncclNetIfs <= 0) {
+      // 先枚举到局部变量再发布：ncclFindInterfaces 会先把 *nIfs 置 0，
+      // 若直接传 &ncclNetIfs，并发的调用方会读到未完成的中间值 0。
+      int nIfs = 0;
+      NCCLCHECK(ncclFindInterfaces(names, addrs, MAX_IF_NAME_SIZE, MAX_IFS, &nIfs));
+      if (nIfs <= 0) {
         WARN("NET/Socket : no interface found");
         return ncclInternalError;
       } else {
@@ -73,7 +76,7 @@ ncclResult_t ncclNetSocketInit(void** ctx, uint64_t commId, ncclNetCommConfig_t*
         char addrline[SOCKET_NAME_MAXLEN + 1];
         line[0] = '\0';
         addrline[SOCKET_NAME_MAXLEN] = '\0';
-        for (int i = 0; i < ncclNetIfs; i++) {
+        for (int i = 0; i < nIfs; i++) {
           strcpy(ncclNetSocketDevs[i].devName, names + i * MAX_IF_NAME_SIZE);
           memcpy(&ncclNetSocketDevs[i].addr, addrs + i, sizeof(union ncclSocketAddress));
           NCCLCHECK(ncclNetSocketGetPciPath(ncclNetSocketDevs[i].devName, &ncclNetSocketDevs[i].pciPath));
@@ -83,6 +86,7 @@ ncclResult_t ncclNetSocketInit(void** ctx, uint64_t commId, ncclNetCommConfig_t*
         line[MAX_LINE_LEN] = '\0';
         INFO(NCCL_INIT | NCCL_NET, "NET/Socket : Using%s", line);
       }
+      ncclNetIfs = nIfs;
     }
   }
   return ncclSuccess;

@@ -64,6 +64,11 @@ ncclResult_t ncclRasCommFini(const struct ncclComm* comm) {
  * Net plugin stubs: use built-in socket transport without plugin layer
  * -------------------------------------------------------------------------- */
 ncclResult_t ncclNetInit(struct ncclComm* comm) {
+  // 原版 NCCL 由 plugin 层的 ncclNetPluginLock() 保护插件初始化；这里没有 plugin 层，
+  // 必须自己串行化：socket 后端的 init()/devices() 不是线程安全的，同一进程内多个
+  // rank 线程并发调用时，后到的线程会在网卡枚举完成前读到中间值(ncclNetIfs=0/-1)，
+  // 导致拓扑里 NET 节点数为 0，最终 initTransportsRank 报 internal error。
+  std::lock_guard<std::mutex> lock(miniNetInitMutex);
   comm->ncclNet = &ncclNetSocket;
   comm->ncclCollNet = nullptr;
   comm->netPluginIndex = -1;
@@ -73,14 +78,11 @@ ncclResult_t ncclNetInit(struct ncclComm* comm) {
   commConfig.trafficClass = NCCL_NET_TRAFFIC_CLASS_UNDEF;
   NCCLCHECK(comm->ncclNet->init(&comm->netContext, comm->commHash, &commConfig, ncclDebugLog, NULL));
 
-  {
-    std::lock_guard<std::mutex> lock(miniNetInitMutex);
-    if (!miniNetInitialized) {
-      int ndev = 0;
-      NCCLCHECK(comm->ncclNet->devices(&ndev));
-      miniNetPhysDev = ndev;
-      miniNetInitialized = true;
-    }
+  if (!miniNetInitialized) {
+    int ndev = 0;
+    NCCLCHECK(comm->ncclNet->devices(&ndev));
+    miniNetPhysDev = ndev;
+    miniNetInitialized = true;
   }
 
   return ncclSuccess;
