@@ -584,8 +584,10 @@ ncclResult_t ncclRmaProxyDestroyDesc(struct ncclComm* comm, struct ncclRmaProxyD
 }
 
 /* --------------------------------------------------------------------------
- * NVLS stubs not covered by the disabled branch in transport/nvls.cc
+ * NVLS stubs: 仅当 transport/nvls.cc 的真实现被禁用(CUDART_VERSION < 12010)时才需要。
+ * 现在 nvls.cc 已启用，这三个桩会让链接出现重复符号，因此一并关闭。
  * -------------------------------------------------------------------------- */
+#if CUDART_VERSION < 12010
 ncclResult_t ncclNvlsTuning(struct ncclComm* comm) {
   (void)comm;
   return ncclSuccess;
@@ -602,6 +604,7 @@ ncclResult_t ncclNvlsGroupConnect(struct ncclComm* comm, char* shareableHandle, 
   (void)comm; (void)shareableHandle; (void)rank; (void)mcHandle;
   return ncclInternalError;
 }
+#endif
 
 /* --------------------------------------------------------------------------
  * Tuner plugin stubs

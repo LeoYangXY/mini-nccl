@@ -21,7 +21,9 @@ DEVGLUE_OBJ  := $(OBJDIR)/device_glue.o
 
 # Only build AllReduce kernels (all redops/types) for RING/TREE algorithms
 # with all protocols (SIMPLE, LL, LL128).
-ONLY_FUNCS ?= AllReduce * * (RING|TREE) *
+# NVLS / NVLS_TREE are added so the NVSwitch (multicast) path can be exercised;
+# they require sm_90+ and CUDA 12.1+, which generate.py checks on its own.
+ONLY_FUNCS ?= AllReduce * * (RING|TREE|NVLS|NVLS_TREE) *
 
 INCFLAGS  = -I. -I.. -I$(BUILDDIR)/include -I../include -I../include/plugin
 NVCUFLAGS += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"

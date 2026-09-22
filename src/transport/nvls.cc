@@ -23,7 +23,7 @@
 #include "transport.h"
 #include "register_inline.h"
 
-#if 0 /* mini-nccl: NVLS support removed (single-node 2-GPU P2P only) */
+#if CUDART_VERSION >= 12010
 
 struct graphRegData {
   uintptr_t offset;
